@@ -322,6 +322,7 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | `GET` | `/v1/admin/status` | 守护进程详情 |
 | `GET` | `/v1/admin/stats` | 统计；`?scope=global` 为全部历史 |
 | `POST` | `/v1/admin/shutdown` | 优雅关闭；可选 `X-Flowy-Admin-Token` |
+| `POST` | `/v1/admin/restart` | 优雅关闭并拉起新进程（同 `flowy gateway restart`）；可选 Admin Token |
 | `POST` | `/v1/chat/completions` | OpenAI 兼容聊天（Agent 主入口） |
 
 **响应扩展**（非流式 JSON 中的 `flowy_meta`）：
@@ -358,7 +359,7 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | `default_profile` | `balanced` | `economy` / `balanced` / `premium` / `privacy` |
 | `ctx_edge_max_tokens` | `65536` | 端侧上下文上限；超过约 80% 触发 `GATE_CTX_OVERFLOW` |
 | `api_key` | — | 选填；入站鉴权 |
-| `admin_token` | — | 选填；保护 shutdown 与 setup 写操作 |
+| `admin_token` | — | 选填；保护 shutdown、restart 与 setup 写操作 |
 | `experience_enabled` | `true` | 按 `step_kind` 隐式学习 |
 | `experience_learning_rate` | `0.08` | 经验偏置学习强度 |
 | `experience_max_bias` | `0.12` | 单步态难度偏置上限 |
@@ -377,8 +378,8 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | 值 | 行为 |
 |----|------|
 | `auto` | 按难度 + profile + routing_mode 选择 |
-| `edge` | 全部端侧；不可用则降级 cloud |
-| `cloud` | 全部云端 |
+| `edge` | 全部端侧（仅 `[upstream.edge]`，失败即报错，不升云） |
+| `cloud` | 全部云端（仅 `[upstream.cloud]`，失败即报错，不降端） |
 | `cascade` | 每请求先 edge，质量不过关再升 cloud |
 
 #### `gateway.routing_mode`（仅 `route = auto`）

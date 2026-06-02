@@ -7,7 +7,7 @@
 #
 # 说明:
 #   route = edge 时跳过 auto/级联/自适应阈值逻辑；经验学习仍可记录 outcome。
-#   若需 cloud 兜底，请改用 config.toml（route = auto）并只配 edge 上游。
+#   与 route = edge 相同：只走端侧；需端云级联请用 route = cascade 或 route = auto。
 
 [gateway]
 listen = "127.0.0.1:11080"

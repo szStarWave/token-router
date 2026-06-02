@@ -16,7 +16,7 @@ listen = "127.0.0.1:11080"
 
 # 端/云/级联总开关（仅配置文件控制，请求头不能覆盖）
 #   auto     — 按难度 + profile + routing_mode 自动选择
-#   edge     — 全部端侧（不可用则降级 cloud）
+#   edge     — 全部端侧（仅 edge 上游；失败即报错，不升云）
 #   cloud    — 全部云端
 #   cascade  — 每请求先 edge，质量不过关再升 cloud
 route = "auto"

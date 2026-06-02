@@ -222,7 +222,7 @@ routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
 ctx_edge_max_tokens = 65536
 # api_key = "flowy-local"        # optional: inbound auth when set
-# admin_token = "change-me"      # optional: protects POST /v1/admin/shutdown
+# admin_token = "change-me"      # optional: protects POST /v1/admin/shutdown|restart
 # experience_enabled = true
 # experience_learning_rate = 0.08
 # experience_max_bias = 0.12

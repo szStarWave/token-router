@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::daemon_ctl;
 use crate::gateway::api::routes::AppState;
 use crate::gateway::routing::Profile;
 
@@ -80,34 +81,79 @@ pub async fn shutdown(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(expected) = state.config().admin_token.as_ref() {
-        let provided = headers
-            .get("x-flowy-admin-token")
-            .and_then(|v| v.to_str().ok());
-        if provided != Some(expected.as_str()) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid admin token"})),
-            )
-                .into_response();
-        }
+    match check_admin_token(&headers, state.config().admin_token.as_ref()) {
+        Ok(()) => {}
+        Err(resp) => return resp,
     }
 
-    if let Err(e) = state.stats.flush() {
-        tracing::warn!(error = %e, "stats flush before shutdown failed");
-    }
-    if let Err(e) = state.experience.flush() {
-        tracing::warn!(error = %e, "experience flush before shutdown failed");
-    }
-    if let Err(e) = state.sessions.flush() {
-        tracing::warn!(error = %e, "session flush before shutdown failed");
-    }
+    flush_before_exit(&state);
     state.runtime.trigger_shutdown();
     (
         StatusCode::OK,
         Json(serde_json::json!({"status": "shutting_down"})),
     )
         .into_response()
+}
+
+pub async fn restart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match check_admin_token(&headers, state.config().admin_token.as_ref()) {
+        Ok(()) => {}
+        Err(resp) => return resp,
+    }
+
+    let config_path = state.config().config_path.clone();
+    if let Err(e) = daemon_ctl::schedule_daemon_restart(&config_path) {
+        tracing::error!(error = %e, "schedule daemon restart failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    flush_before_exit(&state);
+    state.runtime.trigger_shutdown();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "restarting"})),
+    )
+        .into_response()
+}
+
+fn check_admin_token(
+    headers: &HeaderMap,
+    expected: Option<&String>,
+) -> Result<(), axum::response::Response> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let provided = headers
+        .get("x-flowy-admin-token")
+        .and_then(|v| v.to_str().ok());
+    if provided == Some(expected.as_str()) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid admin token"})),
+        )
+            .into_response())
+    }
+}
+
+fn flush_before_exit(state: &AppState) {
+    if let Err(e) = state.stats.flush() {
+        tracing::warn!(error = %e, "stats flush before exit failed");
+    }
+    if let Err(e) = state.experience.flush() {
+        tracing::warn!(error = %e, "experience flush before exit failed");
+    }
+    if let Err(e) = state.sessions.flush() {
+        tracing::warn!(error = %e, "session flush before exit failed");
+    }
 }
 
 fn profile_name(p: Profile) -> &'static str {

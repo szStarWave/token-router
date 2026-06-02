@@ -104,18 +104,23 @@ impl GatewayClient {
     }
 
     pub async fn shutdown(&self) -> Result<serde_json::Value> {
-        let mut req = self.http.post(format!("{}/v1/admin/shutdown", self.base));
+        self.post_admin("/v1/admin/shutdown").await
+    }
+
+    pub async fn restart(&self) -> Result<serde_json::Value> {
+        self.post_admin("/v1/admin/restart").await
+    }
+
+    async fn post_admin(&self, path: &str) -> Result<serde_json::Value> {
+        let mut req = self.http.post(format!("{}{}", self.base, path));
         req = self.attach_admin_token(req);
-        let resp = req
-            .send()
-            .await
-            .context("POST /v1/admin/shutdown")?;
+        let resp = req.send().await.with_context(|| format!("POST {path}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            bail!("shutdown failed {status}: {body}");
+            bail!("POST {path} failed {status}: {body}");
         }
-        resp.json().await.context("decode shutdown response")
+        resp.json().await.with_context(|| format!("decode POST {path}"))
     }
 
     fn attach_api_key(&self, req: RequestBuilder) -> RequestBuilder {

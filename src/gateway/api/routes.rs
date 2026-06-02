@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/setup", get(setup::setup_get).post(setup::setup_post))
         .route("/v1/admin/setup/init", post(setup::setup_init))
         .route("/v1/admin/shutdown", post(admin::shutdown))
+        .route("/v1/admin/restart", post(admin::restart))
         .route("/v1/chat/completions", post(chat_completions_handler))
         .with_state(state)
 }

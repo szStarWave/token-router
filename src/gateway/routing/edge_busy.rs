@@ -2,7 +2,7 @@ use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::multimodal::MultimodalStrategy;
 
 use super::decision::RouteTier;
-use super::upstream_availability::cloud_configured;
+use super::upstream_availability::{cloud_configured, edge_configured};
 use super::work::WorkStrategy;
 use crate::gateway::config::AppConfig;
 
@@ -33,6 +33,10 @@ pub fn apply_edge_busy_fallback(
         return (route, work, multimodal);
     }
 
+    if strict_single_tier(config) {
+        return (route, work, multimodal);
+    }
+
     reason_codes.push("GATE_EDGE_BUSY".to_string());
 
     let route = match route {
@@ -51,6 +55,15 @@ pub fn apply_edge_busy_fallback(
     };
 
     (route, work, multimodal)
+}
+
+/// `route=edge` / `route=cloud`, or only one upstream configured — no cross-tier redirects.
+fn strict_single_tier(config: &AppConfig) -> bool {
+    config.fixed_route.is_some()
+        || matches!(
+            (edge_configured(config), cloud_configured(config)),
+            (true, false) | (false, true)
+        )
 }
 
 #[cfg(test)]
@@ -89,6 +102,36 @@ mod tests {
         );
         assert_eq!(route, RouteTier::Edge);
         assert!(codes.is_empty());
+    }
+
+    #[test]
+    fn busy_keeps_edge_when_route_fixed_edge() {
+        let mut file = ConfigFile::default();
+        file.gateway.route = "edge".into();
+        file.upstream.edge = Some(UpstreamEndpoint {
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: None,
+            model: None,
+        });
+        file.upstream.cloud = Some(UpstreamEndpoint {
+            base_url: "https://api.example.com/v1".into(),
+            api_key: None,
+            model: None,
+        });
+        let config = AppConfig::from_file(file, "/tmp/flowy-edge-busy-fixed.toml".into()).unwrap();
+        let tracker = EdgeInferenceTracker::new();
+        let _g = tracker.begin();
+        let mut codes = Vec::new();
+        let (route, _, _) = apply_edge_busy_fallback(
+            RouteTier::Edge,
+            WorkStrategy::None,
+            MultimodalStrategy::None,
+            &config,
+            Some(tracker.as_ref()),
+            &mut codes,
+        );
+        assert_eq!(route, RouteTier::Edge);
+        assert!(!codes.iter().any(|c| c == "GATE_EDGE_BUSY"));
     }
 
     #[test]

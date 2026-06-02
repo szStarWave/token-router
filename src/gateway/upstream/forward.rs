@@ -80,8 +80,9 @@ impl UpstreamClient {
 
         match decision.route {
             RouteTier::Edge => {
-                let t = self.target_edge();
-                let resp = self.call_target(req, t, decision.tokens_in_estimate).await?;
+                let resp = self
+                    .call_target(req, self.target_edge(), decision.tokens_in_estimate)
+                    .await?;
                 Ok(self.finish_non_stream(resp, decision, "edge", false))
             }
             RouteTier::Cloud => {
@@ -136,11 +137,10 @@ impl UpstreamClient {
         }
 
         match decision.route {
-            RouteTier::Edge => {
-                self.stream_target(req, self.target_edge(), decision)
-                    .await
-                    .map(|s| (s, false))
-            }
+            RouteTier::Edge => self
+                .stream_target(req, self.target_edge(), decision)
+                .await
+                .map(|s| (s, false)),
             RouteTier::Cloud => {
                 self.stream_target(req, self.target_cloud(), decision)
                     .await

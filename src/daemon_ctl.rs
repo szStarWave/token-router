@@ -159,9 +159,46 @@ pub async fn restart_daemon(
     settings: &CliSettings,
     wait_secs: u64,
 ) -> Result<()> {
-    let _ = stop_daemon(client, false).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    if client.health().await.is_ok() {
+        client.restart().await?;
+        wait_until_healthy(client, wait_secs).await?;
+        if let Ok(s) = client.status().await {
+            println!(
+                "gateway restarted (pid {}, listen {}, profile {})",
+                s.pid, s.listen, s.default_profile
+            );
+        } else {
+            println!("gateway restarted at {}", client.base_url());
+        }
+        return Ok(());
+    }
+
+    cleanup_stale_pid()?;
     start_daemon(client, settings, wait_secs).await
+}
+
+/// Spawn a detached `__serve` after the current process exits (used by POST /v1/admin/restart).
+pub fn schedule_daemon_restart(config_path: &std::path::Path) -> Result<()> {
+    let bin = resolve_gateway_bin()?;
+    let config = config_path.to_path_buf();
+    std::thread::Builder::new()
+        .name("flowy-restart".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(1200));
+            if let Err(e) = Command::new(&bin)
+                .arg("--config")
+                .arg(&config)
+                .arg("__serve")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                tracing::error!(error = %e, "failed to spawn gateway after restart");
+            }
+        })
+        .context("spawn restart thread")?;
+    Ok(())
 }
 
 fn print_human_status(s: &crate::client::GatewayStatus) {
