@@ -77,6 +77,12 @@ enum Commands {
     /// Hidden entry for the gateway daemon (re-invoked by `gateway start`).
     #[command(hide = true, name = "__serve")]
     Serve,
+    /// Hidden helper: wait for `pid` to exit, then spawn `__serve` (used by POST /v1/admin/restart).
+    #[command(hide = true, name = "__restart-wait")]
+    RestartWait {
+        /// PID of the gateway process that is shutting down.
+        pid: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -154,6 +160,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve => run_serve(config_override).await,
+        Commands::RestartWait { pid } => daemon_ctl::run_restart_wait(pid, config_override.as_deref()),
         Commands::Env { json } => env_cmd::print_env(&config_override, json),
         Commands::Stats { global, json, lang } => {
             stats_cmd::print_stats(&config_override, global, json, &lang).await

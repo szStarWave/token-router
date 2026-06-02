@@ -322,7 +322,7 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | `GET` | `/v1/admin/status` | 守护进程详情 |
 | `GET` | `/v1/admin/stats` | 统计；`?scope=global` 为全部历史 |
 | `POST` | `/v1/admin/shutdown` | 优雅关闭；可选 `X-Flowy-Admin-Token` |
-| `POST` | `/v1/admin/restart` | 优雅关闭并拉起新进程（同 `flowy gateway restart`）；可选 Admin Token |
+| `POST` | `/v1/admin/restart` | 优雅关闭并由独立 `__restart-wait` 进程拉起新实例（同 `flowy gateway restart`）；可选 Admin Token |
 | `POST` | `/v1/chat/completions` | OpenAI 兼容聊天（Agent 主入口） |
 
 **响应扩展**（非流式 JSON 中的 `flowy_meta`）：

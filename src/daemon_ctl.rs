@@ -1,11 +1,16 @@
 use std::fs;
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crate::cli_settings::CliSettings;
 use crate::config::pid_file as config_pid_file;
+use crate::gateway::config::AppConfig;
+use crate::gateway::daemon;
+use crate::gateway::init_logging;
 use serde::Serialize;
+use tracing::{info, warn};
 
 use crate::client::GatewayClient;
 
@@ -177,29 +182,101 @@ pub async fn restart_daemon(
     start_daemon(client, settings, wait_secs).await
 }
 
-/// Spawn a detached `__serve` after the current process exits (used by POST /v1/admin/restart).
-pub fn schedule_daemon_restart(config_path: &std::path::Path) -> Result<()> {
+/// Spawn a detached helper that waits for `old_pid` to exit, then starts `__serve`.
+pub fn schedule_daemon_restart(config_path: &Path, old_pid: u32) -> Result<()> {
     let bin = resolve_gateway_bin()?;
-    let config = config_path.to_path_buf();
-    std::thread::Builder::new()
-        .name("flowy-restart".into())
-        .spawn(move || {
-            std::thread::sleep(Duration::from_millis(1200));
-            if let Err(e) = Command::new(&bin)
-                .arg("--config")
-                .arg(&config)
-                .arg("__serve")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                tracing::error!(error = %e, "failed to spawn gateway after restart");
-            }
-        })
-        .context("spawn restart thread")?;
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--config")
+        .arg(config_path)
+        .arg("__restart-wait")
+        .arg(old_pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    detach_child_process(&mut cmd);
+    cmd.spawn()
+        .with_context(|| format!("spawn restart helper {}", bin.display()))?;
     Ok(())
 }
+
+/// Wait until the gateway pid exits, then re-exec `__serve` (separate process from the dying gateway).
+pub fn run_restart_wait(old_pid: u32, config_override: Option<&Path>) -> Result<()> {
+    let app_config = AppConfig::load_from(config_override)?;
+    let log_path = init_logging(&app_config.data_dir, false)?;
+    info!(
+        old_pid,
+        config = %app_config.config_path.display(),
+        log_file = %log_path.display(),
+        "restart-wait: waiting for gateway to exit"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while daemon::is_process_alive(old_pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if daemon::is_process_alive(old_pid) {
+        bail!("timed out waiting for gateway pid {old_pid} to exit");
+    }
+
+    if daemon::read_pid(&app_config) == Some(old_pid) {
+        daemon::remove_pid_file(&app_config);
+    }
+    std::thread::sleep(Duration::from_millis(400));
+
+    let bin = resolve_gateway_bin()?;
+    for attempt in 1..=20 {
+        if daemon::is_running(&app_config) {
+            info!("gateway already running after restart-wait");
+            return Ok(());
+        }
+        let mut child_cmd = Command::new(&bin);
+        child_cmd
+            .arg("--config")
+            .arg(&app_config.config_path)
+            .arg("__serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        detach_child_process(&mut child_cmd);
+        match child_cmd.spawn() {
+            Ok(mut child) => {
+                std::thread::sleep(Duration::from_millis(800));
+                match child.try_wait() {
+                    Ok(None) => {
+                        info!(
+                            pid = child.id(),
+                            attempt,
+                            "restart-wait: spawned gateway"
+                        );
+                        return Ok(());
+                    }
+                    Ok(Some(status)) => {
+                        warn!(%status, attempt, "restart-wait: __serve exited immediately");
+                    }
+                    Err(e) => warn!(error = %e, attempt, "restart-wait: try_wait failed"),
+                }
+            }
+            Err(e) => warn!(error = %e, attempt, "restart-wait: spawn __serve failed"),
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    bail!("failed to start gateway after pid {old_pid} exited")
+}
+
+#[cfg(unix)]
+fn detach_child_process(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_child_process(_cmd: &mut Command) {}
 
 fn print_human_status(s: &crate::client::GatewayStatus) {
     println!("Flowy Gateway");

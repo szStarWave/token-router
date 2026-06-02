@@ -104,8 +104,9 @@ pub async fn restart(
         Err(resp) => return resp,
     }
 
-    let config_path = state.config().config_path.clone();
-    if let Err(e) = daemon_ctl::schedule_daemon_restart(&config_path) {
+    let config = state.config();
+    let old_pid = std::process::id();
+    if let Err(e) = daemon_ctl::schedule_daemon_restart(&config.config_path, old_pid) {
         tracing::error!(error = %e, "schedule daemon restart failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
