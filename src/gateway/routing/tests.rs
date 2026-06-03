@@ -6,6 +6,7 @@ mod tests {
     };
     use crate::config::{ConfigFile, UpstreamEndpoint};
 
+    use crate::gateway::classifier::{ClassifierSettings, ClassifierStore};
     use crate::gateway::config::AppConfig;
     use crate::gateway::experience::{ExperienceSettings, ExperienceStore, RequestOutcome};
     use crate::gateway::multimodal::MultimodalStore;
@@ -46,6 +47,13 @@ mod tests {
             .unwrap()
     }
 
+    fn test_classifier() -> std::sync::Arc<ClassifierStore> {
+        ClassifierStore::new_in_memory(ClassifierSettings {
+            min_samples: 5,
+            ..Default::default()
+        })
+    }
+
     fn decide_test(
         config: &AppConfig,
         req: &ChatCompletionRequest,
@@ -61,6 +69,27 @@ mod tests {
             multimodal,
             &EffectiveRouting::passthrough(config),
             None,
+            None,
+        )
+    }
+
+    fn decide_with_classifier(
+        config: &AppConfig,
+        req: &ChatCompletionRequest,
+        sessions: &SessionStore,
+        experience: Option<&ExperienceStore>,
+        multimodal: Option<&MultimodalStore>,
+        classifier: &ClassifierStore,
+    ) -> crate::gateway::routing::RouteDecision {
+        decide(
+            config,
+            req,
+            sessions,
+            experience,
+            multimodal,
+            &EffectiveRouting::passthrough(config),
+            None,
+            Some(classifier),
         )
     }
 
@@ -1024,6 +1053,8 @@ mod tests {
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
+            edge_ok_probability: None,
+            classifier_features: None,
         };
         sessions.apply_outcome(
             conv_key,
@@ -1127,6 +1158,8 @@ mod tests {
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
+            edge_ok_probability: None,
+            classifier_features: None,
         };
         sessions.apply_outcome(
             key,
@@ -1152,6 +1185,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
         );
         assert!(
             casual_routes_edge_or_cascade_not_cloud(decision.route),
@@ -1179,6 +1213,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
         );
         assert!(
             matches!(decision.route, RouteTier::Cloud),
@@ -1257,5 +1292,43 @@ mod tests {
             "{:?}",
             decision
         );
+    }
+
+    #[test]
+    fn classifier_emits_bayes_reason_when_enabled() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let classifier = test_classifier();
+        for _ in 0..6 {
+            classifier.record(
+                &crate::gateway::classifier::FeatureVector {
+                    keys: vec!["step_kind:direct_chat".into()],
+                },
+                RequestOutcome {
+                    edge_ok: true,
+                    cascade_fallback: false,
+                    upstream_error: false,
+                },
+                RouteTier::Edge,
+                WorkStrategy::None,
+            );
+        }
+        let decision = decide_with_classifier(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            None,
+            classifier.as_ref(),
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("BAYES_P(")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(decision.edge_ok_probability.is_some());
     }
 }

@@ -21,7 +21,7 @@ mod tests;
 pub use decision::{RouteDecision, RouteTier, RoutingMode, decide};
 pub use policy::Profile;
 pub use difficulty::DifficultyScore;
-pub use signals::SignalExtractor;
+pub use signals::{RequestSignals, SignalExtractor};
 pub use step_kind::StepKind;
 pub use upstream_availability::require_any_upstream;
 pub use work::{WorkStrategy, apply_work_route, is_plan_step, is_work_step};

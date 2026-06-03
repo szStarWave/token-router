@@ -22,6 +22,11 @@ pub struct GatewayConfigView {
     pub adaptive_verify_rate_floor: f32,
     pub adaptive_verify_rate_ceiling: f32,
     pub adaptive_max_theta_shift: f32,
+    pub classifier_enabled: bool,
+    pub classifier_min_samples: u64,
+    pub classifier_prior_alpha: f32,
+    pub classifier_decay_half_life_hours: f64,
+    pub classifier_prior_from_heuristic: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -42,6 +47,11 @@ pub struct GatewayConfigPatch {
     pub adaptive_verify_rate_floor: Option<f32>,
     pub adaptive_verify_rate_ceiling: Option<f32>,
     pub adaptive_max_theta_shift: Option<f32>,
+    pub classifier_enabled: Option<bool>,
+    pub classifier_min_samples: Option<u64>,
+    pub classifier_prior_alpha: Option<f32>,
+    pub classifier_decay_half_life_hours: Option<f64>,
+    pub classifier_prior_from_heuristic: Option<bool>,
 }
 
 impl GatewayConfigPatch {
@@ -62,6 +72,11 @@ impl GatewayConfigPatch {
             && self.adaptive_verify_rate_floor.is_none()
             && self.adaptive_verify_rate_ceiling.is_none()
             && self.adaptive_max_theta_shift.is_none()
+            && self.classifier_enabled.is_none()
+            && self.classifier_min_samples.is_none()
+            && self.classifier_prior_alpha.is_none()
+            && self.classifier_decay_half_life_hours.is_none()
+            && self.classifier_prior_from_heuristic.is_none()
     }
 }
 
@@ -125,6 +140,11 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         adaptive_verify_rate_floor: g.adaptive_verify_rate_floor,
         adaptive_verify_rate_ceiling: g.adaptive_verify_rate_ceiling,
         adaptive_max_theta_shift: g.adaptive_max_theta_shift,
+        classifier_enabled: g.classifier_enabled,
+        classifier_min_samples: g.classifier_min_samples,
+        classifier_prior_alpha: g.classifier_prior_alpha,
+        classifier_decay_half_life_hours: g.classifier_decay_half_life_hours,
+        classifier_prior_from_heuristic: g.classifier_prior_from_heuristic,
     }
 }
 
@@ -254,6 +274,21 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     }
     if let Some(v) = patch.adaptive_max_theta_shift {
         g.adaptive_max_theta_shift = clamp_range_f32(v, 0.0, 0.5, "adaptive_max_theta_shift")?;
+    }
+    if let Some(v) = patch.classifier_enabled {
+        g.classifier_enabled = v;
+    }
+    if let Some(v) = patch.classifier_min_samples {
+        g.classifier_min_samples = v;
+    }
+    if let Some(v) = patch.classifier_prior_alpha {
+        g.classifier_prior_alpha = clamp_range_f32(v, 0.0, 100.0, "classifier_prior_alpha")?;
+    }
+    if let Some(v) = patch.classifier_decay_half_life_hours {
+        g.classifier_decay_half_life_hours = v.max(0.0);
+    }
+    if let Some(v) = patch.classifier_prior_from_heuristic {
+        g.classifier_prior_from_heuristic = v;
     }
     if g.adaptive_verify_rate_floor > g.adaptive_verify_rate_ceiling {
         return Err(

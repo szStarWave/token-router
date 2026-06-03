@@ -1,3 +1,4 @@
+pub mod classifier;
 pub mod config_manager;
 pub mod edge_load;
 pub mod api;

@@ -47,6 +47,11 @@ pub fn flowy_meta_headers(decision: &RouteDecision, fallback: bool) -> HeaderMap
     if let Ok(v) = HeaderValue::from_str(&format!("{:.4}", decision.difficulty)) {
         headers.insert("x-flowy-difficulty", v);
     }
+    if let Some(p) = decision.edge_ok_probability {
+        if let Ok(v) = HeaderValue::from_str(&format!("{:.4}", p)) {
+            headers.insert("x-flowy-edge-prob", v);
+        }
+    }
     if !decision.reason_codes.is_empty() {
         let joined = decision.reason_codes.join(",");
         if let Ok(v) = HeaderValue::from_str(&joined) {

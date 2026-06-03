@@ -49,14 +49,17 @@ pub async fn stats(
     };
     let _ = state.stats.flush_if_dirty();
     let _ = state.experience.flush_if_dirty();
+    let _ = state.classifier.flush_if_dirty();
     let _ = state.sessions.flush_if_dirty();
     let uptime = state.stats.session_uptime_secs();
     let experience = Some(state.experience.snapshot());
+    let classifier = Some(state.classifier.snapshot());
     let effective_routing = Some(state.adaptive_tuner.snapshot());
     Ok(Json(state.stats.snapshot(
         scope,
         uptime,
         experience,
+        classifier,
         effective_routing,
     )))
 }
@@ -151,6 +154,9 @@ fn flush_before_exit(state: &AppState) {
     }
     if let Err(e) = state.experience.flush() {
         tracing::warn!(error = %e, "experience flush before exit failed");
+    }
+    if let Err(e) = state.classifier.flush() {
+        tracing::warn!(error = %e, "classifier flush before exit failed");
     }
     if let Err(e) = state.sessions.flush() {
         tracing::warn!(error = %e, "session flush before exit failed");

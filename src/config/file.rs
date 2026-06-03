@@ -61,6 +61,16 @@ pub struct GatewaySection {
     pub adaptive_verify_rate_ceiling: f32,
     #[serde(default = "default_adaptive_max_theta_shift")]
     pub adaptive_max_theta_shift: f32,
+    #[serde(default = "default_classifier_enabled")]
+    pub classifier_enabled: bool,
+    #[serde(default = "default_classifier_min_samples")]
+    pub classifier_min_samples: u64,
+    #[serde(default = "default_classifier_prior_alpha")]
+    pub classifier_prior_alpha: f32,
+    #[serde(default = "default_classifier_decay_half_life_hours")]
+    pub classifier_decay_half_life_hours: f64,
+    #[serde(default = "default_classifier_prior_from_heuristic")]
+    pub classifier_prior_from_heuristic: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -157,6 +167,26 @@ fn default_adaptive_max_theta_shift() -> f32 {
     0.05
 }
 
+fn default_classifier_enabled() -> bool {
+    true
+}
+
+fn default_classifier_min_samples() -> u64 {
+    100
+}
+
+fn default_classifier_prior_alpha() -> f32 {
+    1.0
+}
+
+fn default_classifier_decay_half_life_hours() -> f64 {
+    168.0
+}
+
+fn default_classifier_prior_from_heuristic() -> bool {
+    true
+}
+
 impl Default for GatewaySection {
     fn default() -> Self {
         Self {
@@ -179,6 +209,11 @@ impl Default for GatewaySection {
             adaptive_verify_rate_floor: default_adaptive_verify_rate_floor(),
             adaptive_verify_rate_ceiling: default_adaptive_verify_rate_ceiling(),
             adaptive_max_theta_shift: default_adaptive_max_theta_shift(),
+            classifier_enabled: default_classifier_enabled(),
+            classifier_min_samples: default_classifier_min_samples(),
+            classifier_prior_alpha: default_classifier_prior_alpha(),
+            classifier_decay_half_life_hours: default_classifier_decay_half_life_hours(),
+            classifier_prior_from_heuristic: default_classifier_prior_from_heuristic(),
         }
     }
 }
@@ -233,6 +268,11 @@ ctx_edge_max_tokens = 65536
 # adaptive_verify_rate_floor = 0.05
 # adaptive_verify_rate_ceiling = 0.45
 # adaptive_max_theta_shift = 0.05
+# classifier_enabled = true
+# classifier_min_samples = 100
+# classifier_prior_alpha = 1.0
+# classifier_decay_half_life_hours = 168
+# classifier_prior_from_heuristic = true
 
 # [upstream.cloud]
 # base_url = "https://api.deepseek.com/v1"

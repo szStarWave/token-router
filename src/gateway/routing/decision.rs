@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use crate::gateway::api::openai::ChatCompletionRequest;
+use crate::gateway::classifier::{ClassifierStore, FeatureVector};
 use crate::gateway::config::AppConfig;
 use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::{MultimodalStore, MultimodalStrategy};
@@ -70,6 +71,11 @@ pub struct RouteDecision {
     /// Set when tool-error streak or similar gates recommend cloud stickiness.
     #[serde(skip)]
     pub force_cloud_sticky: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge_ok_probability: Option<f32>,
+    /// Features captured at decision time for classifier learning.
+    #[serde(skip)]
+    pub classifier_features: Option<FeatureVector>,
 }
 
 pub fn decide(
@@ -80,6 +86,7 @@ pub fn decide(
     multimodal: Option<&MultimodalStore>,
     routing: &EffectiveRouting,
     edge_load: Option<&EdgeInferenceTracker>,
+    classifier: Option<&ClassifierStore>,
 ) -> RouteDecision {
     let profile = config.default_profile;
     let mode = config.routing_mode;
@@ -93,6 +100,7 @@ pub fn decide(
     };
     let signals = extractor.extract(req, prev_tok);
     let step_kind = resolve_step_kind(req, &signals);
+    let features = FeatureVector::from_signals(&signals, step_kind, config.ctx_edge_max_tokens);
 
     let mut reason_codes = Vec::new();
     reason_codes.push(format!("STEP_{}", step_kind_code(step_kind)));
@@ -123,6 +131,8 @@ pub fn decide(
             signals.assistant_failed_recent,
             mm,
             work,
+            None,
+            Some(features),
         );
     }
 
@@ -150,6 +160,8 @@ pub fn decide(
             signals.assistant_failed_recent,
             MultimodalStrategy::None,
             WorkStrategy::None,
+            None,
+            Some(features),
         );
     }
 
@@ -157,13 +169,20 @@ pub fn decide(
     if exp_bias.abs() > f32::EPSILON {
         reason_codes.push(format!("EXP_BIAS_{exp_bias:+.2}"));
     }
-    let d = DifficultyScore::compute(
+    let d_heuristic = DifficultyScore::compute(
         &signals,
         step_kind,
         config.ctx_edge_max_tokens,
         exp_bias,
     );
-    let mut route = policy::map_policy_with_thresholds(
+    let (difficulty, edge_ok_probability) = apply_classifier(
+        classifier,
+        &features,
+        d_heuristic.0,
+        &mut reason_codes,
+    );
+    let d = DifficultyScore(difficulty);
+    let route = policy::map_policy_with_thresholds(
         d,
         step_kind,
         profile,
@@ -188,7 +207,7 @@ pub fn decide(
         }
     }
 
-    reason_codes.push(format!("DIFFICULTY_{:.2}", d.0));
+    reason_codes.push(format!("DIFFICULTY_{:.2}", difficulty));
     reason_codes.push(format!("TOK_IN_{}", signals.tok_total_in));
     reason_codes.push(format!("TOK_DELTA_{}", signals.tok_loop_delta));
 
@@ -235,12 +254,35 @@ pub fn decide(
         &signals,
         reason_codes,
         cloud_input_saved(route, &signals),
-        d.0,
+        difficulty,
         conv_key,
         signals.assistant_failed_recent,
         multimodal_strategy,
         work_strategy,
+        edge_ok_probability,
+        Some(features),
     )
+}
+
+fn apply_classifier(
+    classifier: Option<&ClassifierStore>,
+    features: &FeatureVector,
+    d_heuristic: f32,
+    reason_codes: &mut Vec<String>,
+) -> (f32, Option<f32>) {
+    let Some(clf) = classifier else {
+        return (d_heuristic, None);
+    };
+    let pred = clf.predict_and_fuse(features, d_heuristic);
+    if pred.bayes_weight > f32::EPSILON {
+        if let Some(p) = pred.edge_ok_probability {
+            reason_codes.push(format!("BAYES_P({p:.2})"));
+            if !pred.warmed_up {
+                reason_codes.push("BAYES_COLD_START".to_string());
+            }
+        }
+    }
+    (pred.difficulty, pred.edge_ok_probability)
 }
 
 fn apply_sticky_cascade(
@@ -349,6 +391,8 @@ fn finish(
     assistant_failed_recent: bool,
     multimodal_strategy: MultimodalStrategy,
     work_strategy: WorkStrategy,
+    edge_ok_probability: Option<f32>,
+    classifier_features: Option<FeatureVector>,
 ) -> RouteDecision {
     let force_cloud_sticky = reason_codes
         .iter()
@@ -368,6 +412,8 @@ fn finish(
         multimodal_strategy,
         work_strategy,
         force_cloud_sticky,
+        edge_ok_probability,
+        classifier_features,
     }
 }
 

@@ -191,7 +191,7 @@ mod tests {
         );
         while stream.next().await.is_some() {}
 
-        let snap = stats.snapshot(crate::gateway::stats::StatsScope::Session, 1, None, None);
+        let snap = stats.snapshot(crate::gateway::stats::StatsScope::Session, 1, None, None, None);
         assert_eq!(snap.token_breakdown.edge.input, 10);
         assert_eq!(snap.token_breakdown.edge.output, 5);
         assert_eq!(snap.cache.cached_tokens, 3);

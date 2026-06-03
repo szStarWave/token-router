@@ -44,6 +44,7 @@ pub async fn chat_completions(
         Some(state.multimodal.as_ref()),
         &routing,
         Some(state.edge_load.as_ref()),
+        Some(state.classifier.as_ref()),
     );
     state.stats.record_decision(&decision);
 
@@ -120,6 +121,14 @@ fn record_learning(
     state
         .experience
         .record_outcome(decision.step_kind, outcome);
+    if let Some(features) = decision.classifier_features.as_ref() {
+        state.classifier.record(
+            features,
+            outcome,
+            decision.route,
+            decision.work_strategy,
+        );
+    }
     state.sessions.apply_outcome(
         conv_key,
         decision,

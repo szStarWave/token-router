@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use crate::gateway::config::AppConfig;
+use crate::gateway::classifier::{ClassifierSettings, ClassifierSnapshot, ClassifierStore};
 use crate::gateway::experience::{ExperienceSettings, ExperienceSnapshot, ExperienceStore};
 use crate::gateway::routing::compute_effective_routing;
 use crate::gateway::stats::{self, StatsScope};
@@ -91,6 +92,13 @@ struct StatsLabels {
     bad_request: &'static str,
     section_step_kinds: &'static str,
     section_experience: &'static str,
+    section_classifier: &'static str,
+    classifier_enabled: &'static str,
+    classifier_file: &'static str,
+    classifier_total_samples: &'static str,
+    classifier_total_updates: &'static str,
+    classifier_last_retrain: &'static str,
+    classifier_top_cloud: &'static str,
     experience_enabled: &'static str,
     experience_file: &'static str,
     exp_last_updated: &'static str,
@@ -195,6 +203,13 @@ fn labels(lang: StatsLang) -> StatsLabels {
             bad_request: "bad_request",
             section_step_kinds: "Step kinds",
             section_experience: "Experience (routing learning)",
+            section_classifier: "Bayesian classifier",
+            classifier_enabled: "enabled",
+            classifier_file: "file",
+            classifier_total_samples: "total samples",
+            classifier_total_updates: "labeled updates",
+            classifier_last_retrain: "last retrain (unix)",
+            classifier_top_cloud: "top cloud-driving features",
             experience_enabled: "enabled",
             experience_file: "file",
             exp_last_updated: "last updated (unix)",
@@ -296,6 +311,13 @@ fn labels(lang: StatsLang) -> StatsLabels {
             bad_request: "错误请求",
             section_step_kinds: "步骤类型",
             section_experience: "经验学习（路由）",
+            section_classifier: "贝叶斯分类器",
+            classifier_enabled: "已启用",
+            classifier_file: "文件",
+            classifier_total_samples: "总样本",
+            classifier_total_updates: "标注更新",
+            classifier_last_retrain: "上次重训 (unix)",
+            classifier_top_cloud: "升云特征 Top",
             experience_enabled: "已启用",
             experience_file: "文件",
             exp_last_updated: "最后更新 (unix)",
@@ -382,7 +404,33 @@ pub struct GatewayStats {
     pub errors: ErrorCounts,
     pub step_kinds: std::collections::HashMap<String, u64>,
     pub experience: Option<ExperienceSection>,
+    pub classifier: Option<ClassifierSection>,
     pub effective_routing: Option<AdaptiveRoutingSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifierSection {
+    pub enabled: bool,
+    pub classifier_file: String,
+    pub last_updated_at_unix: Option<u64>,
+    pub last_retrain_at_unix: Option<u64>,
+    pub total_samples: u64,
+    pub total_updates: u64,
+    pub decay_generation: u64,
+    pub min_samples: u64,
+    pub prior_alpha: f32,
+    pub decay_half_life_hours: f64,
+    pub prior_edge_ok: u64,
+    pub prior_cloud_needed: u64,
+    pub top_cloud_features: Vec<ClassifierFeatureRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifierFeatureRow {
+    pub feature: String,
+    pub edge_ok: u64,
+    pub cloud_needed: u64,
+    pub cloud_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +637,7 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
     let data = stats::data::load(&stats_path)?;
     let data_dir = crate::config::app_dir()?;
     let experience = experience_snapshot_from_disk(&data_dir, settings).ok();
+    let classifier = classifier_snapshot_from_disk(&data_dir, settings).ok();
     let effective_routing = experience.as_ref().and_then(|exp| {
         let config = AppConfig::from_file(settings.file.clone(), settings.config_path.clone()).ok()?;
         Some(compute_effective_routing(
@@ -604,6 +653,7 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
         stats_path.display().to_string(),
         0,
         experience,
+        classifier,
         effective_routing,
     );
     Ok(from_snapshot(snap))
@@ -621,6 +671,25 @@ fn experience_snapshot_from_disk(
             learning_rate: gw.experience_learning_rate,
             max_bias: gw.experience_max_bias,
             target_fallback: gw.experience_target_fallback,
+        },
+    )?;
+    Ok(store.snapshot())
+}
+
+fn classifier_snapshot_from_disk(
+    data_dir: &std::path::Path,
+    settings: &CliSettings,
+) -> Result<ClassifierSnapshot> {
+    let gw = settings.file.gateway.clone();
+    let store = ClassifierStore::open(
+        data_dir,
+        ClassifierSettings {
+            enabled: gw.classifier_enabled,
+            min_samples: gw.classifier_min_samples,
+            prior_alpha: gw.classifier_prior_alpha,
+            decay_half_life_hours: gw.classifier_decay_half_life_hours,
+            prior_from_heuristic: gw.classifier_prior_from_heuristic,
+            min_feature_count: 0.5,
         },
     )?;
     Ok(store.snapshot())
@@ -706,7 +775,35 @@ fn from_snapshot(s: stats::StatsSnapshot) -> GatewayStats {
         },
         step_kinds: s.step_kinds,
         experience: s.experience.map(experience_from_snapshot),
+        classifier: s.classifier.map(classifier_from_snapshot),
         effective_routing: s.effective_routing.map(adaptive_from_snapshot),
+    }
+}
+
+fn classifier_from_snapshot(c: ClassifierSnapshot) -> ClassifierSection {
+    ClassifierSection {
+        enabled: c.enabled,
+        classifier_file: c.classifier_file,
+        last_updated_at_unix: c.last_updated_at_unix,
+        last_retrain_at_unix: c.last_retrain_at_unix,
+        total_samples: c.total_samples,
+        total_updates: c.total_updates,
+        decay_generation: c.decay_generation,
+        min_samples: c.min_samples,
+        prior_alpha: c.prior_alpha,
+        decay_half_life_hours: c.decay_half_life_hours,
+        prior_edge_ok: c.prior.edge_ok,
+        prior_cloud_needed: c.prior.cloud_needed,
+        top_cloud_features: c
+            .top_cloud_features
+            .into_iter()
+            .map(|f| ClassifierFeatureRow {
+                feature: f.feature,
+                edge_ok: f.edge_ok,
+                cloud_needed: f.cloud_needed,
+                cloud_rate: f.cloud_rate,
+            })
+            .collect(),
     }
 }
 
@@ -1000,6 +1097,9 @@ fn print_human(s: &GatewayStats, gateway_url: &str, lang: StatsLang) {
     if let Some(exp) = &s.experience {
         print_experience(&f, &l, exp, lang);
     }
+    if let Some(clf) = &s.classifier {
+        print_classifier(&f, &l, clf);
+    }
     if let Some(adaptive) = &s.effective_routing {
         print_adaptive(&f, &l, adaptive);
     }
@@ -1063,6 +1163,32 @@ fn print_step_kinds(f: &Fmt, l: &StatsLabels, s: &GatewayStats) {
             f.indent,
             fmt_u(*count),
             name_w = name_w
+        );
+    }
+}
+
+fn print_classifier(f: &Fmt, l: &StatsLabels, clf: &ClassifierSection) {
+    f.section(l.section_classifier);
+    f.kv(l.classifier_enabled, clf.enabled);
+    f.kv(l.classifier_file, &clf.classifier_file);
+    f.kv(l.classifier_total_samples, fmt_u(clf.total_samples));
+    f.kv(l.classifier_total_updates, fmt_u(clf.total_updates));
+    if let Some(ts) = clf.last_retrain_at_unix {
+        f.kv(l.classifier_last_retrain, ts);
+    }
+    if clf.top_cloud_features.is_empty() {
+        return;
+    }
+    println!();
+    f.kv_note(l.classifier_top_cloud);
+    for row in &clf.top_cloud_features {
+        println!(
+            "{}  {:<28} {:>6} {:>6} {:>6.1}%",
+            f.indent,
+            row.feature,
+            fmt_u(row.edge_ok),
+            fmt_u(row.cloud_needed),
+            row.cloud_rate * 100.0
         );
     }
 }

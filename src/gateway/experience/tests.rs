@@ -23,6 +23,8 @@ mod tests {
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
+            edge_ok_probability: None,
+            classifier_features: None,
         }
     }
 

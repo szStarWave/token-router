@@ -57,6 +57,13 @@ ctx_edge_max_tokens = 65536
 # adaptive_verify_rate_ceiling = 0.45
 # adaptive_max_theta_shift = 0.05      # 健康时放宽 θ_edge，提高端侧占比
 
+# --- 贝叶斯分类器（持久化 classifier.json）---
+# classifier_enabled = true
+# classifier_min_samples = 100        # 低于此值完全使用启发式 difficulty
+# classifier_prior_alpha = 1.0        # Laplace 平滑
+# classifier_decay_half_life_hours = 168
+# classifier_prior_from_heuristic = true
+
 # ---------------------------------------------------------------------------
 # 上游（OpenAI 兼容 Chat Completions）
 # ---------------------------------------------------------------------------

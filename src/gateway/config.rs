@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::config::ConfigFile;
 use crate::config::{ensure_initialized, load_from_path, setup::endpoint_configured};
 
+use crate::gateway::classifier::ClassifierSettings;
 use crate::gateway::experience::ExperienceSettings;
 use crate::gateway::routing::{Profile, RouteTier, RoutingMode};
 
@@ -41,6 +42,7 @@ pub struct AppConfig {
     /// Work-step cloud verification sample rate in `[0.0, 1.0]` (config baseline).
     pub work_verify_sample_rate: f32,
     pub adaptive_routing: AdaptiveRoutingSettings,
+    pub classifier: ClassifierSettings,
 }
 
 impl AppConfig {
@@ -125,6 +127,14 @@ impl AppConfig {
                 verify_rate_floor: file.gateway.adaptive_verify_rate_floor.clamp(0.0, 1.0),
                 verify_rate_ceiling: file.gateway.adaptive_verify_rate_ceiling.clamp(0.0, 1.0),
                 max_theta_shift: file.gateway.adaptive_max_theta_shift.max(0.0),
+            },
+            classifier: ClassifierSettings {
+                enabled: file.gateway.classifier_enabled,
+                min_samples: file.gateway.classifier_min_samples,
+                prior_alpha: file.gateway.classifier_prior_alpha.max(0.0),
+                decay_half_life_hours: file.gateway.classifier_decay_half_life_hours.max(0.0),
+                prior_from_heuristic: file.gateway.classifier_prior_from_heuristic,
+                min_feature_count: 0.5,
             },
         })
     }

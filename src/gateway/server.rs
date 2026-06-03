@@ -18,6 +18,7 @@ use crate::gateway::config_manager::ConfigManager;
 use crate::gateway::daemon;
 use crate::config::sessions_dir;
 
+use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::MultimodalStore;
 use crate::gateway::session::SessionStore;
@@ -95,6 +96,10 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let experience = ExperienceStore::open(&config.data_dir, config.experience.clone())?;
     experience.spawn_flush_task();
 
+    let classifier = ClassifierStore::open(&config.data_dir, config.classifier.clone())?;
+    classifier.spawn_flush_task();
+    classifier.spawn_decay_task();
+
     let multimodal = MultimodalStore::open(&config.data_dir)?;
     multimodal.spawn_flush_task();
 
@@ -104,6 +109,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
 
     let sessions_for_shutdown = sessions.clone();
     let experience_for_shutdown = experience.clone();
+    let classifier_for_shutdown = classifier.clone();
     let multimodal_for_shutdown = multimodal.clone();
     let multimodal_for_upstream = multimodal.clone();
     let initial_routing = {
@@ -118,6 +124,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
         config_mgr: config_mgr.clone(),
         sessions,
         experience,
+        classifier,
         multimodal,
         upstream: UpstreamClient::new(
             config_mgr,
@@ -184,6 +191,9 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     }
     if let Err(e) = experience_for_shutdown.flush() {
         tracing::warn!(error = %e, "final experience flush failed");
+    }
+    if let Err(e) = classifier_for_shutdown.flush() {
+        tracing::warn!(error = %e, "final classifier flush failed");
     }
     if let Err(e) = multimodal_for_shutdown.flush() {
         tracing::warn!(error = %e, "final multimodal capability flush failed");

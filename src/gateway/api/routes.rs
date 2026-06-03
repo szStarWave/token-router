@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::gateway::api::admin;
 use crate::gateway::api::chat::chat_completions;
 use crate::gateway::api::setup;
+use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::config_manager::ConfigManager;
 use crate::gateway::server::GatewayRuntime;
 use crate::gateway::edge_load::EdgeInferenceTracker;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub config_mgr: Arc<ConfigManager>,
     pub sessions: Arc<SessionStore>,
     pub experience: Arc<ExperienceStore>,
+    pub classifier: Arc<ClassifierStore>,
     pub multimodal: Arc<MultimodalStore>,
     pub upstream: UpstreamClient,
     pub runtime: Arc<GatewayRuntime>,
@@ -42,6 +44,8 @@ impl AppState {
     pub fn apply_runtime_config(&self, config: &crate::gateway::config::AppConfig) {
         self.experience
             .update_settings(config.experience.clone());
+        self.classifier
+            .update_settings(config.classifier.clone());
         self.adaptive_tuner.recompute(config, self.experience.as_ref(), &self.stats);
     }
 }
