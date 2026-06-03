@@ -62,10 +62,6 @@ pub fn map_policy_with_thresholds(
     theta_edge: f32,
     theta_cloud: f32,
 ) -> RouteTier {
-    if matches!(step_kind, StepKind::HeartbeatAck | StepKind::DirectChat) {
-        return RouteTier::Edge;
-    }
-
     if profile == Profile::Privacy {
         if step_kind == StepKind::RecoveryAfterFailure {
             return RouteTier::Cloud;

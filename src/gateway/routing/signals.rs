@@ -4,11 +4,15 @@ use crate::gateway::api::openai::{ChatCompletionRequest, Message, Role};
 pub struct RequestSignals {
     pub tok_system: u32,
     pub tok_tools_schema: u32,
+    /// Messages excluding system (user/assistant/tool transcript).
+    pub tok_rest: u32,
     pub tok_total_in: u32,
     pub tok_loop_delta: u32,
     pub tok_out_estimate: u32,
     pub n_tool_defs: u32,
     pub n_turns: u32,
+    /// Token estimate for the latest user message only.
+    pub last_user_tok: u32,
     pub loop_steps: u32,
     pub pending_tool_calls: bool,
     pub tool_arg_ready: bool,
@@ -40,16 +44,32 @@ pub fn is_casual_chat(signals: &RequestSignals) -> bool {
     {
         return false;
     }
-    if signals.tok_total_in >= 8192 || signals.n_turns > 4 {
+    if signals.tok_rest >= 8192 || signals.n_turns > 8 {
         return false;
     }
     // Vision + tool schema together usually means an agent task, not daily chat.
     if signals.multimodal && signals.tools_enabled {
         return false;
     }
-    // Mid-loop agent turn: require easy intent on the latest user message.
-    if signals.loop_steps > 0 && !signals.intent_easy {
-        return false;
+    // Mid-loop agent with tools: require easy intent (OpenClaw tool loop).
+    if signals.loop_steps > 0 && signals.tools_enabled {
+        if signals.intent_plan {
+            return false;
+        }
+        return signals.intent_easy;
+    }
+    // Mid-loop without tools: short follow-up counts as casual.
+    if signals.loop_steps > 0 {
+        if signals.intent_plan {
+            return false;
+        }
+        if signals.intent_easy {
+            return true;
+        }
+        const MID_LOOP_USER_MAX: u32 = 512;
+        if signals.last_user_tok > MID_LOOP_USER_MAX {
+            return false;
+        }
     }
     true
 }
@@ -182,6 +202,14 @@ impl SignalExtractor {
             .map(|m| message_text(m))
             .is_some_and(|t| contains_plan_intent(&t));
 
+        let last_user_tok = req
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(estimate_message_tokens)
+            .unwrap_or(0);
+
         let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
 
         let risky_tool_tier1 = prev_assistant
@@ -198,11 +226,13 @@ impl SignalExtractor {
         RequestSignals {
             tok_system,
             tok_tools_schema,
+            tok_rest,
             tok_total_in,
             tok_loop_delta,
             tok_out_estimate: 0,
             n_tool_defs: req.tools.len() as u32,
             n_turns,
+            last_user_tok,
             loop_steps,
             pending_tool_calls,
             tool_arg_ready,
@@ -329,6 +359,25 @@ fn contains_easy_intent(text: &str) -> bool {
         "current time",
         "现在几点",
         "什么时间",
+        "天气",
+        "weather",
+        "笑话",
+        "joke",
+        "谢谢",
+        "thanks",
+        "再见",
+        "bye",
+        "聊聊",
+        "chat",
+        "介绍一下",
+        "是谁",
+        "什么意思",
+        "怎么样",
+        "可以吗",
+        "继续",
+        "还有吗",
+        "再说",
+        "再讲",
     ];
     let lower = text.to_ascii_lowercase();
     KWS.iter().any(|k| lower.contains(k))
@@ -449,6 +498,113 @@ mod tests {
             },
         ];
         assert_eq!(consecutive_tool_error_tail(&messages), 1);
+    }
+
+    #[test]
+    fn casual_ignores_system_and_tools_in_token_budget() {
+        let signals = RequestSignals {
+            tok_system: 50_000,
+            tok_tools_schema: 20_000,
+            tok_rest: 50,
+            tok_total_in: 70_050,
+            tok_loop_delta: 0,
+            tok_out_estimate: 0,
+            n_tool_defs: 3,
+            n_turns: 1,
+            last_user_tok: 20,
+            loop_steps: 0,
+            pending_tool_calls: false,
+            tool_arg_ready: false,
+            last_role_tool: false,
+            synthetic_tool_result: false,
+            assistant_failed_recent: false,
+            is_heartbeat_poll: false,
+            voice_repair_loop: false,
+            subagent_spawn_hint: false,
+            memory_compact_hint: false,
+            cron_background: false,
+            tools_enabled: true,
+            had_tool_roundtrip: false,
+            risky_tool_tier1: false,
+            intent_hard: false,
+            intent_easy: true,
+            intent_plan: false,
+            multimodal: false,
+            consecutive_tool_error_streak: 0,
+        };
+        assert!(is_casual_chat(&signals));
+    }
+
+    #[test]
+    fn casual_mid_loop_with_tools_requires_easy_keyword() {
+        let signals = RequestSignals {
+            tok_system: 1000,
+            tok_tools_schema: 500,
+            tok_rest: 200,
+            tok_total_in: 1700,
+            tok_loop_delta: 0,
+            tok_out_estimate: 0,
+            n_tool_defs: 1,
+            n_turns: 2,
+            last_user_tok: 30,
+            loop_steps: 1,
+            pending_tool_calls: false,
+            tool_arg_ready: false,
+            last_role_tool: false,
+            synthetic_tool_result: false,
+            assistant_failed_recent: false,
+            is_heartbeat_poll: false,
+            voice_repair_loop: false,
+            subagent_spawn_hint: false,
+            memory_compact_hint: false,
+            cron_background: false,
+            tools_enabled: true,
+            had_tool_roundtrip: false,
+            risky_tool_tier1: false,
+            intent_hard: false,
+            intent_easy: false,
+            intent_plan: false,
+            multimodal: false,
+            consecutive_tool_error_streak: 0,
+        };
+        assert!(!is_casual_chat(&signals));
+    }
+
+    #[test]
+    fn casual_mid_loop_with_tools_and_easy_keyword() {
+        let mut signals = RequestSignals {
+            tok_system: 1000,
+            tok_tools_schema: 500,
+            tok_rest: 200,
+            tok_total_in: 1700,
+            tok_loop_delta: 0,
+            tok_out_estimate: 0,
+            n_tool_defs: 1,
+            n_turns: 2,
+            last_user_tok: 30,
+            loop_steps: 1,
+            pending_tool_calls: false,
+            tool_arg_ready: false,
+            last_role_tool: false,
+            synthetic_tool_result: false,
+            assistant_failed_recent: false,
+            is_heartbeat_poll: false,
+            voice_repair_loop: false,
+            subagent_spawn_hint: false,
+            memory_compact_hint: false,
+            cron_background: false,
+            tools_enabled: true,
+            had_tool_roundtrip: false,
+            risky_tool_tier1: false,
+            intent_hard: false,
+            intent_easy: true,
+            intent_plan: false,
+            multimodal: false,
+            consecutive_tool_error_streak: 0,
+        };
+        assert!(is_casual_chat(&signals));
+        signals.intent_easy = false;
+        assert!(!is_casual_chat(&signals));
     }
 }
 

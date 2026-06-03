@@ -64,6 +64,7 @@ http://<gateway.listen>/v1
 | 目标 | 建议 |
 |------|------|
 | 更多走端侧 | `default_profile = "economy"` 或参考 [config.economy.toml](./config.economy.toml)；保持 `adaptive_routing_enabled = true` |
+| OpenClaw 日常仍升云 | `step_kind` 应为 `direct_chat`/`heartbeat_ack`；路由可为 **edge 或 cascade**（非强制端侧）；大 system/tools 不计入 casual 预算 |
 | 复杂任务更稳 | 提高 `work_verify_sample_rate`（如 0.2）；或 `default_profile = "premium"` |
 | 关闭运行时微调 | `adaptive_routing_enabled = false`（仍保留经验学习） |
 | 固定路由 | `route = edge` / `cloud` / `cascade`（见 [config.edge-only.toml](./config.edge-only.toml)） |

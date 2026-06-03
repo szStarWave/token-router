@@ -2,6 +2,7 @@ use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::multimodal::MultimodalStrategy;
 
 use super::decision::RouteTier;
+use super::step_kind::StepKind;
 use super::upstream_availability::{cloud_configured, edge_configured};
 use super::work::WorkStrategy;
 use crate::gateway::config::AppConfig;
@@ -22,6 +23,7 @@ pub fn apply_edge_busy_fallback(
     route: RouteTier,
     work: WorkStrategy,
     multimodal: MultimodalStrategy,
+    step_kind: StepKind,
     config: &AppConfig,
     edge_load: Option<&EdgeInferenceTracker>,
     reason_codes: &mut Vec<String>,
@@ -29,6 +31,9 @@ pub fn apply_edge_busy_fallback(
     let Some(tracker) = edge_load else {
         return (route, work, multimodal);
     };
+    if matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck) {
+        return (route, work, multimodal);
+    }
     if !tracker.is_busy() || !cloud_configured(config) || !would_use_edge(route, work, multimodal) {
         return (route, work, multimodal);
     }
@@ -96,6 +101,7 @@ mod tests {
             RouteTier::Edge,
             WorkStrategy::None,
             MultimodalStrategy::None,
+            StepKind::ToolSelect,
             &config,
             Some(tracker.as_ref()),
             &mut codes,
@@ -126,6 +132,7 @@ mod tests {
             RouteTier::Edge,
             WorkStrategy::None,
             MultimodalStrategy::None,
+            StepKind::ToolSelect,
             &config,
             Some(tracker.as_ref()),
             &mut codes,
@@ -144,6 +151,7 @@ mod tests {
             RouteTier::Cascade,
             WorkStrategy::Verify,
             MultimodalStrategy::None,
+            StepKind::ToolSelect,
             &config,
             Some(tracker.as_ref()),
             &mut codes,
@@ -152,5 +160,24 @@ mod tests {
         assert_eq!(work, WorkStrategy::None);
         assert_eq!(mm, MultimodalStrategy::None);
         assert!(codes.iter().any(|c| c == "GATE_EDGE_BUSY"));
+    }
+
+    #[test]
+    fn busy_does_not_redirect_direct_chat() {
+        let config = dual_config();
+        let tracker = EdgeInferenceTracker::new();
+        let _g = tracker.begin();
+        let mut codes = Vec::new();
+        let (route, _, _) = apply_edge_busy_fallback(
+            RouteTier::Edge,
+            WorkStrategy::None,
+            MultimodalStrategy::None,
+            StepKind::DirectChat,
+            &config,
+            Some(tracker.as_ref()),
+            &mut codes,
+        );
+        assert_eq!(route, RouteTier::Edge);
+        assert!(!codes.iter().any(|c| c == "GATE_EDGE_BUSY"));
     }
 }

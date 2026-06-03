@@ -164,11 +164,13 @@ mod tests {
         RequestSignals {
             tok_system: 0,
             tok_tools_schema: 0,
+            tok_rest: 512,
             tok_total_in: 512,
             tok_loop_delta: 0,
             tok_out_estimate: 0,
             n_tool_defs: 1,
             n_turns: 1,
+            last_user_tok: 100,
             loop_steps: 1,
             pending_tool_calls: false,
             tool_arg_ready: false,

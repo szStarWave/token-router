@@ -201,6 +201,10 @@ mod tests {
         }
     }
 
+    fn casual_routes_edge_or_cascade_not_cloud(route: RouteTier) -> bool {
+        matches!(route, RouteTier::Edge | RouteTier::Cascade)
+    }
+
     #[test]
     fn casual_chat_with_tool_schema_prefers_edge() {
         let cfg = test_config(true, true);
@@ -214,8 +218,8 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
         assert!(
-            matches!(decision.route, RouteTier::Edge),
-            "tool schema alone must not block casual edge route: {:?}",
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "casual should not force cloud: {:?}",
             decision
         );
     }
@@ -233,8 +237,8 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
         assert!(
-            matches!(decision.route, RouteTier::Edge),
-            "expected edge, got {:?} reasons {:?}",
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "casual greeting: {:?} {:?}",
             decision.route,
             decision.reason_codes
         );
@@ -253,8 +257,8 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::HeartbeatAck, "{:?}", decision);
         assert!(
-            matches!(decision.route, RouteTier::Edge),
-            "expected edge, got {:?} reasons {:?}",
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "heartbeat casual: {:?} {:?}",
             decision.route,
             decision.reason_codes
         );
@@ -362,6 +366,77 @@ mod tests {
         "Use sessions_spawn for larger work. Do not poll subagents in a loop.".into()
     }
 
+    /// Simulates OpenClaw-sized system + tool schema with a short user turn.
+    fn openclaw_large_prompt_daily_request() -> ChatCompletionRequest {
+        let system_blob = "OpenClaw agent context. ".repeat(8_000);
+        let tools = (0..40)
+            .map(|i| ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: format!("tool_{i}"),
+                    description: Some("parameter docs and examples".repeat(20)),
+                    parameters: serde_json::json!({"type":"object","properties":{"x":{"type":"string"}}}),
+                },
+            })
+            .collect();
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: Some(system_blob),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("你好，今天天气怎么样？".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools,
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn openclaw_large_prompt_daily_routes_casual_not_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_large_prompt_daily_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(
+            decision.step_kind,
+            StepKind::DirectChat,
+            "short user + huge system/tools should still be casual: {:?}",
+            decision
+        );
+        assert!(
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "large prompt casual: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_CTX_OVERFLOW"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
     fn openclaw_time_question_request() -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: "Minimax-M2.5".into(),
@@ -434,8 +509,8 @@ mod tests {
             decision
         );
         assert!(
-            matches!(decision.route, RouteTier::Edge),
-            "simple time question should prefer edge: {:?}",
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "casual time question: {:?}",
             decision
         );
     }
@@ -972,7 +1047,7 @@ mod tests {
         seed_cloud_sticky(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
         assert!(
-            matches!(decision.route, RouteTier::Edge),
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
             "DirectChat should bypass sticky: {:?}",
             decision
         );
@@ -1064,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_busy_routes_cloud_when_edge_inference_active() {
+    fn heartbeat_not_cloud_when_edge_busy() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let tracker = EdgeInferenceTracker::new();
@@ -1079,15 +1154,108 @@ mod tests {
             Some(tracker.as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Cloud),
-            "expected cloud when edge busy, got {:?} {:?}",
-            decision.route,
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "heartbeat casual may be edge or cascade, not cloud when edge busy: {:?}",
+            decision
+        );
+        assert!(
+            !decision.reason_codes.iter().any(|c| c == "GATE_EDGE_BUSY"),
+            "{:?}",
             decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn edge_busy_routes_cloud_for_work_when_edge_inference_active() {
+        let cfg = test_config_with_verify_rate(true, true, 0.0);
+        let sessions = SessionStore::new_in_memory();
+        let tracker = EdgeInferenceTracker::new();
+        let _guard = tracker.begin();
+        let decision = decide(
+            &cfg,
+            &work_tool_select_request(),
+            &sessions,
+            None,
+            None,
+            &EffectiveRouting::passthrough(&cfg),
+            Some(tracker.as_ref()),
+        );
+        assert!(
+            matches!(decision.route, RouteTier::Cloud),
+            "work steps may use cloud while edge is busy: {:?}",
+            decision
         );
         assert!(
             decision.reason_codes.iter().any(|c| c == "GATE_EDGE_BUSY"),
             "{:?}",
             decision.reason_codes
+        );
+    }
+
+    fn openclaw_mid_loop_short_followup_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: Some("agent".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("你好".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("你好！".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("再讲一个吧".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "session_status".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mid_loop_short_followup_is_direct_chat_not_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_mid_loop_short_followup_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
+        assert!(
+            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            "{:?}",
+            decision
         );
     }
 }
