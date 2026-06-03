@@ -32,7 +32,7 @@ pub struct ExperienceStore {
     inner: Mutex<ExperienceData>,
     path: PathBuf,
     dirty: AtomicBool,
-    settings: ExperienceSettings,
+    settings: Mutex<ExperienceSettings>,
 }
 
 pub const MIN_TRUST_SAMPLES: u64 = 3;
@@ -45,7 +45,7 @@ impl ExperienceStore {
             inner: Mutex::new(data),
             path,
             dirty: AtomicBool::new(false),
-            settings,
+            settings: Mutex::new(settings),
         }))
     }
 
@@ -55,8 +55,19 @@ impl ExperienceStore {
             inner: Mutex::new(ExperienceData::default()),
             path: PathBuf::from("/tmp/flowy-test-experience.json"),
             dirty: AtomicBool::new(false),
-            settings,
+            settings: Mutex::new(settings),
         })
+    }
+
+    pub fn update_settings(&self, settings: ExperienceSettings) {
+        *self.settings.lock().expect("experience settings mutex") = settings;
+    }
+
+    fn settings(&self) -> ExperienceSettings {
+        self.settings
+            .lock()
+            .expect("experience settings mutex")
+            .clone()
     }
 
     pub fn experience_file(&self) -> &Path {
@@ -64,7 +75,8 @@ impl ExperienceStore {
     }
 
     pub fn bias_for(&self, step_kind: StepKind) -> f32 {
-        if !self.settings.enabled {
+        let settings = self.settings();
+        if !settings.enabled {
             return 0.0;
         }
         let data = self.inner.lock().expect("experience mutex");
@@ -72,12 +84,13 @@ impl ExperienceStore {
         let Some(entry) = data.by_step.get(&key) else {
             return 0.0;
         };
-        compute_bias(entry, &self.settings)
+        compute_bias(entry, &settings)
     }
 
     /// Enough cloud-verified edge successes to route work steps directly to edge.
     pub fn edge_trusted(&self, step_kind: StepKind) -> bool {
-        if !self.settings.enabled {
+        let settings = self.settings();
+        if !settings.enabled {
             return false;
         }
         let data = self.inner.lock().expect("experience mutex");
@@ -85,11 +98,11 @@ impl ExperienceStore {
         let Some(entry) = data.by_step.get(&key) else {
             return false;
         };
-        is_edge_trusted(entry, &self.settings)
+        is_edge_trusted(entry, &settings)
     }
 
     pub fn record_outcome(&self, step_kind: StepKind, outcome: RequestOutcome) {
-        if !self.settings.enabled {
+        if !self.settings().enabled {
             return;
         }
         self.with_mut(|data| {
@@ -127,11 +140,12 @@ impl ExperienceStore {
     }
 
     pub fn snapshot(&self) -> ExperienceSnapshot {
+        let settings = self.settings();
         let data = self.inner.lock().expect("experience mutex").clone();
         let mut steps: Vec<StepSnapshot> = data
             .by_step
             .iter()
-            .map(|(name, entry)| step_snapshot(name, entry, &self.settings))
+            .map(|(name, entry)| step_snapshot(name, entry, &settings))
             .collect();
         steps.sort_by(|a, b| {
             b.total_outcomes
@@ -165,13 +179,13 @@ impl ExperienceStore {
         };
 
         ExperienceSnapshot {
-            enabled: self.settings.enabled,
+            enabled: settings.enabled,
             experience_file: self.path.display().to_string(),
             last_updated_at_unix: data.last_updated_at_unix,
             settings: ExperienceSettingsSnapshot {
-                learning_rate: self.settings.learning_rate,
-                max_bias: self.settings.max_bias,
-                target_fallback: self.settings.target_fallback,
+                learning_rate: settings.learning_rate,
+                max_bias: settings.max_bias,
+                target_fallback: settings.target_fallback,
                 min_trust_samples: MIN_TRUST_SAMPLES,
             },
             totals,

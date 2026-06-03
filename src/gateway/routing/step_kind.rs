@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::api::openai::ChatCompletionRequest;
 
-use super::signals::RequestSignals;
+use super::signals::{RequestSignals, is_casual_chat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,13 +76,20 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::CronBackground;
     }
 
-    if is_direct_chat(signals) {
-        return StepKind::DirectChat;
+    // Planning turn (explicit 规划/计划/plan or first non-casual agent task).
+    if !signals.pending_tool_calls
+        && !signals.last_role_tool
+        && (signals.intent_plan
+            || (signals.tools_enabled
+                && signals.loop_steps == 0
+                && !signals.had_tool_roundtrip
+                && !is_casual_chat(signals)))
+    {
+        return StepKind::InitialPlan;
     }
 
-    // First plan: tools enabled, no assistant turn yet, no prior tool roundtrip in transcript.
-    if signals.tools_enabled && signals.loop_steps == 0 && !signals.had_tool_roundtrip {
-        return StepKind::InitialPlan;
+    if is_casual_chat(signals) {
+        return StepKind::DirectChat;
     }
 
     if !signals.tools_enabled && signals.had_tool_roundtrip {
@@ -96,13 +103,3 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
     }
 }
 
-/// Single-turn or very short tool-free chat (no agent tool loop).
-fn is_direct_chat(signals: &RequestSignals) -> bool {
-    !signals.tools_enabled
-        && !signals.had_tool_roundtrip
-        && !signals.pending_tool_calls
-        && signals.n_turns <= 2
-        && signals.tok_total_in < 2048
-        && !signals.intent_hard
-        && !signals.assistant_failed_recent
-}

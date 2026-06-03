@@ -66,6 +66,7 @@ pub fn should_interact(
     !non_interactive
         && !json
         && !reset_defaults
+        && patch.gateway.as_ref().is_none_or(|g| g.is_empty())
         && patch.edge.is_none()
         && patch.cloud.is_none()
         && IsTerminal::is_terminal(&std::io::stdin())
@@ -129,6 +130,7 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
             clear: false,
         }),
         edge,
+        ..Default::default()
     })
 }
 
@@ -184,7 +186,12 @@ fn run_local_setup(
     }
 
     let (mut file, config_path) = load_from_path(&path)?;
-    let has_patch = patch.edge.is_some() || patch.cloud.is_some();
+    let has_patch = patch
+        .gateway
+        .as_ref()
+        .is_some_and(|g| !g.is_empty())
+        || patch.edge.is_some()
+        || patch.cloud.is_some();
     let settings = CliSettings {
         file: file.clone(),
         config_path: config_path.clone(),
@@ -196,7 +203,7 @@ fn run_local_setup(
         if !interactive && file.upstream.cloud.is_none() && file.upstream.edge.is_none() {
             apply_default_upstream(&mut file);
         }
-        apply_upstream_patch(&mut file, &patch);
+        apply_upstream_patch(&mut file, &patch).map_err(|e| anyhow::anyhow!(e))?;
     } else if !interactive {
         apply_default_upstream(&mut file);
     } else {
@@ -300,7 +307,15 @@ fn load_settings(config_override: &Option<PathBuf>) -> Result<CliSettings> {
 }
 
 fn print_human(view: &UpstreamSetupView) {
-    println!("Upstream setup");
+    let g = &view.gateway;
+    println!("Gateway setup");
+    println!("  route:                    {}", g.route);
+    println!("  routing_mode:             {}", g.routing_mode);
+    println!("  default_profile:          {}", g.default_profile);
+    println!("  ctx_edge_max_tokens:      {}", g.ctx_edge_max_tokens);
+    println!("  experience_enabled:       {}", g.experience_enabled);
+    println!("  work_verify_sample_rate:  {:.2}", g.work_verify_sample_rate);
+    println!("  adaptive_routing_enabled: {}", g.adaptive_routing_enabled);
     print_tier("edge", view.edge.as_ref());
     print_tier("cloud", view.cloud.as_ref());
 }
@@ -359,6 +374,7 @@ pub fn patch_from_cli(
         } else {
             None
         },
+        ..Default::default()
     }
 }
 

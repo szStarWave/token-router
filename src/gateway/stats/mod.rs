@@ -541,6 +541,7 @@ mod tests {
             assistant_failed_recent: false,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
+            force_cloud_sticky: false,
         }
     }
 

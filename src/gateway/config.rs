@@ -36,8 +36,8 @@ pub struct AppConfig {
     pub admin_token: Option<String>,
     pub config_path: PathBuf,
     pub experience: ExperienceSettings,
-    pub cloud_sticky_ttl_secs: u64,
     pub session_persist_enabled: bool,
+    pub cloud_sticky_ttl_secs: u64,
     /// Work-step cloud verification sample rate in `[0.0, 1.0]` (config baseline).
     pub work_verify_sample_rate: f32,
     pub adaptive_routing: AdaptiveRoutingSettings,
@@ -116,8 +116,8 @@ impl AppConfig {
                 max_bias: file.gateway.experience_max_bias,
                 target_fallback: file.gateway.experience_target_fallback,
             },
-            cloud_sticky_ttl_secs: file.gateway.cloud_sticky_ttl_secs,
             session_persist_enabled: file.gateway.session_persist_enabled,
+            cloud_sticky_ttl_secs: file.gateway.cloud_sticky_ttl_secs,
             work_verify_sample_rate: file.gateway.work_verify_sample_rate.clamp(0.0, 1.0),
             adaptive_routing: AdaptiveRoutingSettings {
                 enabled: file.gateway.adaptive_routing_enabled,

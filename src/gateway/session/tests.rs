@@ -22,6 +22,7 @@ mod tests {
             assistant_failed_recent: false,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
+            force_cloud_sticky: false,
         }
     }
 
@@ -50,5 +51,38 @@ mod tests {
         let loaded = data::load(&path).unwrap();
         assert!(loaded.cloud_sticky_until_unix.is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edge_success_clears_sticky() {
+        let store = SessionStore::new_in_memory();
+        let key = "conv:clear_sticky";
+        let sticky_decision = sample_decision();
+        store.apply_outcome(
+            key,
+            &sticky_decision,
+            RequestOutcome {
+                edge_ok: false,
+                cascade_fallback: true,
+                upstream_error: false,
+            },
+            600,
+            false,
+        );
+        assert!(store.cloud_sticky_until(key).is_some());
+
+        let edge_decision = RouteDecision {
+            route: RouteTier::Edge,
+            step_kind: StepKind::DirectChat,
+            ..sample_decision()
+        };
+        store.apply_outcome(
+            key,
+            &edge_decision,
+            RequestOutcome::success(&edge_decision, false),
+            600,
+            false,
+        );
+        assert!(store.cloud_sticky_until(key).is_none());
     }
 }

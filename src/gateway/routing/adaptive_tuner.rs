@@ -58,4 +58,25 @@ impl AdaptiveTuner {
             .effective
             .clone()
     }
+
+    /// Recompute adaptive routing immediately after a hot config change.
+    pub fn recompute(
+        &self,
+        config: &AppConfig,
+        experience: &ExperienceStore,
+        stats: &GatewayStats,
+    ) {
+        let exp = experience.snapshot();
+        let stats_data = stats.global_data();
+        let effective = compute_effective_routing(
+            config,
+            &exp,
+            Some(&stats_data),
+            &config.adaptive_routing,
+        );
+        let mut state = self.state.lock().expect("adaptive tuner mutex");
+        state.effective = effective;
+        state.last_refresh = Instant::now();
+        state.requests_since_refresh = 0;
+    }
 }

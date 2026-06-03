@@ -44,7 +44,7 @@ ctx_edge_max_tokens = 65536
 # experience_learning_rate = 0.08      # 偏置更新强度
 # experience_max_bias = 0.12           # 单 step_kind 偏置上限
 # experience_target_fallback = 0.15    # 级联回退目标比例（自适应路由参考）
-# cloud_sticky_ttl_secs = 600          # 升云后会话粘性（秒）
+# cloud_sticky_ttl_secs = 600        # 升云后会话粘性 TTL；日常/心跳不受粘性门控；Work 执行走 Cascade 重试；端侧成功清除
 # session_persist_enabled = true
 
 # --- Work 步态云端校验（ToolSelect 等）---

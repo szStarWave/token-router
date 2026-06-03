@@ -83,7 +83,11 @@ impl SessionStore {
             data.last_step_kind = Some(data::step_kind_name(decision.step_kind));
             data.last_assistant_failed = assistant_failed_signal;
 
-            if outcome.should_set_cloud_sticky(decision.step_kind) {
+            if outcome.edge_ok && !outcome.cascade_fallback && !outcome.upstream_error {
+                data.cloud_sticky_until_unix = None;
+            } else if decision.force_cloud_sticky
+                || outcome.should_set_cloud_sticky(decision.step_kind)
+            {
                 data.cloud_sticky_until_unix =
                     Some(now_unix().saturating_add(cloud_sticky_ttl_secs));
             }

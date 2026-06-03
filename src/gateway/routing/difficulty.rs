@@ -18,7 +18,7 @@ impl DifficultyScore {
         let mut linear = 0.40 * ctx_ratio.min(1.0)
             + 0.15 * tool_ratio.min(1.0)
             + 0.25 * if signals.intent_hard { 1.0 } else { 0.0 }
-            - 0.20 * if signals.intent_easy { 1.0 } else { 0.0 }
+            - 0.35 * if signals.intent_easy { 1.0 } else { 0.0 }
             + 0.10 * if signals.multimodal { 1.0 } else { 0.0 }
             + code_hint
             + step_kind.bias()

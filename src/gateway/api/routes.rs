@@ -37,6 +37,13 @@ impl AppState {
     pub fn config(&self) -> crate::gateway::config::AppConfig {
         self.config_mgr.get()
     }
+
+    /// Apply hot-reloaded gateway settings to in-memory stores (experience, adaptive tuner).
+    pub fn apply_runtime_config(&self, config: &crate::gateway::config::AppConfig) {
+        self.experience
+            .update_settings(config.experience.clone());
+        self.adaptive_tuner.recompute(config, self.experience.as_ref(), &self.stats);
+    }
 }
 
 pub fn router(state: AppState) -> Router {

@@ -11,17 +11,10 @@ pub fn check_hard_gates(
     step_kind: StepKind,
     ctx_edge_max: u32,
     edge_available: bool,
-    cloud_sticky_until: Option<u64>,
 ) -> Option<HardGate> {
     if !edge_available {
         return Some(HardGate {
             code: "GATE_EDGE_DOWN",
-        });
-    }
-
-    if cloud_sticky_active(cloud_sticky_until) {
-        return Some(HardGate {
-            code: "GATE_STICKY_CLOUD",
         });
     }
 
@@ -34,6 +27,12 @@ pub fn check_hard_gates(
     if signals.assistant_failed_recent && step_kind != StepKind::HeartbeatAck {
         return Some(HardGate {
             code: "GATE_ASSISTANT_FAILURE",
+        });
+    }
+
+    if signals.consecutive_tool_error_streak >= 2 {
+        return Some(HardGate {
+            code: "GATE_TOOL_ERROR_STREAK",
         });
     }
 
@@ -50,20 +49,6 @@ pub fn check_hard_gates(
     }
 
     None
-}
-
-fn cloud_sticky_active(cloud_sticky_until: Option<u64>) -> bool {
-    let Some(until) = cloud_sticky_until else {
-        return false;
-    };
-    now_unix() < until
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -96,20 +81,22 @@ mod tests {
             risky_tool_tier1: false,
             intent_hard: false,
             intent_easy: false,
+            intent_plan: false,
             multimodal: false,
+            consecutive_tool_error_streak: 0,
         }
     }
 
     #[test]
-    fn sticky_cloud_gate_fires() {
-        let until = now_unix() + 3600;
+    fn tool_error_streak_gate_fires() {
+        let mut signals = empty_signals();
+        signals.consecutive_tool_error_streak = 2;
         let gate = check_hard_gates(
-            &empty_signals(),
-            StepKind::DirectChat,
+            &signals,
+            StepKind::ToolResultDigest,
             65536,
             true,
-            Some(until),
         );
-        assert_eq!(gate.unwrap().code, "GATE_STICKY_CLOUD");
+        assert_eq!(gate.unwrap().code, "GATE_TOOL_ERROR_STREAK");
     }
 }

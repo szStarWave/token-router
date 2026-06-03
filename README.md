@@ -66,7 +66,7 @@
 
 **路由决策流水线**（每次 `POST /v1/chat/completions`）：
 
-1. **硬约束层** — 命中则直接定路由，不算分（上下文溢出、InitialPlan、复杂多模态、高危工具、assistant 失败恢复、cloud sticky 等）
+1. **硬约束层** — 命中则直接定路由，不算分（上下文溢出、InitialPlan、复杂多模态、高危工具、assistant 失败恢复、工具连错升云等）
 2. **信号提取** — 从 `messages[]` / `tools[]` 提取 token 估算、步态 `step_kind`、会话状态
 3. **难度评分** — 可解释加权公式 \(d \in [0,1]\)，叠加经验偏置 `EXP_BIAS`
 4. **策略映射** — Profile 的 `θ_edge` / `θ_cloud` + `routing_mode` → edge / cloud / cascade
@@ -315,8 +315,8 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/setup` | 上游配置 Web 页（浏览器） |
-| `GET` | `/v1/admin/setup` | 当前上游 JSON（edge/cloud URL、model、key 是否已设） |
-| `POST` | `/v1/admin/setup` | 更新上游；热生效；可选 `X-Flowy-Admin-Token` |
+| `GET` | `/v1/admin/setup` | 配置 JSON：`gateway`（路由/经验/自适应）、`edge`、`cloud` |
+| `POST` | `/v1/admin/setup` | 热更新 `gateway` / `edge` / `cloud`（写回 `config.toml`）；可选 `X-Flowy-Admin-Token` |
 | `POST` | `/v1/admin/setup/init` | 恢复默认（cloud model=auto，edge 空）；可选 Admin Token |
 | `GET` | `/health` | 存活与上游是否已配置 |
 | `GET` | `/v1/admin/status` | 守护进程详情 |
@@ -358,13 +358,14 @@ flowy stats --global --lang zh # 全局累计 + 中文
 | `routing_mode` | `cascade` | 仅 `route=auto`：`single` / `cascade` / `split` |
 | `default_profile` | `balanced` | `economy` / `balanced` / `premium` / `privacy` |
 | `ctx_edge_max_tokens` | `65536` | 端侧上下文上限；超过约 80% 触发 `GATE_CTX_OVERFLOW` |
+| （路由/经验/自适应等） | 见示例 | 均可通过 `GET`/`POST /v1/admin/setup` 热更新（`session_persist_enabled` 需重启后生效） |
 | `api_key` | — | 选填；入站鉴权 |
 | `admin_token` | — | 选填；保护 shutdown、restart 与 setup 写操作 |
 | `experience_enabled` | `true` | 按 `step_kind` 隐式学习 |
 | `experience_learning_rate` | `0.08` | 经验偏置学习强度 |
 | `experience_max_bias` | `0.12` | 单步态难度偏置上限 |
 | `experience_target_fallback` | `0.15` | 级联升云目标比例（自适应路由参考） |
-| `cloud_sticky_ttl_secs` | `600` | 升云后会话粘性 TTL |
+| `cloud_sticky_ttl_secs` | `600` | 级联升云/上游错误后会话粘性 TTL（秒）；日常/心跳不受粘性门控；端侧成功即清除 |
 | `session_persist_enabled` | `true` | 会话写入 `sessions/` |
 | `work_verify_sample_rate` | `0.1` | Work 步态云端校验抽样率（0–1） |
 | `adaptive_routing_enabled` | `true` | 运行时自适应微调（见 §7.3） |
@@ -464,7 +465,7 @@ OpenClaw 特征：心跳 `[OpenClaw heartbeat poll]`、`assistant turn failed`�
 | `GATE_CTX_OVERFLOW` | 输入 token > 80% × `ctx_edge_max_tokens` |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记 |
 | `GATE_RISKY_TOOL` | Tier-1 工具（exec/write/browser/spawn 等） |
-| `GATE_STICKY_CLOUD` | 会话 `cloud_sticky_until` 未过期 |
+| （粘性，非硬门控） | `cloud_sticky_until` 未过期时：**DirectChat/Heartbeat** 仍走端侧；**Work 执行步态** 走 `STICKY_CASCADE_RETRY`（先端后侧）；**InitialPlan/恢复** 仍走云；端侧成功（含 Cascade 未回退）清除粘性 |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中（且云端可用）→ 直走云 |
 | InitialPlan / 复杂多模态 | 强制云端 |
 
@@ -493,9 +494,9 @@ OpenClaw 特征：心跳 `[OpenClaw heartbeat poll]`、`assistant turn failed`�
 ### 7.5 级联（Cascade）
 
 1. 端侧完整生成
-2. Quality Gate（JSON 校验、tool 名白名单、文本相似度等）
+2. Quality Gate：非空正文（长度 > 8、不含「不确定」）**或** 合法 `tool_calls`（名与参数非空，覆盖 `ToolResultDigest` 后仅返回工具调用的情形）
 3. 不通过 → 升云并重答
-4. 通过 → 该步零云端计费
+4. 通过 → 该步零云端计费（`edge_ok` 且未回退时可清除 cloud sticky）
 
 端侧命中一步 ≈ 节省该步全部云端输入 Token（OpenClaw 场景约 **~52k token/步**）。
 

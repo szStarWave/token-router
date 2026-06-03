@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::config::UpstreamSetupUpdate;
+use crate::config::{UpstreamSetupUpdate, is_setup_validation_error};
 use crate::gateway::api::routes::AppState;
 
 pub async fn setup_page() -> Html<&'static str> {
@@ -54,18 +54,25 @@ pub async fn setup_post(
     if let Some(resp) = require_admin(&state, &headers) {
         return resp;
     }
-    match state.config_mgr.apply_setup(&patch) {
-        Ok(view) => Json(SetupResponse {
-            ok: true,
-            message: "upstream setup updated",
-            upstream: view,
-        })
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+    match state.config_mgr.apply_setup_with_config(&patch) {
+        Ok((view, config)) => {
+            state.apply_runtime_config(&config);
+            Json(SetupResponse {
+                ok: true,
+                message: "setup updated",
+                upstream: view,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if is_setup_validation_error(&msg) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": msg}))).into_response()
+        }
     }
 }
 
@@ -101,7 +108,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Flowy Router — 上游模型设置</title>
+  <title>Flowy Router — 配置</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -117,10 +124,66 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>Flowy Router — 上游模型设置</h1>
-  <p class="hint">云端默认 model=<code>auto</code>（保留客户端模型名）；端侧默认可留空。保存后立即生效，无需重启 Gateway。</p>
+  <h1>Flowy Router — 配置</h1>
+  <p class="hint">路由、经验学习、上游 URL 等保存后立即生效（<code>session_persist_enabled</code> 需重启）。云端 model 默认 <code>auto</code>。</p>
   <label for="admin_token">Admin Token（若 config 中配置了 admin_token）</label>
   <input id="admin_token" type="password" placeholder="X-Flowy-Admin-Token" autocomplete="off" />
+
+  <fieldset>
+    <legend>路由 gateway</legend>
+    <label for="route">route</label>
+    <select id="route">
+      <option value="auto">auto</option>
+      <option value="edge">edge</option>
+      <option value="cloud">cloud</option>
+      <option value="cascade">cascade</option>
+    </select>
+    <label for="routing_mode">routing_mode（route=auto）</label>
+    <select id="routing_mode">
+      <option value="single">single</option>
+      <option value="cascade">cascade</option>
+      <option value="split">split</option>
+    </select>
+    <label for="default_profile">default_profile</label>
+    <select id="default_profile">
+      <option value="economy">economy</option>
+      <option value="balanced">balanced</option>
+      <option value="premium">premium</option>
+      <option value="privacy">privacy</option>
+    </select>
+    <label for="ctx_edge_max">ctx_edge_max_tokens（4096–2000000）</label>
+    <input id="ctx_edge_max" type="number" min="4096" max="2000000" step="1024" placeholder="65536" />
+    <p class="hint">超过约 80% 触发 GATE_CTX_OVERFLOW 升云。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>经验学习</legend>
+    <label><input id="experience_enabled" type="checkbox" /> experience_enabled</label>
+    <label for="experience_learning_rate">experience_learning_rate (0–1)</label>
+    <input id="experience_learning_rate" type="number" min="0" max="1" step="0.01" />
+    <label for="experience_max_bias">experience_max_bias (0–1)</label>
+    <input id="experience_max_bias" type="number" min="0" max="1" step="0.01" />
+    <label for="experience_target_fallback">experience_target_fallback (0–1)</label>
+    <input id="experience_target_fallback" type="number" min="0" max="1" step="0.01" />
+    <label for="cloud_sticky_ttl_secs">cloud_sticky_ttl_secs</label>
+    <input id="cloud_sticky_ttl_secs" type="number" min="0" max="604800" step="60" />
+    <label><input id="session_persist_enabled" type="checkbox" /> session_persist_enabled（重启生效）</label>
+    <label for="work_verify_sample_rate">work_verify_sample_rate (0–1)</label>
+    <input id="work_verify_sample_rate" type="number" min="0" max="1" step="0.05" />
+  </fieldset>
+
+  <fieldset>
+    <legend>自适应路由（内存）</legend>
+    <label><input id="adaptive_routing_enabled" type="checkbox" /> adaptive_routing_enabled</label>
+    <label for="adaptive_min_verified_samples">adaptive_min_verified_samples</label>
+    <input id="adaptive_min_verified_samples" type="number" min="1" max="1000000" step="1" />
+    <label for="adaptive_verify_rate_floor">adaptive_verify_rate_floor</label>
+    <input id="adaptive_verify_rate_floor" type="number" min="0" max="1" step="0.01" />
+    <label for="adaptive_verify_rate_ceiling">adaptive_verify_rate_ceiling</label>
+    <input id="adaptive_verify_rate_ceiling" type="number" min="0" max="1" step="0.01" />
+    <label for="adaptive_max_theta_shift">adaptive_max_theta_shift (0–0.5)</label>
+    <input id="adaptive_max_theta_shift" type="number" min="0" max="0.5" step="0.01" />
+  </fieldset>
 
   <fieldset>
     <legend>云端 Cloud</legend>
@@ -159,8 +222,25 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       return h;
     }
     function fill(view) {
+      const g = view.gateway || {};
       const cloud = view.cloud || {};
       const edge = view.edge || {};
+      document.getElementById('route').value = g.route || 'auto';
+      document.getElementById('routing_mode').value = g.routing_mode || 'cascade';
+      document.getElementById('default_profile').value = g.default_profile || 'balanced';
+      document.getElementById('ctx_edge_max').value = g.ctx_edge_max_tokens || '';
+      document.getElementById('experience_enabled').checked = !!g.experience_enabled;
+      document.getElementById('experience_learning_rate').value = g.experience_learning_rate ?? '';
+      document.getElementById('experience_max_bias').value = g.experience_max_bias ?? '';
+      document.getElementById('experience_target_fallback').value = g.experience_target_fallback ?? '';
+      document.getElementById('cloud_sticky_ttl_secs').value = g.cloud_sticky_ttl_secs ?? '';
+      document.getElementById('session_persist_enabled').checked = !!g.session_persist_enabled;
+      document.getElementById('work_verify_sample_rate').value = g.work_verify_sample_rate ?? '';
+      document.getElementById('adaptive_routing_enabled').checked = !!g.adaptive_routing_enabled;
+      document.getElementById('adaptive_min_verified_samples').value = g.adaptive_min_verified_samples ?? '';
+      document.getElementById('adaptive_verify_rate_floor').value = g.adaptive_verify_rate_floor ?? '';
+      document.getElementById('adaptive_verify_rate_ceiling').value = g.adaptive_verify_rate_ceiling ?? '';
+      document.getElementById('adaptive_max_theta_shift').value = g.adaptive_max_theta_shift ?? '';
       document.getElementById('cloud_url').value = cloud.base_url || '';
       document.getElementById('cloud_model').value = cloud.model || 'auto';
       document.getElementById('edge_url').value = edge.base_url || '';
@@ -191,7 +271,29 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     }
     async function save() {
       status.textContent = 'Saving…';
+      const num = (id) => {
+        const v = document.getElementById(id).value.trim();
+        return v === '' ? undefined : Number(v);
+      };
       const body = {
+        gateway: {
+          route: document.getElementById('route').value,
+          routing_mode: document.getElementById('routing_mode').value,
+          default_profile: document.getElementById('default_profile').value,
+          ctx_edge_max_tokens: num('ctx_edge_max'),
+          experience_enabled: document.getElementById('experience_enabled').checked,
+          experience_learning_rate: num('experience_learning_rate'),
+          experience_max_bias: num('experience_max_bias'),
+          experience_target_fallback: num('experience_target_fallback'),
+          cloud_sticky_ttl_secs: num('cloud_sticky_ttl_secs'),
+          session_persist_enabled: document.getElementById('session_persist_enabled').checked,
+          work_verify_sample_rate: num('work_verify_sample_rate'),
+          adaptive_routing_enabled: document.getElementById('adaptive_routing_enabled').checked,
+          adaptive_min_verified_samples: num('adaptive_min_verified_samples'),
+          adaptive_verify_rate_floor: num('adaptive_verify_rate_floor'),
+          adaptive_verify_rate_ceiling: num('adaptive_verify_rate_ceiling'),
+          adaptive_max_theta_shift: num('adaptive_max_theta_shift'),
+        },
         cloud: {
           base_url: document.getElementById('cloud_url').value,
           model: document.getElementById('cloud_model').value || 'auto',

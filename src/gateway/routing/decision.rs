@@ -6,6 +6,7 @@ use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::{MultimodalStore, MultimodalStrategy};
 
 use super::conversation::conversation_key;
+use super::signals::is_simple_multimodal;
 use super::difficulty::DifficultyScore;
 use super::gates::check_hard_gates;
 use super::policy::{self, Profile};
@@ -13,7 +14,7 @@ use super::signals::SignalExtractor;
 use super::step_kind::{StepKind, resolve_step_kind};
 use super::edge_busy::apply_edge_busy_fallback;
 use super::upstream_availability::{cloud_configured, edge_configured, finalize_route};
-use super::work::{WorkStrategy, apply_work_route};
+use super::work::{WorkStrategy, apply_work_route, sticky_cascade_applies};
 use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::routing::adaptive::EffectiveRouting;
 use crate::gateway::session::SessionStore;
@@ -66,6 +67,9 @@ pub struct RouteDecision {
     pub multimodal_strategy: crate::gateway::multimodal::MultimodalStrategy,
     #[serde(skip)]
     pub work_strategy: WorkStrategy,
+    /// Set when tool-error streak or similar gates recommend cloud stickiness.
+    #[serde(skip)]
+    pub force_cloud_sticky: bool,
 }
 
 pub fn decide(
@@ -126,7 +130,6 @@ pub fn decide(
         step_kind,
         config.ctx_edge_max_tokens,
         edge_ok,
-        sticky_until,
     ) {
         reason_codes.push(gate.code.to_string());
         let mut route = RouteTier::Cloud;
@@ -188,9 +191,10 @@ pub fn decide(
     reason_codes.push(format!("TOK_IN_{}", signals.tok_total_in));
     reason_codes.push(format!("TOK_DELTA_{}", signals.tok_loop_delta));
 
-    let (mut route, work_strategy) = apply_work_route(
+    let (route, work_strategy) = apply_work_route(
         route,
         step_kind,
+        &signals,
         config,
         experience,
         &conv_key,
@@ -198,6 +202,8 @@ pub fn decide(
         routing.work_verify_sample_rate,
         &mut reason_codes,
     );
+
+    let route = apply_sticky_cascade(route, step_kind, sticky_until, config, &mut reason_codes);
 
     let (route, multimodal_strategy) = apply_multimodal_route(
         route,
@@ -233,6 +239,23 @@ pub fn decide(
         multimodal_strategy,
         work_strategy,
     )
+}
+
+fn apply_sticky_cascade(
+    route: RouteTier,
+    step_kind: StepKind,
+    sticky_until: Option<u64>,
+    config: &AppConfig,
+    reason_codes: &mut Vec<String>,
+) -> RouteTier {
+    if sticky_until.is_none() || !sticky_cascade_applies(step_kind) {
+        return route;
+    }
+    if !edge_configured(config) || !cloud_configured(config) {
+        return route;
+    }
+    reason_codes.push("STICKY_CASCADE_RETRY".to_string());
+    RouteTier::Cascade
 }
 
 /// Simple multimodal (DirectChat with images) probes edge capability; complex multimodal
@@ -272,6 +295,10 @@ fn apply_multimodal_route(
         MultimodalStrategy::CachedCloud => {
             reason_codes.push("MULTIMODAL_CACHE_CLOUD".to_string());
             RouteTier::Cloud
+        }
+        MultimodalStrategy::Probe if is_simple_multimodal(signals) => {
+            reason_codes.push("MULTIMODAL_SIMPLE_EDGE".to_string());
+            RouteTier::Edge
         }
         MultimodalStrategy::Probe => {
             reason_codes.push("MULTIMODAL_PROBE".to_string());
@@ -321,6 +348,9 @@ fn finish(
     multimodal_strategy: MultimodalStrategy,
     work_strategy: WorkStrategy,
 ) -> RouteDecision {
+    let force_cloud_sticky = reason_codes
+        .iter()
+        .any(|c| c == "GATE_TOOL_ERROR_STREAK");
     RouteDecision {
         route,
         profile,
@@ -335,6 +365,7 @@ fn finish(
         assistant_failed_recent,
         multimodal_strategy,
         work_strategy,
+        force_cloud_sticky,
     }
 }
 

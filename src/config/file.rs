@@ -226,7 +226,6 @@ ctx_edge_max_tokens = 65536
 # experience_enabled = true
 # experience_learning_rate = 0.08
 # experience_max_bias = 0.12
-# cloud_sticky_ttl_secs = 600
 # session_persist_enabled = true
 # work_verify_sample_rate = 0.1   # work 步态云端校验抽样比例 (0.0–1.0)
 # adaptive_routing_enabled = true # 根据 experience/stats 运行时微调抽样率与难度阈值

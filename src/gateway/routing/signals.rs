@@ -25,19 +25,38 @@ pub struct RequestSignals {
     pub risky_tool_tier1: bool,
     pub intent_hard: bool,
     pub intent_easy: bool,
+    pub intent_plan: bool,
     pub multimodal: bool,
+    /// Trailing consecutive `role=tool` messages whose content matches error keywords.
+    pub consecutive_tool_error_streak: u32,
 }
 
-/// Tool-free, short multimodal chat — eligible for edge probe/cache.
+/// Short, tool-loop-free turn (daily chat). Tool definitions in the request are ignored.
+pub fn is_casual_chat(signals: &RequestSignals) -> bool {
+    if signals.had_tool_roundtrip
+        || signals.pending_tool_calls
+        || signals.intent_hard
+        || signals.assistant_failed_recent
+    {
+        return false;
+    }
+    if signals.tok_total_in >= 8192 || signals.n_turns > 4 {
+        return false;
+    }
+    // Vision + tool schema together usually means an agent task, not daily chat.
+    if signals.multimodal && signals.tools_enabled {
+        return false;
+    }
+    // Mid-loop agent turn: require easy intent on the latest user message.
+    if signals.loop_steps > 0 && !signals.intent_easy {
+        return false;
+    }
+    true
+}
+
+/// Simple multimodal daily chat — eligible for edge-first routing.
 pub fn is_simple_multimodal(signals: &RequestSignals) -> bool {
-    signals.multimodal
-        && !signals.tools_enabled
-        && !signals.had_tool_roundtrip
-        && !signals.pending_tool_calls
-        && signals.n_turns <= 2
-        && signals.tok_total_in < 2048
-        && !signals.intent_hard
-        && !signals.assistant_failed_recent
+    signals.multimodal && is_casual_chat(signals)
 }
 
 pub struct SignalExtractor {
@@ -158,6 +177,12 @@ impl SignalExtractor {
         let intent_easy = last
             .map(|m| message_text(m))
             .is_some_and(|t| contains_easy_intent(&t));
+        let intent_plan = last
+            .filter(|m| m.role == Role::User)
+            .map(|m| message_text(m))
+            .is_some_and(|t| contains_plan_intent(&t));
+
+        let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
 
         let risky_tool_tier1 = prev_assistant
             .and_then(|m| m.tool_calls.as_ref())
@@ -194,9 +219,51 @@ impl SignalExtractor {
             risky_tool_tier1,
             intent_hard,
             intent_easy,
+            intent_plan,
             multimodal,
+            consecutive_tool_error_streak,
         }
     }
+}
+
+/// Count trailing tool messages (from the end) that contain error keywords.
+pub fn consecutive_tool_error_tail(messages: &[Message]) -> u32 {
+    let mut count = 0u32;
+    for msg in messages.iter().rev() {
+        if msg.role != Role::Tool {
+            break;
+        }
+        if tool_result_has_error(&message_text(msg)) {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+pub fn tool_result_has_error(text: &str) -> bool {
+    const KWS: &[&str] = &[
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "traceback",
+        "errno",
+        "non-zero",
+        "nonzero",
+        "exit code 1",
+        "exit code: 1",
+        "exit status 1",
+        "command failed",
+        "command not found",
+        "permission denied",
+        "错误",
+        "失败",
+        "异常",
+    ];
+    let lower = text.to_ascii_lowercase();
+    KWS.iter().any(|k| lower.contains(k))
 }
 
 fn contains_hard_intent(text: &str) -> bool {
@@ -208,8 +275,41 @@ fn contains_hard_intent(text: &str) -> bool {
         "legal",
         "medical",
         "跨仓库",
+        "修复",
+        "bug",
+        "fix",
+        "debug",
     ];
-    KWS.iter().any(|k| text.contains(k))
+    let lower = text.to_ascii_lowercase();
+    KWS.iter().any(|k| lower.contains(k))
+}
+
+fn contains_plan_intent(text: &str) -> bool {
+    const KWS: &[&str] = &[
+        "规划",
+        "计划",
+        "方案",
+        "roadmap",
+        "planning",
+        " step plan",
+        "make a plan",
+        "制定计划",
+        "执行计划",
+        "任务拆解",
+        "拆解任务",
+        "分解任务",
+    ];
+    let lower = text.to_ascii_lowercase();
+    KWS.iter().any(|k| {
+        if k.is_ascii() {
+            lower.contains(k)
+        } else {
+            text.contains(k)
+        }
+    }) || {
+        let trimmed = lower.trim();
+        trimmed.starts_with("plan ") || trimmed == "plan"
+    }
 }
 
 fn contains_easy_intent(text: &str) -> bool {
@@ -230,7 +330,8 @@ fn contains_easy_intent(text: &str) -> bool {
         "现在几点",
         "什么时间",
     ];
-    KWS.iter().any(|k| text.contains(k))
+    let lower = text.to_ascii_lowercase();
+    KWS.iter().any(|k| lower.contains(k))
 }
 
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -294,6 +395,61 @@ fn subagent_spawn_in_transcript(req: &ChatCompletionRequest) -> bool {
                     || t.contains("子代理")
                     || t.contains("子 agent")))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::api::openai::{Message, Role};
+
+    #[test]
+    fn consecutive_tool_errors_at_tail() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("run".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("Error: command failed".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("失败: exit code 1".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t2".into()),
+            },
+        ];
+        assert_eq!(consecutive_tool_error_tail(&messages), 2);
+    }
+
+    #[test]
+    fn tool_error_streak_breaks_on_success() {
+        let messages = vec![
+            Message {
+                role: Role::Tool,
+                content: Some("ok".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("error".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t2".into()),
+            },
+        ];
+        assert_eq!(consecutive_tool_error_tail(&messages), 1);
+    }
 }
 
 fn message_has_image(msg: &Message) -> bool {

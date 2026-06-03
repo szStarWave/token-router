@@ -11,8 +11,10 @@ mod tests {
     use crate::gateway::multimodal::MultimodalStore;
     use crate::gateway::edge_load::EdgeInferenceTracker;
     use crate::gateway::routing::{
-        EffectiveRouting, RouteTier, StepKind, decide, require_any_upstream,
+        EffectiveRouting, Profile, RouteDecision, RouteTier, RoutingMode, StepKind, WorkStrategy,
+        conversation::conversation_key, decide, require_any_upstream,
     };
+    use crate::gateway::multimodal::MultimodalStrategy;
     use crate::gateway::session::SessionStore;
 
     fn test_multimodal_store() -> std::sync::Arc<MultimodalStore> {
@@ -172,6 +174,50 @@ mod tests {
     fn require_any_upstream_rejects_empty() {
         let cfg = test_config(false, false);
         assert!(require_any_upstream(&cfg).is_err());
+    }
+
+    fn casual_chat_with_tool_schema_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("讲个短笑话".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "session_status".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: true,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn casual_chat_with_tool_schema_prefers_edge() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &casual_chat_with_tool_schema_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
+        assert!(
+            matches!(decision.route, RouteTier::Edge),
+            "tool schema alone must not block casual edge route: {:?}",
+            decision
+        );
     }
 
     #[test]
@@ -381,9 +427,15 @@ mod tests {
             "system prompt tool docs must not classify as spawn: {:?}",
             decision
         );
+        assert_eq!(
+            decision.step_kind,
+            StepKind::DirectChat,
+            "casual turn with tool schema should be direct chat: {:?}",
+            decision
+        );
         assert!(
-            !matches!(decision.route, RouteTier::Cloud),
-            "simple time question should not force cloud: {:?}",
+            matches!(decision.route, RouteTier::Edge),
+            "simple time question should prefer edge: {:?}",
             decision
         );
     }
@@ -497,6 +549,122 @@ mod tests {
         );
     }
 
+    fn tool_error_streak_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("fix it".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("Error: command failed".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("e1".into()),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("失败: exit code 1".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("e2".into()),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "exec".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn consecutive_tool_errors_force_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &tool_error_streak_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            matches!(decision.route, RouteTier::Cloud),
+            "two consecutive tool errors should force cloud: {:?}",
+            decision
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_TOOL_ERROR_STREAK"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(decision.force_cloud_sticky);
+    }
+
+    fn plan_intent_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("帮我制定一个重构计划".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "exec".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn plan_intent_forces_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &plan_intent_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::InitialPlan);
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "PLAN_INTENT_CLOUD" || c == "INITIAL_PLAN_CLOUD"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
     #[test]
     fn work_step_verify_cascade_without_experience() {
         let cfg = test_config(true, true);
@@ -601,12 +769,15 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat);
         assert!(
-            matches!(decision.route, RouteTier::Cascade),
-            "multimodal with both upstreams should cascade (try edge, fallback cloud): {:?}",
+            matches!(decision.route, RouteTier::Edge),
+            "simple multimodal daily chat should prefer edge: {:?}",
             decision
         );
         assert!(
-            decision.reason_codes.iter().any(|c| c == "MULTIMODAL_PROBE"),
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "MULTIMODAL_SIMPLE_EDGE"),
             "{:?}",
             decision.reason_codes
         );
@@ -760,6 +931,136 @@ mod tests {
             "{:?}",
             decision.reason_codes
         );
+    }
+
+    fn seed_cloud_sticky(sessions: &SessionStore, conv_key: &str) {
+        let decision = RouteDecision {
+            route: RouteTier::Cascade,
+            profile: Profile::Balanced,
+            mode: RoutingMode::Cascade,
+            step_kind: StepKind::ToolSelect,
+            difficulty: 0.5,
+            reason_codes: vec![],
+            tokens_in_estimate: 100,
+            tokens_out_estimate: 50,
+            cloud_input_saved_estimate: 0,
+            conversation_key: conv_key.to_string(),
+            assistant_failed_recent: false,
+            multimodal_strategy: MultimodalStrategy::None,
+            work_strategy: WorkStrategy::None,
+            force_cloud_sticky: false,
+        };
+        sessions.apply_outcome(
+            conv_key,
+            &decision,
+            RequestOutcome {
+                edge_ok: false,
+                cascade_fallback: true,
+                upstream_error: false,
+            },
+            3600,
+            false,
+        );
+    }
+
+    #[test]
+    fn sticky_does_not_block_direct_chat() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = simple_greeting_request();
+        let key = conversation_key(&req);
+        seed_cloud_sticky(&sessions, &key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert!(
+            matches!(decision.route, RouteTier::Edge),
+            "DirectChat should bypass sticky: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_STICKY_CLOUD"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn sticky_work_exec_uses_cascade_retry() {
+        let cfg = test_config_with_verify_rate(true, true, 0.0);
+        let sessions = SessionStore::new_in_memory();
+        let req = work_tool_select_request();
+        let key = conversation_key(&req);
+        seed_cloud_sticky(&sessions, &key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert_eq!(decision.step_kind, StepKind::ToolSelect);
+        assert!(
+            matches!(decision.route, RouteTier::Cascade),
+            "{:?}",
+            decision
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "STICKY_CASCADE_RETRY"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn sticky_initial_plan_stays_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = initial_plan_request();
+        let key = conversation_key(&req);
+        seed_cloud_sticky(&sessions, &key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert_eq!(decision.step_kind, StepKind::InitialPlan);
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "STICKY_CASCADE_RETRY"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn edge_ok_clears_cloud_sticky() {
+        let sessions = SessionStore::new_in_memory();
+        let key = "conv:edge_clear";
+        seed_cloud_sticky(&sessions, &key);
+        assert!(sessions.cloud_sticky_until(key).is_some());
+
+        let decision = RouteDecision {
+            route: RouteTier::Edge,
+            profile: Profile::Balanced,
+            mode: RoutingMode::Single,
+            step_kind: StepKind::DirectChat,
+            difficulty: 0.1,
+            reason_codes: vec![],
+            tokens_in_estimate: 50,
+            tokens_out_estimate: 20,
+            cloud_input_saved_estimate: 50,
+            conversation_key: key.to_string(),
+            assistant_failed_recent: false,
+            multimodal_strategy: MultimodalStrategy::None,
+            work_strategy: WorkStrategy::None,
+            force_cloud_sticky: false,
+        };
+        sessions.apply_outcome(
+            key,
+            &decision,
+            RequestOutcome::success(&decision, false),
+            600,
+            false,
+        );
+        assert!(sessions.cloud_sticky_until(key).is_none());
     }
 
     #[test]

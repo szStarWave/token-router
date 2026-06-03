@@ -37,11 +37,20 @@ impl ConfigManager {
     }
 
     pub fn apply_setup(&self, patch: &UpstreamSetupUpdate) -> anyhow::Result<UpstreamSetupView> {
+        let (view, _) = self.apply_setup_with_config(patch)?;
+        Ok(view)
+    }
+
+    pub fn apply_setup_with_config(
+        &self,
+        patch: &UpstreamSetupUpdate,
+    ) -> anyhow::Result<(UpstreamSetupView, AppConfig)> {
         let (mut file, _) = load_from_path(&self.path)?;
-        crate::config::setup::apply_upstream_patch(&mut file, patch);
+        crate::config::setup::apply_setup_patch(&mut file, patch)
+            .map_err(|e| anyhow::anyhow!(e))?;
         save(&self.path, &file)?;
-        self.reload_from_file(&file)?;
-        Ok(view_from_config(&file))
+        let config = self.reload_from_file(&file)?;
+        Ok((view_from_config(&file), config))
     }
 
     pub fn write_default_setup(&self) -> anyhow::Result<UpstreamSetupView> {
@@ -52,12 +61,12 @@ impl ConfigManager {
         Ok(view_from_config(&file))
     }
 
-    fn reload_from_file(&self, file: &ConfigFile) -> anyhow::Result<()> {
+    fn reload_from_file(&self, file: &ConfigFile) -> anyhow::Result<AppConfig> {
         let updated = AppConfig::from_file(file.clone(), self.path.clone())?;
         *self
             .inner
             .write()
-            .unwrap_or_else(|e| e.into_inner()) = updated;
-        Ok(())
+            .unwrap_or_else(|e| e.into_inner()) = updated.clone();
+        Ok(updated)
     }
 }

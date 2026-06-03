@@ -578,8 +578,82 @@ fn attach_meta(
 }
 
 fn cascade_gate_pass(resp: &ChatCompletionResponse) -> bool {
-    let Some(text) = resp.choices.first().and_then(|c| c.message.content.as_ref()) else {
+    let Some(choice) = resp.choices.first() else {
+        return false;
+    };
+    if cascade_text_pass(choice) {
+        return true;
+    }
+    cascade_tool_calls_pass(choice)
+}
+
+fn cascade_text_pass(choice: &crate::gateway::api::openai::Choice) -> bool {
+    let Some(text) = choice.message.content.as_ref() else {
         return false;
     };
     !text.is_empty() && !text.contains("不确定") && text.len() > 8
+}
+
+fn cascade_tool_calls_pass(choice: &crate::gateway::api::openai::Choice) -> bool {
+    choice.message.tool_calls.as_ref().is_some_and(|calls| {
+        !calls.is_empty()
+            && calls.iter().all(|c| {
+                !c.function.name.trim().is_empty() && !c.function.arguments.trim().is_empty()
+            })
+    })
+}
+
+#[cfg(test)]
+mod cascade_gate_tests {
+    use super::*;
+    use crate::gateway::api::openai::{
+        ChatCompletionResponse, Choice, FunctionCallPayload, Message, Role, ToolCall,
+    };
+
+    fn response_with_choice(message: Message) -> ChatCompletionResponse {
+        ChatCompletionResponse {
+            id: "test".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "test".into(),
+            choices: vec![Choice {
+                index: 0,
+                message,
+                finish_reason: "stop".into(),
+            }],
+            usage: None,
+            flowy_meta: None,
+        }
+    }
+
+    #[test]
+    fn cascade_gate_passes_valid_tool_calls_without_text() {
+        let resp = response_with_choice(Message {
+            role: Role::Assistant,
+            content: None,
+            content_parts: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".into(),
+                call_type: "function".into(),
+                function: FunctionCallPayload {
+                    name: "exec".into(),
+                    arguments: r#"{"cmd":"ls"}"#.into(),
+                },
+            }]),
+            tool_call_id: None,
+        });
+        assert!(cascade_gate_pass(&resp));
+    }
+
+    #[test]
+    fn cascade_gate_rejects_empty_response() {
+        let resp = response_with_choice(Message {
+            role: Role::Assistant,
+            content: None,
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        assert!(!cascade_gate_pass(&resp));
+    }
 }

@@ -38,7 +38,7 @@ Gateway 启动后会在 `~/.flowy-router/` 写入（或更新）：
 |------|------|
 | `stats.json` | 路由决策、Token、延迟等累计统计 |
 | `experience.json` | 按 `step_kind` 的经验偏置与 `edge_trusted` |
-| `sessions/` | 会话 cloud sticky 等状态 |
+| `sessions/` | 每会话路由状态 |
 
 ```bash
 flowy stats --lang zh              # 当前会话（中文）
