@@ -2,15 +2,23 @@
 #
 # Usage:
 #   make              # show help
-#   make release      # build optimized binary
+#   make release      # build optimized binary (native)
+#   make release-arm  # build release for ARM64 Linux
 #   make test         # run tests
-#   make start      # start gateway daemon
+#   make start        # start gateway daemon
 
 CARGO       ?= cargo
+CROSS       := cross
 BIN         := flowy-router
 TARGET      ?= target
 RELEASE_BIN := $(TARGET)/release/$(BIN)
 DEBUG_BIN   := $(TARGET)/debug/$(BIN)
+
+# Cross-compilation targets
+ARM64_TARGET        := aarch64-unknown-linux-gnu
+ARM64_RELEASE       := $(TARGET)/$(ARM64_TARGET)/release/$(BIN)
+ARM64_MUSL_TARGET   := aarch64-unknown-linux-musl
+ARM64_MUSL_RELEASE  := $(TARGET)/$(ARM64_MUSL_TARGET)/release/$(BIN)
 
 # Override: make start CONFIG=example/config.toml
 CONFIG      ?=
@@ -19,7 +27,8 @@ CONFIG_FLAG := $(if $(CONFIG),--config $(CONFIG),)
 # Release binary if built; otherwise `cargo run --`.
 FLOWY       = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
 
-.PHONY: help build release release-dylib test check clean install \
+.PHONY: help build release release-dylib release-arm release-arm64 \
+        test check clean install \
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh
 
@@ -34,8 +43,11 @@ endif
 
 help:
 	@echo "  build            Build debug CLI + library"
-	@echo "  release          Build release CLI"
+	@echo "  release          Build release CLI (native)"
 	@echo "  release-dylib    Build release dynamic library for Electron"
+	@echo "  release-arm      Alias for release-arm64-musl (most portable)"
+	@echo "  release-arm64    Build release for ARM64 Linux (glibc)"
+	@echo "  release-arm64-musl  Build release for ARM64 Linux (musl, fully static)"
 	@echo "  test             Run tests"
 	@echo ""
 	@echo "  env              Print resolved paths & config"
@@ -58,6 +70,12 @@ release-dylib: release
 	@echo "Built $(DYLIB)"
 	@echo "C header: ffi/flowy_router.h"
 	@echo "Electron example: example/electron/"
+
+release-arm: release-arm64
+
+release-arm64:
+	$(CROSS) build --release --target $(ARM64_TARGET)
+	@echo "Built $(ARM64_RELEASE)"
 
 start:
 	$(FLOWY) $(CONFIG_FLAG) gateway start

@@ -387,7 +387,7 @@ impl UpstreamClient {
         self.record_upstream_call(tier);
         let start = Instant::now();
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-        let upstream_req = apply_upstream_model(req, endpoint_model);
+        let upstream_req = apply_upstream_model(req, endpoint_model, tier);
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -456,7 +456,7 @@ impl UpstreamClient {
         let edge_guard = self.edge_guard_for_tier(tier);
         self.record_upstream_call(tier);
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-        let upstream_req = apply_upstream_model(req, endpoint_model);
+        let upstream_req = apply_upstream_model(req, endpoint_model, tier);
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -528,8 +528,12 @@ impl UpstreamClient {
     }
 }
 
-fn apply_upstream_model(req: &ChatCompletionRequest, endpoint_model: Option<&str>) -> ChatCompletionRequest {
-    let mut upstream_req = req.for_upstream();
+fn apply_upstream_model(req: &ChatCompletionRequest, endpoint_model: Option<&str>, tier: &str) -> ChatCompletionRequest {
+    let mut upstream_req = if tier == "edge" {
+        req.for_edge_upstream()
+    } else {
+        req.for_upstream()
+    };
     if let Some(model) = endpoint_model {
         let m = model.trim();
         if !m.is_empty() && !m.eq_ignore_ascii_case("auto") {

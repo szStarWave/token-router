@@ -47,14 +47,55 @@ impl Default for ChatCompletionRequest {
 }
 
 impl ChatCompletionRequest {
-    /// Normalize messages for upstream providers that only accept string `content`.
+    /// Normalize messages for upstream providers that only accept string `content`,
+    /// and reorder so system messages come first (required by some Jinja2 chat templates).
     pub fn for_upstream(&self) -> Self {
         let mut req = self.clone();
-        req.messages = req
+        req.messages = {
+            let mut msgs: Vec<_> = req
+                .messages
+                .iter()
+                .map(Message::normalized_for_upstream)
+                .collect();
+            msgs.sort_by_key(|m| match m.role {
+                Role::System => 0,
+                _ => 1,
+            });
+            msgs
+        };
+        req
+    }
+
+    /// Edge-side: merge all system messages into a single first system message.
+    /// Some edge models only accept one system message.
+    pub fn for_edge_upstream(&self) -> Self {
+        let mut req = self.clone();
+        let msgs: Vec<_> = req
             .messages
             .iter()
             .map(Message::normalized_for_upstream)
             .collect();
+
+        let (systems, others): (Vec<_>, Vec<_>) =
+            msgs.into_iter().partition(|m| m.role == Role::System);
+
+        let mut merged = Vec::with_capacity(1 + others.len());
+        if !systems.is_empty() {
+            let content = systems
+                .iter()
+                .filter_map(|m| m.content.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            merged.push(Message {
+                role: Role::System,
+                content: if content.is_empty() { None } else { Some(content) },
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        merged.extend(others);
+        req.messages = merged;
         req
     }
 }

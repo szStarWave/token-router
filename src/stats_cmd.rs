@@ -409,6 +409,12 @@ pub struct GatewayStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriorCounts {
+    pub edge_ok: u64,
+    pub cloud_needed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifierSection {
     pub enabled: bool,
     pub classifier_file: String,
@@ -420,8 +426,7 @@ pub struct ClassifierSection {
     pub min_samples: u64,
     pub prior_alpha: f32,
     pub decay_half_life_hours: f64,
-    pub prior_edge_ok: u64,
-    pub prior_cloud_needed: u64,
+    pub prior: PriorCounts,
     pub top_cloud_features: Vec<ClassifierFeatureRow>,
 }
 
@@ -792,8 +797,10 @@ fn classifier_from_snapshot(c: ClassifierSnapshot) -> ClassifierSection {
         min_samples: c.min_samples,
         prior_alpha: c.prior_alpha,
         decay_half_life_hours: c.decay_half_life_hours,
-        prior_edge_ok: c.prior.edge_ok,
-        prior_cloud_needed: c.prior.cloud_needed,
+        prior: PriorCounts {
+            edge_ok: c.prior.edge_ok,
+            cloud_needed: c.prior.cloud_needed,
+        },
         top_cloud_features: c
             .top_cloud_features
             .into_iter()
