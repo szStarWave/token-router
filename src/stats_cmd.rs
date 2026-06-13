@@ -129,6 +129,11 @@ struct StatsLabels {
     adaptive_theta_cloud: &'static str,
     adaptive_theta_cloud_base: &'static str,
     adaptive_reasons: &'static str,
+    section_agent_budgets: &'static str,
+    budget_agent: &'static str,
+    budget_limit: &'static str,
+    budget_used: &'static str,
+    budget_pct: &'static str,
     tier_in: &'static str,
     tier_out: &'static str,
     tier_cached: &'static str,
@@ -240,6 +245,11 @@ fn labels(lang: StatsLang) -> StatsLabels {
             adaptive_theta_cloud: "θ_cloud (effective)",
             adaptive_theta_cloud_base: "θ_cloud (config)",
             adaptive_reasons: "reason codes",
+            section_agent_budgets: "Agent cloud token budgets (5 h window)",
+            budget_agent: "agent",
+            budget_limit: "limit",
+            budget_used: "used",
+            budget_pct: "%",
             tier_in: "in",
             tier_out: "out",
             tier_cached: "cached",
@@ -348,6 +358,11 @@ fn labels(lang: StatsLang) -> StatsLabels {
             adaptive_theta_cloud: "θ_cloud（生效）",
             adaptive_theta_cloud_base: "θ_cloud（配置）",
             adaptive_reasons: "调整原因",
+            section_agent_budgets: "Agent 云端 Token 预算（5 小时窗口）",
+            budget_agent: "Agent",
+            budget_limit: "限额",
+            budget_used: "已用",
+            budget_pct: "%",
             tier_in: "输入",
             tier_out: "输出",
             tier_cached: "缓存",
@@ -406,6 +421,15 @@ pub struct GatewayStats {
     pub experience: Option<ExperienceSection>,
     pub classifier: Option<ClassifierSection>,
     pub effective_routing: Option<AdaptiveRoutingSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_budgets: Option<Vec<AgentBudgetRow>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBudgetRow {
+    pub agent_id: String,
+    pub budget_limit: Option<u64>,
+    pub tokens_used: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -660,6 +684,7 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
         experience,
         classifier,
         effective_routing,
+        None,
     );
     Ok(from_snapshot(snap))
 }
@@ -782,6 +807,15 @@ fn from_snapshot(s: stats::StatsSnapshot) -> GatewayStats {
         experience: s.experience.map(experience_from_snapshot),
         classifier: s.classifier.map(classifier_from_snapshot),
         effective_routing: s.effective_routing.map(adaptive_from_snapshot),
+        agent_budgets: s.agent_budgets.map(|b| {
+            b.into_iter()
+                .map(|r| AgentBudgetRow {
+                    agent_id: r.agent_id,
+                    budget_limit: r.budget_limit,
+                    tokens_used: r.tokens_used,
+                })
+                .collect()
+        }),
     }
 }
 
@@ -1110,6 +1144,11 @@ fn print_human(s: &GatewayStats, gateway_url: &str, lang: StatsLang) {
     if let Some(adaptive) = &s.effective_routing {
         print_adaptive(&f, &l, adaptive);
     }
+    if let Some(budgets) = &s.agent_budgets {
+        if !budgets.is_empty() {
+            print_agent_budgets(&f, &l, budgets);
+        }
+    }
     println!();
 }
 
@@ -1313,6 +1352,34 @@ struct ExpTableHeaders {
     fallback_rate: &'static str,
     bias: &'static str,
     trust: &'static str,
+}
+
+fn print_agent_budgets(f: &Fmt, l: &StatsLabels, budgets: &[AgentBudgetRow]) {
+    f.section(l.section_agent_budgets);
+    println!(
+        "{}  {:<12} {:>12} {:>12} {:>6}",
+        f.indent, l.budget_agent, l.budget_limit, l.budget_used, l.budget_pct,
+    );
+    let mut sorted: Vec<_> = budgets.iter().collect();
+    sorted.sort_by(|a, b| b.budget_limit.unwrap_or(0).cmp(&a.budget_limit.unwrap_or(0)));
+    for row in &sorted {
+        let limit = row.budget_limit.unwrap_or(0);
+        let used = row.tokens_used;
+        let used_pct = if limit > 0 {
+            (used as f64 * 100.0 / limit as f64).min(100.0)
+        } else {
+            0.0
+        };
+        let limit_str = if limit > 0 {
+            fmt_u(limit)
+        } else {
+            "∞".to_string()
+        };
+        println!(
+            "{}  {:<12} {:>12} {:>12} {:>5.0}%",
+            f.indent, row.agent_id, limit_str, fmt_u(used), used_pct,
+        );
+    }
 }
 
 fn exp_table_headers(lang: StatsLang) -> ExpTableHeaders {

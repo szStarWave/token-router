@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon_ctl;
 use crate::gateway::api::routes::AppState;
+use crate::gateway::stats::AgentBudgetSnapshot;
 use crate::gateway::routing::Profile;
 
 #[derive(Serialize)]
@@ -55,12 +56,17 @@ pub async fn stats(
     let experience = Some(state.experience.snapshot());
     let classifier = Some(state.classifier.snapshot());
     let effective_routing = Some(state.adaptive_tuner.snapshot());
+    let config = state.config();
+    let usage = state.agent_usage.snapshot();
+    let agent_budgets = AgentBudgetSnapshot::from_config_and_usage(&config.agents, &usage);
+    let agent_budgets = if agent_budgets.is_empty() { None } else { Some(agent_budgets) };
     Ok(Json(state.stats.snapshot(
         scope,
         uptime,
         experience,
         classifier,
         effective_routing,
+        agent_budgets,
     )))
 }
 

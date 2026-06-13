@@ -69,6 +69,7 @@ pub fn should_interact(
         && patch.gateway.as_ref().is_none_or(|g| g.is_empty())
         && patch.edge.is_none()
         && patch.cloud.is_none()
+        && patch.agent_id.is_none()
         && IsTerminal::is_terminal(&std::io::stdin())
 }
 
@@ -76,6 +77,12 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
     println!("Flowy 上游配置");
     println!("直接回车保留括号中的当前值；端侧可选。");
     println!();
+
+    let agent_id = prompt_optional_string(
+        "Agent ID（留空=全局默认）",
+        current.agent_id.as_deref().unwrap_or(""),
+    )?;
+    let agent_id = if agent_id.is_empty() { None } else { Some(agent_id) };
 
     let cloud = current.cloud.as_ref();
     let cloud_url = prompt_string(
@@ -89,6 +96,23 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
             .unwrap_or(CLOUD_MODEL_AUTO),
     )?;
     let cloud_key = prompt_api_key("云端", cloud)?;
+
+    let budget_default = current.cloud.as_ref().and_then(|c| c.token_budget).map(|b| b.to_string()).unwrap_or_default();
+    let budget_str = prompt_string(
+        "云端 Token 预算（5 小时窗口，超预算 Cloud 降级为 Cascade；0=不限）",
+        &budget_default,
+    )?;
+    let token_budget = if budget_str.trim().is_empty() {
+        None
+    } else {
+        match budget_str.trim().parse::<u64>() {
+            Ok(v) => Some(Some(v)),
+            Err(_) => {
+                println!("⚠ 无效数字，已忽略 token 预算");
+                None
+            }
+        }
+    };
 
     let edge_configured = current
         .edge
@@ -112,6 +136,7 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
             )?),
             api_key: prompt_api_key("端侧", edge)?,
             clear: false,
+            token_budget: None,
         })
     } else if current.edge.is_some() {
         Some(UpstreamEndpointPatch {
@@ -123,10 +148,12 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
     };
 
     Ok(UpstreamSetupUpdate {
+        agent_id,
         cloud: Some(UpstreamEndpointPatch {
             base_url: Some(cloud_url),
             model: Some(cloud_model),
             api_key: cloud_key,
+            token_budget,
             clear: false,
         }),
         edge,
@@ -191,7 +218,8 @@ fn run_local_setup(
         .as_ref()
         .is_some_and(|g| !g.is_empty())
         || patch.edge.is_some()
-        || patch.cloud.is_some();
+        || patch.cloud.is_some()
+        || patch.agent_id.is_some();
     let settings = CliSettings {
         file: file.clone(),
         config_path: config_path.clone(),
@@ -258,7 +286,7 @@ async fn run_remote_setup(
             .context("POST /v1/admin/setup/init (is gateway running?)")?;
     }
 
-    let view = if patch.edge.is_some() || patch.cloud.is_some() {
+    let view = if patch.edge.is_some() || patch.cloud.is_some() || patch.agent_id.is_some() {
         client
             .setup_update(&patch)
             .await
@@ -309,6 +337,9 @@ fn load_settings(config_override: &Option<PathBuf>) -> Result<CliSettings> {
 fn print_human(view: &UpstreamSetupView) {
     let g = &view.gateway;
     println!("Gateway setup");
+    if let Some(ref agent_id) = view.agent_id {
+        println!("  agent_id:                 {}", agent_id);
+    }
     println!("  route:                    {}", g.route);
     println!("  routing_mode:             {}", g.routing_mode);
     println!("  default_profile:          {}", g.default_profile);
@@ -316,6 +347,9 @@ fn print_human(view: &UpstreamSetupView) {
     println!("  experience_enabled:       {}", g.experience_enabled);
     println!("  work_verify_sample_rate:  {:.2}", g.work_verify_sample_rate);
     println!("  adaptive_routing_enabled: {}", g.adaptive_routing_enabled);
+    if let Some(budget) = view.cloud.as_ref().and_then(|c| c.token_budget) {
+        println!("  cloud_token_budget:       {}", budget);
+    }
     print_tier("edge", view.edge.as_ref());
     print_tier("cloud", view.cloud.as_ref());
 }
@@ -360,6 +394,7 @@ pub fn patch_from_cli(
                 api_key: edge_key,
                 model: edge_model,
                 clear: clear_edge,
+                ..Default::default()
             })
         } else {
             None
@@ -370,6 +405,7 @@ pub fn patch_from_cli(
                 api_key: cloud_key,
                 model: cloud_model,
                 clear: false,
+                ..Default::default()
             })
         } else {
             None

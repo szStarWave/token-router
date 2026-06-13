@@ -87,16 +87,12 @@ pub struct UpstreamSetupView {
     pub cloud: Option<UpstreamEndpointView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud_token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpstreamSetupUpdate {
     #[serde(default)]
     pub agent_id: Option<String>,
-    #[serde(default)]
-    pub cloud_token_budget: Option<Option<u64>>,
     /// Partial gateway settings; omit or `null` to leave unchanged.
     #[serde(default)]
     pub gateway: Option<GatewayConfigPatch>,
@@ -112,6 +108,8 @@ pub struct UpstreamEndpointView {
     pub base_url: String,
     pub model: Option<String>,
     pub api_key_set: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -124,6 +122,9 @@ pub struct UpstreamEndpointPatch {
     /// When true, remove this tier entirely (edge only).
     #[serde(default)]
     pub clear: bool,
+    /// Cloud token budget (5 h window); `None`=unchanged, `Some(None)`=clear, `Some(Some(n))`=set.
+    #[serde(default)]
+    pub token_budget: Option<Option<u64>>,
 }
 
 pub fn endpoint_configured(ep: &UpstreamEndpoint) -> bool {
@@ -162,18 +163,38 @@ pub fn view_from_config(file: &ConfigFile) -> UpstreamSetupView {
         edge: file.upstream.edge.as_ref().map(endpoint_view),
         cloud: file.upstream.cloud.as_ref().map(endpoint_view),
         agent_id: None,
-        cloud_token_budget: None,
     }
 }
 
 pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> UpstreamSetupView {
     let agent_cfg = file.agent.get(agent_id);
+    let budget = agent_cfg.and_then(|a| a.cloud_token_budget);
     UpstreamSetupView {
         gateway: gateway_view_from_section(&file.gateway),
-        edge: agent_cfg.and_then(|a| a.upstream.edge.as_ref()).map(endpoint_view),
-        cloud: agent_cfg.and_then(|a| a.upstream.cloud.as_ref()).map(endpoint_view),
+        edge: agent_cfg
+            .and_then(|a| a.upstream.edge.as_ref())
+            .map(endpoint_view),
+        cloud: agent_cfg
+            .and_then(|a| a.upstream.cloud.as_ref())
+            .map(endpoint_view)
+            .or_else(|| {
+                if budget.is_some() {
+                    Some(UpstreamEndpointView {
+                        configured: false,
+                        base_url: String::new(),
+                        model: None,
+                        api_key_set: false,
+                        token_budget: budget,
+                    })
+                } else {
+                    None
+                }
+            })
+            .map(|mut v| {
+                v.token_budget = budget;
+                v
+            }),
         agent_id: Some(agent_id.to_string()),
-        cloud_token_budget: agent_cfg.and_then(|a| a.cloud_token_budget),
     }
 }
 
@@ -208,6 +229,7 @@ fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
             .api_key
             .as_ref()
             .is_some_and(|k| !k.trim().is_empty()),
+        token_budget: None,
     }
 }
 
@@ -235,9 +257,11 @@ pub fn apply_setup_patch(file: &mut ConfigFile, patch: &UpstreamSetupUpdate) -> 
             apply_tier_patch_section(&mut file.upstream.edge, &patch.edge);
             apply_tier_patch_section(&mut file.upstream.cloud, &patch.cloud);
         } else {
-            if let Some(budget) = patch.cloud_token_budget {
-                let agent = file.agent.entry(agent_id.to_string()).or_default();
-                agent.cloud_token_budget = budget;
+            if let Some(ref cloud_patch) = patch.cloud {
+                if let Some(budget) = cloud_patch.token_budget {
+                    let agent = file.agent.entry(agent_id.to_string()).or_default();
+                    agent.cloud_token_budget = budget;
+                }
             }
             let agent = file.agent.entry(agent_id.to_string()).or_default();
             apply_tier_patch_section(&mut agent.upstream.edge, &patch.edge);

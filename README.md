@@ -753,9 +753,10 @@ flowy setup --remote                                 # 交互式，热更新运�
 flowy setup --non-interactive                        # 仅写入默认模板（cloud model=auto，edge 空）
 flowy setup --reset                                    # 恢复默认（cloud model=auto，edge 清空）
 flowy setup --json                                     # JSON 输出（跳过交互）
+flowy setup --agent-id hermes --cloud-token-budget 500000  # 为指定 agent 设置云端 token 预算
 ```
 
-**Web 配置页**：浏览器打开 `http://127.0.0.1:11080/setup`（地址与 `gateway.listen` 一致）。页面可查看/保存 **上游**（edge/cloud URL、模型、API Key）与 **Gateway**（`route`、`ctx_edge_max_tokens`、`cloud_sticky_ttl_secs`、经验/自适应/校验率等）；若配置了 `admin_token`，保存与「恢复默认」需在页面填写 Admin Token（等同请求头 `X-Flowy-Admin-Token`）。
+**Web 配置页**：浏览器打开 `http://127.0.0.1:11080/setup`（地址与 `gateway.listen` 一致）。页面可查看/保存 **上游**（edge/cloud URL、模型、API Key）、**Agent 专属配置**（agent_id + cloud_token_budget）与 **Gateway**（`route`、`ctx_edge_max_tokens`、`cloud_sticky_ttl_secs`、经验/自适应/校验率等）；若配置了 `admin_token`，保存与「恢复默认」需在页面填写 Admin Token（等同请求头 `X-Flowy-Admin-Token`）。
 
 默认值：**云端** `model = auto`（转发时保留客户端请求的 model，由 Flowy 路由）；**端侧** 未配置（`edge` 段为空）。
 
@@ -832,7 +833,7 @@ curl -s http://127.0.0.1:11080/v1/chat/completions \
 
 | 命令 | 说明 |
 |------|------|
-| `flowy setup [--remote] [--non-interactive] [--reset] [--json]` | 交互式配置上游（或 CLI 参数非交互） |
+| `flowy setup [--remote] [--non-interactive] [--reset] [--json] [--agent-id <id>] [--cloud-token-budget <n>]` | 交互式配置上游与 Agent 预算（或 CLI 参数非交互） |
 | `flowy gateway start [--wait N]` | 后台启动 |
 | `flowy gateway stop [--force]` | 停止 |
 | `flowy gateway status [--json]` | 运行状态 |
@@ -850,7 +851,7 @@ flowy stats --lang zh          # 中文格式化输出
 flowy stats --global --lang zh # 全局累计 + 中文
 ```
 
-`flowy stats` 输出包含：请求量、路由分布、上游 Token（输入/输出/缓存）、Cloud Input Saved、延迟（TTFT/TPS）、经验学习、**自适应路由（运行时）** 等分区。
+`flowy stats` 输出包含：请求量、路由分布、上游 Token（输入/输出/缓存）、Cloud Input Saved、延迟（TTFT/TPS）、经验学习、**自适应路由（运行时）**、**Agent 云端 Token 预算** 等分区。
 
 ---
 
@@ -897,6 +898,122 @@ flowy stats --global --lang zh # 全局累计 + 中文
   }
 }
 ```
+
+### 5.1 Setup API 调用示例
+
+**GET 查询当前配置**
+
+```bash
+# 全局配置
+curl -s http://127.0.0.1:11080/v1/admin/setup | jq .
+
+# 指定 agent 配置
+curl -s 'http://127.0.0.1:11080/v1/admin/setup?agent_id=hermes' | jq .
+```
+
+**POST 热更新 Gateway 参数**（立即生效，无需重启）
+
+```bash
+# 修改路由模式 + 端侧上下文上限 + 经验学习开关
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway": {
+      "route": "auto",
+      "routing_mode": "cascade",
+      "default_profile": "economy",
+      "ctx_edge_max_tokens": 131072,
+      "experience_enabled": true,
+      "experience_learning_rate": 0.1,
+      "work_verify_sample_rate": 0.15,
+      "adaptive_routing_enabled": true,
+      "classifier_enabled": true
+    }
+  }' | jq .
+
+# 切换到全部端侧
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{"gateway": {"route": "edge"}}' | jq .
+```
+
+**POST 配置全局上游**
+
+```bash
+# 只配置云端
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cloud": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-xxx",
+      "model": "deepseek-chat"
+    }
+  }' | jq .
+
+# 只配置端侧
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "edge": {
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen3:8b"
+    }
+  }' | jq .
+
+# 同时修改 gateway + 双上游
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway": {"default_profile": "economy"},
+    "cloud": {"base_url": "https://api.deepseek.com/v1", "api_key": "sk-xxx"},
+    "edge": {"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"}
+  }' | jq .
+```
+
+**POST 配置 Agent 专属上游 + Token 预算**
+
+```bash
+# 为 agent 配置完整专属上游 + 预算
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "hermes",
+    "cloud": {
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key": "sk-ant-xxx",
+      "model": "claude-sonnet",
+      "token_budget": 500000
+    },
+    "edge": {
+      "base_url": "http://127.0.0.1:11435/v1",
+      "model": "qwen3:8b"
+    }
+  }' | jq .
+
+# 仅设预算，不改上游
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "hermes", "cloud": {"token_budget": 500000}}' | jq .
+
+# 取消预算（0 = 不限）
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "hermes", "cloud": {"token_budget": 0}}' | jq .
+
+# 清除 agent 全部自定义配置（预算 + 专属上游）
+curl -s http://127.0.0.1:11080/v1/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "hermes", "cloud": {"token_budget": null, "clear": true}, "edge": {"clear": true}}' | jq .
+```
+
+**POST 恢复默认配置**
+
+```bash
+curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
+```
+
+> 若 `config.toml` 中配置了 `gateway.admin_token`，以上 POST 请求须加 `-H "X-Flowy-Admin-Token: <token>"`。
 
 ---
 
@@ -969,13 +1086,39 @@ flowy stats --global --lang zh # 全局累计 + 中文
 
 至少配置一侧。只配 edge 时全部走端侧；只配 cloud 时全部走云端。
 
-### 6.3 `[cli]`
+### 6.3 `[agent.<id>]`
+
+为特定 Agent 设置专属上游和云端 token 预算。客户端在请求头中设置 `X-Agent-Id` 来标识 agent，Agent 配置为部分覆盖：未设置的字段回退到默认 `[upstream.*]`。
+
+| 字段 | 说明 |
+|------|------|
+| `cloud_token_budget` | 5 小时滑动窗口内该 agent 的云端累计 token 预算；超过预算时 Cloud 路由降级为 Cascade（优先 edge）。`0` = 不限，`None` = 使用全局默认（无预算限制） |
+| `upstream.edge.base_url` | 该 agent 专属端侧 API |
+| `upstream.edge.api_key` | 专属端侧 key |
+| `upstream.edge.model` | 专属端侧模型 |
+| `upstream.cloud.base_url` | 该 agent 专属云端 API |
+| `upstream.cloud.api_key` | 专属云端 key |
+| `upstream.cloud.model` | 专属云端模型 |
+
+```toml
+[agent.hermes]
+cloud_token_budget = 500000   # 5 小时窗口内云端累计 token 预算
+
+[agent.hermes.upstream.cloud]
+base_url = "https://api.anthropic.com/v1"
+api_key = "sk-ant-..."
+model = "claude-sonnet"
+```
+
+**预算超限行为**：当 agent 在当前 5 小时窗口内的云端 token 用量（估计值）接近或超过 `cloud_token_budget` 时，路由引擎将原本的 `Cloud` 决策降为 `Cascade`（先走 edge，质量不过关再升云），从而控制云端费用。Setup API 调用示例见 [§5.1](#51-setup-api-调用示例)。
+
+### 6.4 `[cli]`
 
 | 字段 | 说明 |
 |------|------|
 | `gateway_url` | CLI 访问 Gateway 的 URL，默认 `http://{gateway.listen}` |
 
-### 6.4 常用组合
+### 6.5 常用组合
 
 ```toml
 # 智能路由 + 级联（OpenClaw 推荐）
@@ -998,7 +1141,7 @@ adaptive_routing_enabled = true
 # default_profile = "economy"
 ```
 
-### 6.5 日常 / 心跳 vs Agent 任务（速查）
+### 6.6 日常 / 心跳 vs Agent 任务（速查）
 
 | 目标 | 建议 |
 |------|------|
@@ -1033,6 +1176,8 @@ Casual **不强制端侧**；要尽量少云可 `default_profile = "economy"` �
 **停止无效** — `flowy gateway stop --force`
 
 **stats 里「已持久化 false」** — 表示当前查看的是 **会话（session）** 范围，非「未写入磁盘」；`--global` 查看跨重启累计。
+
+**Agent Token 预算超限** — 在 `flowy stats` 输出的「Agent 云端 Token 预算」分区查看当前用量。当某个 agent 的 Cloud 路由决策被预算拦截时，会降级为 Cascade。可通过 `flowy setup --agent-id <id> --cloud-token-budget <n>` 调整，或设为 `0` 取消限制。
 
 ---
 

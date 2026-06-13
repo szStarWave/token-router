@@ -16,6 +16,7 @@ use crate::gateway::error::AppError;
 use crate::gateway::classifier::ClassifierSnapshot;
 use crate::gateway::experience::ExperienceSnapshot;
 use crate::gateway::routing::RouteDecision;
+use crate::gateway::agent_usage::AgentBudgetUsage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsScope {
@@ -142,6 +143,7 @@ impl GatewayStats {
         experience: Option<ExperienceSnapshot>,
         classifier: Option<ClassifierSnapshot>,
         effective_routing: Option<EffectiveRouting>,
+        agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
     ) -> StatsSnapshot {
         let data = match scope {
             StatsScope::Session => self.session.lock().expect("stats session mutex").clone(),
@@ -155,6 +157,7 @@ impl GatewayStats {
             experience,
             classifier,
             effective_routing,
+            agent_budgets,
         )
     }
 
@@ -189,6 +192,7 @@ pub fn build_snapshot(
     experience: Option<ExperienceSnapshot>,
     classifier: Option<ClassifierSnapshot>,
     effective_routing: Option<EffectiveRouting>,
+    agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
 ) -> StatsSnapshot {
     let requests = data.requests_total;
     let difficulty_count = data.difficulty_count;
@@ -341,6 +345,7 @@ pub fn build_snapshot(
         experience,
         classifier,
         effective_routing,
+        agent_budgets,
     }
 }
 
@@ -426,6 +431,45 @@ pub struct StatsSnapshot {
     pub classifier: Option<ClassifierSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_routing: Option<EffectiveRouting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentBudgetSnapshot {
+    pub agent_id: String,
+    pub budget_limit: Option<u64>,
+    pub tokens_used: u64,
+}
+
+impl AgentBudgetSnapshot {
+    pub fn from_config_and_usage(
+        configs: &std::collections::HashMap<String, crate::gateway::config::AgentUpstreamConfig>,
+        usage: &[AgentBudgetUsage],
+    ) -> Vec<AgentBudgetSnapshot> {
+        let mut budgets: Vec<AgentBudgetSnapshot> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for cfg in configs.keys() {
+            seen.insert(cfg.clone());
+            let limit = configs.get(cfg).and_then(|a| a.cloud_token_budget);
+            let used = usage.iter().find(|u| u.agent_id == *cfg).map(|u| u.tokens_used).unwrap_or(0);
+            budgets.push(AgentBudgetSnapshot {
+                agent_id: cfg.clone(),
+                budget_limit: limit,
+                tokens_used: used,
+            });
+        }
+        for u in usage {
+            if !seen.contains(&u.agent_id) {
+                budgets.push(AgentBudgetSnapshot {
+                    agent_id: u.agent_id.clone(),
+                    budget_limit: None,
+                    tokens_used: u.tokens_used,
+                });
+            }
+        }
+        budgets
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -580,7 +624,7 @@ mod tests {
             cloud_input_saved: 100,
             completion_tokens: 50,
         });
-        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None);
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None);
         assert_eq!(snap.token_breakdown.edge.input, 100);
         assert_eq!(snap.token_breakdown.cloud.input, 200);
         assert_eq!(snap.token_breakdown.cloud_saved.total, 150);
@@ -596,7 +640,7 @@ mod tests {
         stats.record_request(false);
         stats.record_decision(&sample_decision(RouteTier::Edge));
         stats.record_decision(&sample_decision(RouteTier::Cloud));
-        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None);
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None);
         assert_eq!(snap.scope, "session");
         assert_eq!(snap.requests_total, 1);
         assert_eq!(snap.routing.edge, 1);
@@ -604,7 +648,7 @@ mod tests {
         assert_eq!(snap.tokens.in_estimate, 200);
         assert!(snap.step_kinds.contains_key("directchat"));
 
-        let global = stats.snapshot(StatsScope::Global, 60, None, None, None);
+        let global = stats.snapshot(StatsScope::Global, 60, None, None, None, None);
         assert_eq!(global.scope, "global");
         assert_eq!(global.requests_total, 1);
     }
@@ -620,13 +664,13 @@ mod tests {
             let stats = GatewayStats::open(&dir).unwrap();
             stats.record_request(true);
             stats.flush().unwrap();
-            let session = stats.snapshot(StatsScope::Session, 10, None, None, None);
+            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None);
             assert_eq!(session.requests_total, 1);
         }
         {
             let stats = GatewayStats::open(&dir).unwrap();
-            let session = stats.snapshot(StatsScope::Session, 10, None, None, None);
-            let global = stats.snapshot(StatsScope::Global, 10, None, None, None);
+            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None);
+            let global = stats.snapshot(StatsScope::Global, 10, None, None, None, None);
             assert_eq!(session.requests_total, 0, "new process session starts at 0");
             assert_eq!(global.requests_total, 1, "global survives restart");
         }

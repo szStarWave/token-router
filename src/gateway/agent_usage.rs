@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 
 const BUDGET_WINDOW_SECS: u64 = 5 * 3600;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBudgetUsage {
+    pub agent_id: String,
+    pub tokens_used: u64,
+    pub window_key: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentCloudUsageData {
     window_key: u64,
@@ -101,6 +108,27 @@ impl AgentCloudUsageStore {
     pub fn flush(&self) -> anyhow::Result<()> {
         *self.dirty.lock().expect("agent_usage dirty") = true;
         self.flush_if_dirty()
+    }
+
+    pub fn snapshot(&self) -> Vec<AgentBudgetUsage> {
+        let guard = self.inner.lock().expect("agent_usage mutex");
+        let current_key = window_key();
+        guard
+            .agents
+            .iter()
+            .map(|(id, usage)| {
+                let tokens = if usage.window_key == current_key {
+                    usage.tokens
+                } else {
+                    0
+                };
+                AgentBudgetUsage {
+                    agent_id: id.clone(),
+                    tokens_used: tokens,
+                    window_key: current_key,
+                }
+            })
+            .collect()
     }
 
     pub fn spawn_flush_task(self: &std::sync::Arc<Self>) {

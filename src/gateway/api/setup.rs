@@ -134,6 +134,8 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
 <body>
   <h1>Flowy Router — 配置</h1>
   <p class="hint">路由、经验学习、上游 URL 等保存后立即生效（<code>session_persist_enabled</code> 需重启）。云端 model 默认 <code>auto</code>。</p>
+  <label for="agent_id">Agent ID（留空=全局默认；指定后下方配置仅对该 agent 生效）</label>
+  <input id="agent_id" placeholder="" />
   <label for="admin_token">Admin Token（若 config 中配置了 admin_token）</label>
   <input id="admin_token" type="password" placeholder="X-Flowy-Admin-Token" autocomplete="off" />
 
@@ -201,6 +203,8 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     <input id="cloud_model" placeholder="auto" />
     <label for="cloud_key">API Key</label>
     <input id="cloud_key" type="password" placeholder="留空则不修改已保存的 key" autocomplete="off" />
+    <label for="cloud_token_budget">Token 预算（5 小时窗口，超预算 Cloud 降级为 Cascade；0=不限）</label>
+    <input id="cloud_token_budget" type="number" min="0" step="10000" placeholder="如 500000" />
   </fieldset>
 
   <fieldset>
@@ -249,6 +253,8 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById('adaptive_verify_rate_floor').value = g.adaptive_verify_rate_floor ?? '';
       document.getElementById('adaptive_verify_rate_ceiling').value = g.adaptive_verify_rate_ceiling ?? '';
       document.getElementById('adaptive_max_theta_shift').value = g.adaptive_max_theta_shift ?? '';
+      document.getElementById('agent_id').value = view.agent_id || '';
+      document.getElementById('cloud_token_budget').value = cloud.token_budget ?? '';
       document.getElementById('cloud_url').value = cloud.base_url || '';
       document.getElementById('cloud_model').value = cloud.model || 'auto';
       document.getElementById('edge_url').value = edge.base_url || '';
@@ -260,7 +266,9 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     async function load() {
       status.textContent = 'Loading…';
       try {
-        const r = await fetch('/v1/admin/setup');
+        const agentId = document.getElementById('agent_id').value.trim();
+        const url = agentId ? '/v1/admin/setup?agent_id=' + encodeURIComponent(agentId) : '/v1/admin/setup';
+        const r = await fetch(url);
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || r.statusText);
         fill(j);
@@ -283,7 +291,9 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
         const v = document.getElementById(id).value.trim();
         return v === '' ? undefined : Number(v);
       };
+      const agentIdVal = document.getElementById('agent_id').value.trim();
       const body = {
+        agent_id: agentIdVal || null,
         gateway: {
           route: document.getElementById('route').value,
           routing_mode: document.getElementById('routing_mode').value,
@@ -305,6 +315,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
         cloud: {
           base_url: document.getElementById('cloud_url').value,
           model: document.getElementById('cloud_model').value || 'auto',
+          token_budget: num('cloud_token_budget'),
         },
         edge: {
           clear: document.getElementById('edge_clear').checked,
