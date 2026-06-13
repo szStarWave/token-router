@@ -1,10 +1,10 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{UpstreamSetupUpdate, is_setup_validation_error};
 use crate::gateway::api::routes::AppState;
@@ -13,8 +13,11 @@ pub async fn setup_page() -> Html<&'static str> {
     Html(SETUP_HTML)
 }
 
-pub async fn setup_get(State(state): State<AppState>) -> impl IntoResponse {
-    match state.config_mgr.setup_view() {
+pub async fn setup_get(
+    State(state): State<AppState>,
+    Query(params): Query<AgentQueryParams>,
+) -> impl IntoResponse {
+    match state.config_mgr.setup_view_for_agent(params.agent_id.as_deref()) {
         Ok(view) => Json(view).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -81,6 +84,11 @@ struct SetupResponse {
     ok: bool,
     message: &'static str,
     upstream: crate::config::UpstreamSetupView,
+}
+
+#[derive(Deserialize, Default)]
+pub struct AgentQueryParams {
+    pub agent_id: Option<String>,
 }
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Option<Response> {

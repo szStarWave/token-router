@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::config::setup::{UpstreamSetupUpdate, UpstreamSetupView, view_from_config};
+use crate::config::setup::{UpstreamSetupUpdate, UpstreamSetupView, view_from_config, view_from_config_for_agent};
 use crate::config::{load_from_path, save, ConfigFile};
 use crate::gateway::config::AppConfig;
 
@@ -32,8 +32,15 @@ impl ConfigManager {
     }
 
     pub fn setup_view(&self) -> anyhow::Result<UpstreamSetupView> {
+        self.setup_view_for_agent(None)
+    }
+
+    pub fn setup_view_for_agent(&self, agent_id: Option<&str>) -> anyhow::Result<UpstreamSetupView> {
         let (file, _) = load_from_path(&self.path)?;
-        Ok(view_from_config(&file))
+        Ok(match agent_id {
+            Some(id) => view_from_config_for_agent(&file, id),
+            None => view_from_config(&file),
+        })
     }
 
     pub fn apply_setup(&self, patch: &UpstreamSetupUpdate) -> anyhow::Result<UpstreamSetupView> {
@@ -50,7 +57,11 @@ impl ConfigManager {
             .map_err(|e| anyhow::anyhow!(e))?;
         save(&self.path, &file)?;
         let config = self.reload_from_file(&file)?;
-        Ok((view_from_config(&file), config))
+        let view = match patch.agent_id.as_deref() {
+            Some(id) if !id.is_empty() => view_from_config_for_agent(&file, id),
+            _ => view_from_config(&file),
+        };
+        Ok((view, config))
     }
 
     pub fn write_default_setup(&self) -> anyhow::Result<UpstreamSetupView> {

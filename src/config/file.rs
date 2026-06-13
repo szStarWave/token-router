@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,8 @@ pub struct ConfigFile {
     pub gateway: GatewaySection,
     #[serde(default)]
     pub upstream: UpstreamSection,
+    #[serde(default)]
+    pub agent: HashMap<String, AgentConfig>,
     #[serde(default)]
     pub cli: CliSection,
 }
@@ -90,6 +93,22 @@ pub struct UpstreamEndpoint {
     /// Upstream model id; `auto` keeps the client request model for Flowy routing.
     #[serde(default)]
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentConfig {
+    #[serde(default)]
+    pub cloud_token_budget: Option<u64>,
+    #[serde(default)]
+    pub upstream: AgentUpstreamSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentUpstreamSection {
+    #[serde(default)]
+    pub edge: Option<UpstreamEndpoint>,
+    #[serde(default)]
+    pub cloud: Option<UpstreamEndpoint>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -223,6 +242,7 @@ impl Default for ConfigFile {
         Self {
             gateway: GatewaySection::default(),
             upstream: UpstreamSection::default(),
+            agent: HashMap::new(),
             cli: CliSection::default(),
         }
     }

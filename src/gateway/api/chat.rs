@@ -16,6 +16,7 @@ use crate::gateway::error::{AppError, AppResult};
 pub async fn chat_completions(
     state: AppState,
     headers: HeaderMap,
+    agent_id: Option<String>,
     req: ChatCompletionRequest,
 ) -> AppResult<impl IntoResponse> {
     let stream = req.stream;
@@ -62,7 +63,7 @@ pub async fn chat_completions(
     );
 
     if stream {
-        match state.upstream.stream(&req, &decision).await {
+        match state.upstream.stream(&req, &decision, agent_id.as_deref()).await {
             Ok((byte_stream, fallback)) => {
                 let outcome = RequestOutcome::success(&decision, fallback);
                 record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
@@ -88,7 +89,7 @@ pub async fn chat_completions(
             }
         }
     } else {
-        match state.upstream.complete(&req, &decision).await {
+        match state.upstream.complete(&req, &decision, agent_id.as_deref()).await {
             Ok(mut resp) => {
                 let fallback = resp.flowy_meta.as_ref().is_some_and(|m| m.fallback);
                 let outcome = RequestOutcome::success(&decision, fallback);

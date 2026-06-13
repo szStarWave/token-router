@@ -82,3 +82,26 @@ model = "auto"               # auto = 保留客户端 model，由 Flowy 路由
 # ---------------------------------------------------------------------------
 [cli]
 # gateway_url = "http://127.0.0.1:11080"
+
+# ---------------------------------------------------------------------------
+# Agent 专属上游（可选）
+# ---------------------------------------------------------------------------
+# 客户端在请求头中设置 X-Agent-Id 来标识 agent。
+# Agent 配置为部分覆盖：未设置的字段回退到默认 [upstream.*]。
+#
+# [agent.hermes]
+# cloud_token_budget = 500000   # 5 小时窗口内云端累计 token 预算，超预算则 Cloud 降级为 Cascade（优先 edge）
+#
+# [agent.hermes.upstream.edge]
+# base_url = "http://127.0.0.1:11435/v1"
+# api_key = "ollama"
+# model = "qwen3:8b"
+#
+# [agent.hermes.upstream.cloud]
+# base_url = "https://api.anthropic.com/v1"
+# api_key = "sk-ant-..."
+# model = "claude-sonnet"
+#
+# [agent.openclaw.upstream.cloud]
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o"

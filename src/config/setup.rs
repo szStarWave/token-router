@@ -85,10 +85,18 @@ pub struct UpstreamSetupView {
     pub gateway: GatewayConfigView,
     pub edge: Option<UpstreamEndpointView>,
     pub cloud: Option<UpstreamEndpointView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpstreamSetupUpdate {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub cloud_token_budget: Option<Option<u64>>,
     /// Partial gateway settings; omit or `null` to leave unchanged.
     #[serde(default)]
     pub gateway: Option<GatewayConfigPatch>,
@@ -153,6 +161,19 @@ pub fn view_from_config(file: &ConfigFile) -> UpstreamSetupView {
         gateway: gateway_view_from_section(&file.gateway),
         edge: file.upstream.edge.as_ref().map(endpoint_view),
         cloud: file.upstream.cloud.as_ref().map(endpoint_view),
+        agent_id: None,
+        cloud_token_budget: None,
+    }
+}
+
+pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> UpstreamSetupView {
+    let agent_cfg = file.agent.get(agent_id);
+    UpstreamSetupView {
+        gateway: gateway_view_from_section(&file.gateway),
+        edge: agent_cfg.and_then(|a| a.upstream.edge.as_ref()).map(endpoint_view),
+        cloud: agent_cfg.and_then(|a| a.upstream.cloud.as_ref()).map(endpoint_view),
+        agent_id: Some(agent_id.to_string()),
+        cloud_token_budget: agent_cfg.and_then(|a| a.cloud_token_budget),
     }
 }
 
@@ -208,13 +229,38 @@ pub fn apply_setup_patch(file: &mut ConfigFile, patch: &UpstreamSetupUpdate) -> 
             apply_gateway_patch(&mut file.gateway, gw)?;
         }
     }
-    if let Some(edge) = &patch.edge {
-        apply_tier_patch(&mut file.upstream.edge, edge);
-    }
-    if let Some(cloud) = &patch.cloud {
-        apply_tier_patch(&mut file.upstream.cloud, cloud);
+    if let Some(ref agent_id) = patch.agent_id {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            apply_tier_patch_section(&mut file.upstream.edge, &patch.edge);
+            apply_tier_patch_section(&mut file.upstream.cloud, &patch.cloud);
+        } else {
+            if let Some(budget) = patch.cloud_token_budget {
+                let agent = file.agent.entry(agent_id.to_string()).or_default();
+                agent.cloud_token_budget = budget;
+            }
+            let agent = file.agent.entry(agent_id.to_string()).or_default();
+            apply_tier_patch_section(&mut agent.upstream.edge, &patch.edge);
+            apply_tier_patch_section(&mut agent.upstream.cloud, &patch.cloud);
+            if agent.upstream.edge.is_none() && agent.upstream.cloud.is_none() && agent.cloud_token_budget.is_none() {
+                file.agent.remove(agent_id);
+            }
+        }
+    } else {
+        if let Some(edge) = &patch.edge {
+            apply_tier_patch(&mut file.upstream.edge, edge);
+        }
+        if let Some(cloud) = &patch.cloud {
+            apply_tier_patch(&mut file.upstream.cloud, cloud);
+        }
     }
     Ok(())
+}
+
+fn apply_tier_patch_section(slot: &mut Option<UpstreamEndpoint>, patch: &Option<UpstreamEndpointPatch>) {
+    if let Some(p) = patch {
+        apply_tier_patch(slot, p);
+    }
 }
 
 /// Backward-compatible alias.

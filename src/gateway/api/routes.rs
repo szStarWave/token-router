@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Serialize;
 
+use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::api::admin;
 use crate::gateway::api::chat::chat_completions;
 use crate::gateway::api::setup;
@@ -33,6 +34,7 @@ pub struct AppState {
     pub stats: Arc<GatewayStats>,
     pub adaptive_tuner: Arc<AdaptiveTuner>,
     pub edge_load: Arc<EdgeInferenceTracker>,
+    pub agent_usage: Arc<AgentCloudUsageStore>,
 }
 
 impl AppState {
@@ -85,5 +87,10 @@ async fn chat_completions_handler(
     headers: axum::http::HeaderMap,
     Json(req): Json<crate::gateway::api::openai::ChatCompletionRequest>,
 ) -> crate::gateway::error::AppResult<impl axum::response::IntoResponse> {
-    chat_completions(state, headers, req).await
+    let agent_id = headers
+        .get("x-agent-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    chat_completions(state, headers, agent_id, req).await
 }

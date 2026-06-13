@@ -21,6 +21,7 @@ use crate::config::sessions_dir;
 use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::MultimodalStore;
+use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::session::SessionStore;
 use crate::gateway::stats::GatewayStats;
 use crate::gateway::edge_load::EdgeInferenceTracker;
@@ -107,10 +108,14 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let sessions = SessionStore::open(sessions_path, config.session_persist_enabled)?;
     sessions.spawn_flush_task();
 
+    let agent_usage = AgentCloudUsageStore::open(&config.data_dir)?;
+    agent_usage.spawn_flush_task();
+
     let sessions_for_shutdown = sessions.clone();
     let experience_for_shutdown = experience.clone();
     let classifier_for_shutdown = classifier.clone();
     let multimodal_for_shutdown = multimodal.clone();
+    let agent_usage_for_shutdown = agent_usage.clone();
     let multimodal_for_upstream = multimodal.clone();
     let initial_routing = {
         let exp = experience.snapshot();
@@ -131,11 +136,13 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
             stats.clone(),
             multimodal_for_upstream,
             edge_load.clone(),
+            agent_usage.clone(),
         ),
         runtime: runtime.clone(),
         stats: stats.clone(),
         adaptive_tuner,
         edge_load,
+        agent_usage,
     };
 
     let app = router(state)
@@ -200,6 +207,9 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     }
     if let Err(e) = sessions_for_shutdown.flush() {
         tracing::warn!(error = %e, "final session flush failed");
+    }
+    if let Err(e) = agent_usage_for_shutdown.flush() {
+        tracing::warn!(error = %e, "final agent_usage flush failed");
     }
 
     if opts.register_pid {

@@ -6,6 +6,7 @@ use async_stream::stream;
 use bytes::Bytes;
 use futures::StreamExt;
 
+use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::stats::metrics::{
     estimate_tokens, inspect_sse_chunk, sse_has_content, FinalResponseMetrics, UpstreamCallMetrics,
 };
@@ -20,6 +21,8 @@ pub struct StreamRecordContext {
     pub cloud_input_saved: u32,
     pub record_cloud_saved: bool,
     pub edge_guard: Option<crate::gateway::edge_load::EdgeInferenceGuard>,
+    pub agent_usage: Option<Arc<AgentCloudUsageStore>>,
+    pub agent_id: Option<String>,
 }
 
 pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStream {
@@ -69,6 +72,12 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
             },
             completion_tokens: completion,
         });
+
+        if ctx.tier == "cloud" {
+            if let (Some(usage), Some(ref agent_id)) = (ctx.agent_usage.as_ref(), ctx.agent_id.as_ref()) {
+                usage.record_tokens(agent_id, (prompt + completion) as u64);
+            }
+        }
     })
 }
 
@@ -187,6 +196,8 @@ mod tests {
                 cloud_input_saved: 100,
                 record_cloud_saved: true,
                 edge_guard: None,
+                agent_usage: None,
+                agent_id: None,
             },
         );
         while stream.next().await.is_some() {}

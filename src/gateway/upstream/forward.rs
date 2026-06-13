@@ -2,6 +2,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use std::time::Instant;
 
+use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, FlowyMeta};
 use crate::gateway::config::AppConfig;
 use crate::gateway::config_manager::ConfigManager;
@@ -32,6 +33,7 @@ pub struct UpstreamClient {
     stats: Arc<GatewayStats>,
     multimodal: Arc<MultimodalStore>,
     edge_load: Arc<EdgeInferenceTracker>,
+    agent_usage: Arc<AgentCloudUsageStore>,
 }
 
 impl UpstreamClient {
@@ -40,6 +42,7 @@ impl UpstreamClient {
         stats: Arc<GatewayStats>,
         multimodal: Arc<MultimodalStore>,
         edge_load: Arc<EdgeInferenceTracker>,
+        agent_usage: Arc<AgentCloudUsageStore>,
     ) -> Self {
         Self {
             http: Client::new(),
@@ -47,6 +50,7 @@ impl UpstreamClient {
             stats,
             multimodal,
             edge_load,
+            agent_usage,
         }
     }
 
@@ -58,40 +62,82 @@ impl UpstreamClient {
         self.cfg().edge_base_url.is_some()
     }
 
+    fn cloud_token_budget_ok(&self, agent_id: Option<&str>, tokens_in: u32) -> bool {
+        let c = self.cfg();
+        let limit = agent_id
+            .and_then(|id| c.agents.get(id))
+            .and_then(|a| a.cloud_token_budget);
+        self.agent_usage.check_budget(agent_id.unwrap_or("__default__"), limit, tokens_in)
+    }
+
+    fn record_cloud_tokens_complete(&self, agent_id: Option<&str>, resp: &ChatCompletionResponse, prompt_fallback: u32) {
+        let Some(id) = agent_id else { return };
+        let c = self.cfg();
+        let has_budget = c.agents.get(id).and_then(|a| a.cloud_token_budget).unwrap_or(0) > 0;
+        if !has_budget {
+            return;
+        }
+        let (prompt, completion, _) = tokens_from_response(resp, prompt_fallback);
+        self.agent_usage.record_tokens(id, (prompt + completion) as u64);
+    }
+
     pub async fn complete(
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<ChatCompletionResponse> {
         if decision.multimodal_strategy != MultimodalStrategy::None {
-            return self.complete_multimodal(req, decision).await;
+            return self.complete_multimodal(req, decision, agent_id).await;
         }
 
         if decision.work_strategy == WorkStrategy::CachedEdge {
             let resp = self
-                .call_target(req, self.target_edge(), decision.tokens_in_estimate)
+                .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate)
                 .await?;
-            return Ok(self.finish_non_stream(resp, decision, "edge", false));
+            return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
-            return self.complete_work_verify(req, decision).await;
+            return self.complete_work_verify(req, decision, agent_id).await;
         }
 
         match decision.route {
             RouteTier::Edge => {
                 let resp = self
-                    .call_target(req, self.target_edge(), decision.tokens_in_estimate)
+                    .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "edge", false))
+                Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id))
             }
             RouteTier::Cloud => {
-                let t = self.target_cloud();
-                let resp = self.call_target(req, t, decision.tokens_in_estimate).await?;
-                Ok(self.finish_non_stream(resp, decision, "cloud", false))
+                if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
+                    let t = self.target_cloud(agent_id);
+                    let resp = self.call_target(req, t, decision.tokens_in_estimate).await?;
+                    Ok(self.finish_non_stream(resp, decision, "cloud", false, agent_id))
+                } else {
+                    let edge = self.target_edge(agent_id);
+                    let edge_tried = edge.base_url.is_some();
+                    if edge_tried {
+                        if let Ok(resp) = self
+                            .call_target(req, edge, decision.tokens_in_estimate)
+                            .await
+                        {
+                            if cascade_gate_pass(&resp) {
+                                self.stats.record_cascade_edge_ok();
+                                return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
+                            }
+                        }
+                        self.stats.record_cascade_fallback();
+                    }
+                    let cloud = self.target_cloud(agent_id);
+                    let resp = self
+                        .call_target(req, cloud, decision.tokens_in_estimate)
+                        .await?;
+                    Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id))
+                }
             }
             RouteTier::Cascade => {
-                let edge = self.target_edge();
+                let edge = self.target_edge(agent_id);
                 let edge_tried = edge.base_url.is_some();
                 if edge_tried {
                     if let Ok(resp) = self
@@ -100,16 +146,16 @@ impl UpstreamClient {
                     {
                         if cascade_gate_pass(&resp) {
                             self.stats.record_cascade_edge_ok();
-                            return Ok(self.finish_non_stream(resp, decision, "edge", false));
+                            return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
                         }
                     }
                     self.stats.record_cascade_fallback();
                 }
-                let cloud = self.target_cloud();
+                let cloud = self.target_cloud(agent_id);
                 let resp = self
                     .call_target(req, cloud, decision.tokens_in_estimate)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried))
+                Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id))
             }
         }
     }
@@ -118,35 +164,39 @@ impl UpstreamClient {
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<(SseStream, bool)> {
         if decision.multimodal_strategy != MultimodalStrategy::None {
-            return self.stream_multimodal(req, decision).await;
+            return self.stream_multimodal(req, decision, agent_id).await;
         }
 
         if decision.work_strategy == WorkStrategy::CachedEdge {
-            let edge = self.target_edge();
+            let edge = self.target_edge(agent_id);
             return self
-                .stream_target(req, edge, decision)
+                .stream_target(req, edge, decision, agent_id)
                 .await
                 .map(|s| (s, false));
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
-            // Streaming cannot run cloud verification; try edge then fall back on HTTP error.
-            return self.stream_cascade(req, decision).await;
+            return self.stream_cascade(req, decision, agent_id).await;
         }
 
         match decision.route {
             RouteTier::Edge => self
-                .stream_target(req, self.target_edge(), decision)
+                .stream_target(req, self.target_edge(agent_id), decision, agent_id)
                 .await
                 .map(|s| (s, false)),
             RouteTier::Cloud => {
-                self.stream_target(req, self.target_cloud(), decision)
-                    .await
-                    .map(|s| (s, false))
+                if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
+                    self.stream_target(req, self.target_cloud(agent_id), decision, agent_id)
+                        .await
+                        .map(|s| (s, false))
+                } else {
+                    self.stream_cascade(req, decision, agent_id).await
+                }
             }
-            RouteTier::Cascade => self.stream_cascade(req, decision).await,
+            RouteTier::Cascade => self.stream_cascade(req, decision, agent_id).await,
         }
     }
 
@@ -154,22 +204,23 @@ impl UpstreamClient {
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<ChatCompletionResponse> {
         match decision.multimodal_strategy {
             MultimodalStrategy::CachedEdge | MultimodalStrategy::CachedEdgeFallback => {
                 let resp = self
-                    .call_target(req, self.target_edge(), decision.tokens_in_estimate)
+                    .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "edge", false))
+                Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id))
             }
             MultimodalStrategy::CachedCloud => {
                 let resp = self
-                    .call_target(req, self.target_cloud(), decision.tokens_in_estimate)
+                    .call_target(req, self.target_cloud(agent_id), decision.tokens_in_estimate)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "cloud", true))
+                Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id))
             }
             MultimodalStrategy::Probe => {
-                self.complete_multimodal_probe(req, decision).await
+                self.complete_multimodal_probe(req, decision, agent_id).await
             }
             MultimodalStrategy::None => unreachable!(),
         }
@@ -179,9 +230,10 @@ impl UpstreamClient {
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<ChatCompletionResponse> {
         let model = &req.model;
-        let edge = self.target_edge();
+        let edge = self.target_edge(agent_id);
 
         if edge.base_url.is_some() {
             match self
@@ -191,7 +243,7 @@ impl UpstreamClient {
                 Ok(resp) if cascade_gate_pass(&resp) => {
                     self.multimodal.record_edge(&self.cfg(), model, true);
                     self.stats.record_cascade_edge_ok();
-                    return Ok(self.finish_non_stream(resp, decision, "edge", false));
+                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
                 }
                 Ok(_) => self.multimodal.record_edge(&self.cfg(), model, false),
                 Err(_) => self.multimodal.record_edge(&self.cfg(), model, false),
@@ -199,30 +251,31 @@ impl UpstreamClient {
         }
 
         self.stats.record_cascade_fallback();
-        let cloud = self.target_cloud();
+        let cloud = self.target_cloud(agent_id);
         match self
             .call_target(req, cloud, decision.tokens_in_estimate)
             .await
         {
             Ok(resp) => {
                 self.multimodal.record_cloud(&self.cfg(), model, true);
-                return Ok(self.finish_non_stream(resp, decision, "cloud", true));
+                return Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id));
             }
             Err(_) => self.multimodal.record_cloud(&self.cfg(), model, false),
         }
 
         let resp = self
-            .call_target(req, self.target_edge(), decision.tokens_in_estimate)
+            .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "edge", true))
+        Ok(self.finish_non_stream(resp, decision, "edge", true, agent_id))
     }
 
     async fn complete_work_verify(
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<ChatCompletionResponse> {
-        let edge = self.target_edge();
+        let edge = self.target_edge(agent_id);
         let edge_tried = edge.base_url.is_some();
 
         if edge.base_url.is_some() {
@@ -231,14 +284,14 @@ impl UpstreamClient {
                 .await
             {
                 if cascade_gate_pass(&edge_resp) {
-                    let cloud = self.target_cloud();
+                    let cloud = self.target_cloud(agent_id);
                     if let Ok(_cloud_resp) = self
                         .call_target(req, cloud, decision.tokens_in_estimate)
                         .await
                     {
                         if cloud_verifies_edge(&edge_resp, &_cloud_resp) {
                             self.stats.record_cascade_edge_ok();
-                            return Ok(self.finish_non_stream(edge_resp, decision, "edge", false));
+                            return Ok(self.finish_non_stream(edge_resp, decision, "edge", false, agent_id));
                         }
                     }
                 }
@@ -248,30 +301,31 @@ impl UpstreamClient {
         if edge_tried {
             self.stats.record_cascade_fallback();
         }
-        let cloud = self.target_cloud();
+        let cloud = self.target_cloud(agent_id);
         let resp = self
             .call_target(req, cloud, decision.tokens_in_estimate)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried))
+        Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id))
     }
 
     async fn stream_multimodal(
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<(SseStream, bool)> {
         match decision.multimodal_strategy {
             MultimodalStrategy::CachedEdge | MultimodalStrategy::CachedEdgeFallback => {
-                self.stream_target(req, self.target_edge(), decision)
+                self.stream_target(req, self.target_edge(agent_id), decision, agent_id)
                     .await
                     .map(|s| (s, false))
             }
             MultimodalStrategy::CachedCloud => {
-                self.stream_target(req, self.target_cloud(), decision)
+                self.stream_target(req, self.target_cloud(agent_id), decision, agent_id)
                     .await
                     .map(|s| (s, true))
             }
-            MultimodalStrategy::Probe => self.stream_multimodal_probe(req, decision).await,
+            MultimodalStrategy::Probe => self.stream_multimodal_probe(req, decision, agent_id).await,
             MultimodalStrategy::None => unreachable!(),
         }
     }
@@ -280,13 +334,14 @@ impl UpstreamClient {
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<(SseStream, bool)> {
         let model = &req.model;
-        let edge = self.target_edge();
+        let edge = self.target_edge(agent_id);
         let edge_tried = edge.base_url.is_some();
 
         if edge.base_url.is_some() {
-            match self.stream_target(req, edge, decision).await {
+            match self.stream_target(req, edge, decision, agent_id).await {
                 Ok(stream) => {
                     self.multimodal.record_edge(&self.cfg(), model, true);
                     return Ok((stream, false));
@@ -296,9 +351,9 @@ impl UpstreamClient {
         }
 
         self.stats.record_cascade_fallback();
-        let cloud = self.target_cloud();
+        let cloud = self.target_cloud(agent_id);
         if cloud.base_url.is_some() {
-            match self.stream_target(req, cloud, decision).await {
+            match self.stream_target(req, cloud, decision, agent_id).await {
                 Ok(stream) => {
                     self.multimodal.record_cloud(&self.cfg(), model, true);
                     return Ok((stream, edge_tried));
@@ -307,7 +362,7 @@ impl UpstreamClient {
             }
         }
 
-        self.stream_target(req, self.target_edge(), decision)
+        self.stream_target(req, self.target_edge(agent_id), decision, agent_id)
             .await
             .map(|s| (s, edge_tried))
     }
@@ -316,40 +371,43 @@ impl UpstreamClient {
         &self,
         req: &ChatCompletionRequest,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<(SseStream, bool)> {
-        let edge = self.target_edge();
+        let edge = self.target_edge(agent_id);
         let edge_tried = edge.base_url.is_some();
         if edge_tried {
-            match self.stream_target(req, edge, decision).await {
+            match self.stream_target(req, edge, decision, agent_id).await {
                 Ok(stream) => return Ok((stream, false)),
-                Err(_) if self.cfg().cloud_base_url.is_some() => {
+                Err(_) if self.target_cloud(agent_id).base_url.is_some() => {
                     self.stats.record_cascade_fallback();
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        self.stream_target(req, self.target_cloud(), decision)
+        self.stream_target(req, self.target_cloud(agent_id), decision, agent_id)
             .await
             .map(|s| (s, edge_tried))
     }
 
-    fn target_edge(&self) -> UpstreamTarget {
+    fn target_edge(&self, agent_id: Option<&str>) -> UpstreamTarget {
         let c = self.cfg();
+        let resolved = c.resolve_upstream(agent_id, "edge");
         UpstreamTarget {
-            base_url: c.edge_base_url.clone(),
-            api_key: c.edge_api_key.clone(),
-            model: c.edge_model.clone(),
+            base_url: resolved.base_url,
+            api_key: resolved.api_key,
+            model: resolved.model,
             tier: "edge",
         }
     }
 
-    fn target_cloud(&self) -> UpstreamTarget {
+    fn target_cloud(&self, agent_id: Option<&str>) -> UpstreamTarget {
         let c = self.cfg();
+        let resolved = c.resolve_upstream(agent_id, "cloud");
         UpstreamTarget {
-            base_url: c.cloud_base_url.clone(),
-            api_key: c.cloud_api_key.clone(),
-            model: c.cloud_model.clone(),
+            base_url: resolved.base_url,
+            api_key: resolved.api_key,
+            model: resolved.model,
             tier: "cloud",
         }
     }
@@ -428,6 +486,7 @@ impl UpstreamClient {
         req: &ChatCompletionRequest,
         target: UpstreamTarget,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<SseStream> {
         let url = target
             .base_url
@@ -440,6 +499,7 @@ impl UpstreamClient {
             target.model.as_deref(),
             target.tier,
             decision,
+            agent_id,
         )
         .await
     }
@@ -452,6 +512,7 @@ impl UpstreamClient {
         endpoint_model: Option<&str>,
         tier: &str,
         decision: &RouteDecision,
+        agent_id: Option<&str>,
     ) -> AppResult<SseStream> {
         let edge_guard = self.edge_guard_for_tier(tier);
         self.record_upstream_call(tier);
@@ -477,6 +538,21 @@ impl UpstreamClient {
             resp.bytes_stream().map(|r| r.map_err(std::io::Error::other)),
         );
         let tier_static = tier_static(tier);
+        let cfg = self.cfg();
+        let stream_agent_id = agent_id.map(String::from);
+        let stream_agent_usage = {
+            let has_budget = stream_agent_id
+                .as_deref()
+                .and_then(|id| cfg.agents.get(id))
+                .and_then(|a| a.cloud_token_budget)
+                .unwrap_or(0) > 0;
+            if tier_static == "cloud" && has_budget {
+                Some(self.agent_usage.clone())
+            } else {
+                None
+            }
+        };
+        let stream_agent_id = stream_agent_usage.as_ref().and(stream_agent_id);
         Ok(instrument_stream(
             raw,
             StreamRecordContext {
@@ -486,6 +562,8 @@ impl UpstreamClient {
                 cloud_input_saved: decision.cloud_input_saved_estimate,
                 record_cloud_saved: tier_static == "edge",
                 edge_guard,
+                agent_usage: stream_agent_usage,
+                agent_id: stream_agent_id,
             },
         ))
     }
@@ -504,6 +582,7 @@ impl UpstreamClient {
         decision: &RouteDecision,
         served_tier: &'static str,
         fallback: bool,
+        agent_id: Option<&str>,
     ) -> ChatCompletionResponse {
         let (_, completion, _) = tokens_from_response(&resp, decision.tokens_in_estimate);
         self.stats.record_completion_tokens(completion);
@@ -516,6 +595,9 @@ impl UpstreamClient {
             },
             completion_tokens: completion,
         });
+        if served_tier == "cloud" {
+            self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
+        }
         attach_meta(resp, decision, fallback)
     }
 

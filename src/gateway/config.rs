@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::ConfigFile;
@@ -14,6 +15,24 @@ pub struct AdaptiveRoutingSettings {
     pub verify_rate_floor: f32,
     pub verify_rate_ceiling: f32,
     pub max_theta_shift: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentUpstreamConfig {
+    pub edge_base_url: Option<String>,
+    pub edge_api_key: Option<String>,
+    pub edge_model: Option<String>,
+    pub cloud_base_url: Option<String>,
+    pub cloud_api_key: Option<String>,
+    pub cloud_model: Option<String>,
+    pub cloud_token_budget: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedUpstream {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +62,7 @@ pub struct AppConfig {
     pub work_verify_sample_rate: f32,
     pub adaptive_routing: AdaptiveRoutingSettings,
     pub classifier: ClassifierSettings,
+    pub agents: HashMap<String, AgentUpstreamConfig>,
 }
 
 impl AppConfig {
@@ -136,11 +156,78 @@ impl AppConfig {
                 prior_from_heuristic: file.gateway.classifier_prior_from_heuristic,
                 min_feature_count: 0.5,
             },
+            agents: file
+                .agent
+                .iter()
+                .map(|(id, ac)| {
+                    let edge = ac.upstream.edge.as_ref();
+                    let cloud = ac.upstream.cloud.as_ref();
+                    (
+                        id.clone(),
+                        AgentUpstreamConfig {
+                            edge_base_url: edge
+                                .filter(|e| endpoint_configured(e))
+                                .map(|e| e.base_url.clone()),
+                            edge_api_key: edge
+                                .and_then(|e| e.api_key.clone())
+                                .filter(|s| !s.is_empty()),
+                            edge_model: edge.and_then(|e| e.model.clone()),
+                            cloud_base_url: cloud
+                                .filter(|e| endpoint_configured(e))
+                                .map(|e| e.base_url.clone()),
+                            cloud_api_key: cloud
+                                .and_then(|e| e.api_key.clone())
+                                .filter(|s| !s.is_empty()),
+                            cloud_model: cloud.and_then(|e| e.model.clone()),
+                            cloud_token_budget: ac.cloud_token_budget,
+                        },
+                    )
+                })
+                .collect(),
         })
     }
 
     pub fn gateway_base_url(&self) -> String {
         format!("http://{}", self.listen_addr)
+    }
+
+    pub fn resolve_upstream(&self, agent_id: Option<&str>, tier: &str) -> ResolvedUpstream {
+        let agent_cfg = agent_id.and_then(|id| self.agents.get(id));
+        match tier {
+            "edge" => ResolvedUpstream {
+                base_url: agent_cfg
+                    .and_then(|a| a.edge_base_url.as_deref())
+                    .or(self.edge_base_url.as_deref())
+                    .map(String::from),
+                api_key: agent_cfg
+                    .and_then(|a| a.edge_api_key.as_deref())
+                    .or(self.edge_api_key.as_deref())
+                    .map(String::from),
+                model: agent_cfg
+                    .and_then(|a| a.edge_model.as_deref())
+                    .or(self.edge_model.as_deref())
+                    .map(String::from),
+            },
+            "cloud" => ResolvedUpstream {
+                base_url: agent_cfg
+                    .and_then(|a| a.cloud_base_url.as_deref())
+                    .or(self.cloud_base_url.as_deref())
+                    .map(String::from),
+                api_key: agent_cfg
+                    .and_then(|a| a.cloud_api_key.as_deref())
+                    .or(self.cloud_api_key.as_deref())
+                    .map(String::from),
+                model: agent_cfg
+                    .and_then(|a| a.cloud_model.as_deref())
+                    .or(self.cloud_model.as_deref())
+                    .map(String::from),
+            },
+            _ => ResolvedUpstream {
+                base_url: None,
+                api_key: None,
+                model: None,
+            },
+        }
     }
 }
 
