@@ -461,6 +461,164 @@ flowy gateway restart
 - 脏标记追踪，每 5 秒批量刷盘
 - 会话键（`conversation_key()`）仅哈希 anchor messages（第一条 system + 第一条 user + tool 名称），在 Agent 循环中保持稳定
 
+#### 11. 任务成功判定与准确率保障
+
+Flowy 通过 **多层级质量评估系统** 判断端侧任务是否成功、是否需要升云，并在执行后持续学习优化。整个过程不依赖用户反馈，完全通过执行结果本身进行信号提取。
+
+##### 11.1 任务结果的定义
+
+核心数据结构 `RequestOutcome`（`experience/outcome.rs:5`）包含三个布尔字段，组合表示每次请求的结果：
+
+| 组合 | `edge_ok` | `cascade_fallback` | `upstream_error` | 含义 |
+|------|-----------|-------------------|-----------------|------|
+| **端侧成功** | `true` | `false` | `false` | Edge 返回合格结果，直接采纳 |
+| **级联回退** | `false` | `true` | `false` | Edge 结果不合格，升云重答后成功 |
+| **上游错误** | `false` | `false` | `true` | Edge/Cloud 请求本身失败（网络/HTTP错误） |
+| **纯云端** | `false` | `false` | `false` | 决策层直接走了 Cloud，端侧未尝试 |
+
+`RequestOutcome::success(decision, fallback)` 构造函数根据路由类型自动映射（`forward.rs:12`）：
+- `RouteTier::Edge` → `{ edge_ok: true, ... }`
+- `RouteTier::Cloud` → `{ edge_ok: false, ... }`（端侧未尝试，不算成功也不算失败）
+- `RouteTier::Cascade` → `edge_ok = !fallback, cascade_fallback = fallback`
+
+##### 11.2 级联质量门（Cascade Gate）
+
+当路由决策为 `Cascade` 时，系统先请求端侧，然后通过 `cascade_gate_pass()`（`forward.rs:584`）判断端侧结果是否合格：
+
+**文本回复的质量门**（`cascade_text_pass`, `forward.rs:594`）：
+```
+通过条件: content ≠ "" && content.len() > 8 && content 不含 "不确定"
+```
+- 空回复 → 不通过（端侧模型未输出或输出被截断）
+- 极短回复 ≤ 8 字符 → 不通过（模型未认真回答）
+- 包含中文「不确定」→ 不通过（端侧缺乏足够知识）
+
+**Tool calls 的质量门**（`cascade_tool_calls_pass`, `forward.rs:601`）：
+```
+通过条件: tool_calls 非空 && 每条 call 的 name 和 arguments 均非空
+```
+- 覆盖 `TOOL_RESULT_DIGEST` 后模型只返回 tool call、无长文本的情况
+- 空 tool_calls → 不通过（Agent 循环中期望工具调用但端侧未产出）
+
+**两个条件满足其一即过关**，不要求同时满足。
+
+##### 11.3 云端校验（Work Verify）
+
+当路由启用了 `WorkStrategy::Verify` 时（通过 `should_work_verify_sample()` 确定性抽样），系统会请求端侧和云端，然后执行 `cloud_verifies_edge()`（`verify.rs:6`）做输出对比验证：
+
+**Tool calls 校验**（优先级高于文本）：
+```
+edge_tool_names == cloud_tool_names（精确匹配且顺序一致）
+```
+- 端侧选择了与云端完全一致的工具序列 → 信任端侧
+- 任一缺失或顺序不同 → 不信任，使用云端结果
+
+**文本回复校验**（`text_responses_compatible`, `verify.rs:38`）：
+```
+条件: edge.len() ≥ 8 && cloud.len() ≥ 8 && cloud 不含 "不确定"
+       && Jaccard(edge_words, cloud_words) ≥ 12%
+```
+- Jaccard 相似度 = |edge_words ∩ cloud_words| / |edge_words ∪ cloud_words|
+- 低阈值（12%）设计是因为端侧模型可能用不同措辞表达同一意思
+- 云端自己说不确定 → 不校验（云端也没把握，信任端侧）
+- 任一方文本太短 → 不校验（无意义的简短回复不做判断）
+
+**验证通过 → 采纳端侧结果并标记 `edge_ok=true`**，同时`cloud_input_saved`记录节省的输入Token。
+
+**验证不通过 → 丢弃端侧结果，返回云端结果**，标记 `cascade_fallback=true`。
+
+##### 11.4 多模态能力探测（Probe）
+
+对多模态请求，`MultimodalStrategy::Probe`（`forward.rs:178`）采用类似 Cascade 的试错：
+1. 尝试端侧 → 若 `cascade_gate_pass()` 通过 → 记录 `MultimodalStore` 为 `edge_capable`
+2. 端侧失败或结果不合格 → 尝试云端 → 记录 `MultimodalStore` 为 `cloud_capable`
+3. 两者都失败 → 兜底走端侧（尽力而为）
+4. 下次同模型请求 → 直接从 `MultimodalStore` 取缓存能力，跳过探测
+
+##### 11.5 学习反馈闭环
+
+每次请求完成后，`record_learning()`（`chat.rs:114`）将结果反馈到三个学习系统：
+
+**经验学习**（`experience/store.rs:104`）：
+```
+每 step_kind 维护: edge_ok, cascade_fallback, upstream_error 三个计数器
+→ 计算 fallback_rate = cascade_fallback / (edge_ok + cascade_fallback)
+→ 计算 bias = learning_rate × (fallback_rate - target_fallback)
+→ 判断 edge_trusted: verified ≥ 3 且 fallback_rate ≤ target_fallback
+```
+
+**朴素贝叶斯分类器**（`classifier/model.rs:9`）：
+```
+记录条件: should_record_outcome() 确保仅端侧真正被尝试时记录
+→ label_from_outcome() 映射: edge_ok → EdgeOk, fallback/error → CloudNeeded
+→ 更新特征计数（step_kind, ctx_bucket, intent, tool_bucket 等 ~15 维）
+→ 指数衰减老化旧观测（默认 72h 半衰期）
+→ 冷启动注入领域先验（如 hard_intent → cloud: 0.75）
+```
+
+**会话状态**（`session/store.rs`）：
+```
+cloud_sticky_until_unix 更新:
+  cascade_fallback → 续期 TTL
+  upstream_error（非心跳） → 续期 TTL
+  GATE_TOOL_ERROR_STREAK → force_cloud_sticky
+  edge_ok && !fallback && !error → 清除粘性
+```
+
+##### 11.6 自适应调优
+
+`compute_effective_routing()`（`adaptive.rs:37`）每 30s/40 请求根据历史统计微调关键参数：
+
+| 系统状态 | verify_sample_rate 调整 | θ_edge 调整 | 效果 |
+|---------|----------------------|------------|------|
+| **健康**: 回退率 ≤ 目标×0.75 且信任步态 ≥ 20% | 降低至 base×0.65~1.0（根据信任比率缩放） | 放宽 -max_shift（最多 0.05） | 减少不必要的校验，提高端侧使用率 |
+| **略吃力**: 回退率 > 目标但 ≤ 目标×1.35 | 升高至 base×1.15 | 不变 | 轻微加强校验 |
+| **吃力**: 回退率 > 目标×1.35 | 升高至 base×1.45 | 收紧 +max_shift×0.6 | 强化校验，保障准确 |
+| **级联回退率 > 28%** | 额外 ×1.12 | 不变 | 从 Cascade 维度额外收紧 |
+
+**安全边界**：InitialPlan、复杂多模态、Hard Gates 命中、高难度走云/级联 — 不被自适应放宽。
+
+##### 11.7 准确率保障全景图
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     准确率保障体系                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─ 前置路由层 ─────────────────────────────────────────────────────┐  │
+│  │  Hard Gates: 预设高风险场景直接走云（不经过端侧质量评估）           │  │
+│  │  难度评分: 高难度请求倾向 Cloud/Cascade                           │  │
+│  │  Profile 策略: θ_edge / θ_cloud 阈值控制什么时候信端侧             │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                ▼                                         │
+│  ┌─ 执行质量层 ─────────────────────────────────────────────────────┐  │
+│  │  Cascade Gate: 端侧产出必须≥8字/非空tool_calls || 不含"不确定"     │  │
+│  │  Cloud Verify: 端+云双执行，Jaccard≥12% 或 tool 名精确匹配才信任   │  │
+│  │  Multimodal Probe: 未知模型通过实际试错学习视觉能力               │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                ▼                                         │
+│  ┌─ 学习反馈层 ─────────────────────────────────────────────────────┐  │
+│  │  Experience: 按步态统计 fallback_rate，产出难度偏置和边缘信任      │  │
+│  │  Classifier: 多维特征贝叶斯模型，冷启动有领域先验，72h半衰期衰减   │  │
+│  │  Session: 粘性追踪防止连续错误                                      │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                ▼                                         │
+│  ┌─ 自适应调优层 ──────────────────────────────────────────────────┐  │
+│  │  健康→降低校验率/放宽阈值，吃力→提高校验率/收紧阈值               │  │
+│  │  级联回退>28%时额外收紧，InitialPlan等安全边界不受影响             │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**核心逻辑总结**：
+
+| 问题 | 答案 |
+|------|------|
+| **怎么判定端侧任务成功？** | `cascade_gate_pass()` — 非空内容≥8字且不含"不确定"，或合法 tool_calls |
+| **什么时候需要升云？** | Cascade: 质量门不通过；Verify: 云端校验不信任端侧输出；Probe: 端侧不支持多模态；EdgeBusy/复杂多模态: 决策层直接走云 |
+| **怎么保证最终准确率？** | 四层保障：① Hard Gates 前置过滤 ② Cascade Gate + Cloud Verify 执行质量把关 ③ Experience + Classifier 持续学习 ④ Adaptive Tuner 实时调参 |
+
 ---
 
 ## 1. 安装
@@ -846,162 +1004,13 @@ adaptive_routing_enabled = true
 |------|------|
 | 日常、心跳走 **casual 步态** + 允许 **cascade** | 默认即可：`route = auto`，`routing_mode = cascade` |
 | 日常尽量少升云、常走端 | `default_profile = "economy"`；或 `routing_mode = "single"` |
-| 确认路由是否符合预期 | 看 `flowy_meta.step_kind` 与 `reason_codes`（[§5](#5-http-端点)、[§7.7](#77-常见-reason_codes调试)） |
+| 确认路由是否符合预期 | 看 `flowy_meta.step_kind` 与 `reason_codes`（[§5](#5-http-端点)、[架构-步态分类](#12-步态分类routingstep_kindrs)） |
 | OpenClaw 大包仍被判成 `tool_select` | 检查 `tok_rest`、多轮是否缺 easy 关键词、是否在 tool 循环 |
 
----
-
-## 7. 路由与学习
-
-### 7.1 步态（step_kind）
-
-Router 从 `messages[]` 尾部推断当前 **Inference Step** 类型（与 OpenClaw/Hermes 多轮 transcript 形态对齐），例如：
-
-| step_kind | 典型路由倾向 | 说明 |
-|-----------|--------------|------|
-| `HEARTBEAT_ACK` | casual，按 `routing_mode` 路由（常为 edge 或 cascade） | `[OpenClaw heartbeat poll]` 等 |
-| `DIRECT_CHAT` | casual，按 `routing_mode` 路由 | 日常短对话（见下「casual chat」） |
-| `TOOL_RESULT_DIGEST` | 端侧 / Cascade | 上一条为 `role: tool` 的摘要步 |
-| `TOOL_SELECT` / `TOOL_ARG_FILL` | 端侧或 `WORK_VERIFY_SAMPLE` | Agent 选工具 / 填参 |
-| `INITIAL_PLAN` | **云端** | 首轮非 casual 的 Agent 任务，或用户含规划意图 |
-| `RECOVERY_AFTER_FAILURE` | **云端** | `assistant turn failed` 等恢复步 |
-| `SUBAGENT_SPAWN` | **云端** | spawn 类提示 |
-| `FINAL_REPLY` | 端侧 / Work 策略 | 工具链收尾 |
-
-**Casual chat（`DIRECT_CHAT` / `HEARTBEAT_ACK`）** — 只标 **步态**，**不强制端侧**；最终 `route` 由 `routing_mode` + 难度分决定（默认 `routing_mode = cascade` 时，日常常见 **`edge` 或 `cascade`**，亦可 `cloud`）。
-
-| 条件 | 说明 |
-|------|------|
-| 体量 | 用 **`tok_rest`**（transcript，**不含** system、**不含** tools schema）< 8192；**不用**整包 `tok_total_in` |
-| 轮次 | 用户消息数 ≤ 8 |
-| 排除 | 有 tool 往返、`pending_tool_calls`、`intent_hard`、失败恢复、图+tools 并存等 |
-| 多轮 + tools | 最新 user 须命中 **easy 意图**关键词（如你好、天气、笑话、谢谢、再讲…） |
-| 多轮无 tools | 最新 user 很短（`last_user_tok` ≤ 512）也可视为 casual 跟帖 |
-
-OpenClaw 带巨型 system/tools 的「你好」仍可标为 `direct_chat`；`GATE_CTX_OVERFLOW` 对 casual **只按 `tok_rest` 计**。`DirectChat` / `HeartbeatAck` **不受** `GATE_EDGE_BUSY` 挤到纯云。
-
-OpenClaw 特征：心跳、`assistant turn failed`、Inbound Meta、`exec` 等 Tier-1 工具触发硬约束。
-
-```mermaid
-flowchart LR
-  req[请求] --> casual{casual?}
-  casual -->|是| stepCasual[DIRECT_CHAT / HEARTBEAT_ACK]
-  casual -->|否| stepWork[TOOL_* / INITIAL_PLAN / ...]
-  stepCasual --> gates[Hard Gates]
-  stepWork --> gates
-  gates --> policy[难度 + routing_mode]
-  policy --> outEdge[edge]
-  policy --> outCascade[cascade]
-  policy --> outCloud[cloud]
-```
-
-### 7.2 硬约束（Hard Gates）
-
-命中任一则 **跳过难度评分**，直接定路由（多为云端）：
-
-| 规则 | 条件 |
-|------|------|
-| `GATE_EDGE_DOWN` | 未配置 `[upstream.edge]` 或不可用 |
-| `GATE_CTX_OVERFLOW` | 输入 token > 80% × `ctx_edge_max_tokens`；**`DIRECT_CHAT` / `HEARTBEAT_ACK` 仅按 `tok_rest`（transcript）计**，避免 OpenClaw 巨型 system/tools 误伤日常 |
-| `GATE_TOOL_ERROR_STREAK` | transcript 尾部 **连续 2 条** `role=tool` 且内容含错误关键词 → 当次升云并 `force_cloud_sticky` |
-| `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） |
-| `GATE_RISKY_TOOL` | Tier-1 工具（exec/write/browser/spawn 等） |
-| `GATE_OPENCLAW_COMPACT` | `MEMORY_COMPACT` 且上下文 > 12k token |
-| `GATE_EDGE_BUSY` | 端侧已有推理进行中（且云端可用）→ **非 casual** 的 edge/cascade 步态当次直走云 |
-| 复杂多模态 | 非 `DirectChat` 的多模态 → `MULTIMODAL_COMPLEX_CLOUD` |
-
-> **已移除** `GATE_STICKY_CLOUD`：粘性不再作为硬门控把 **所有** 步态钉在云上。
-
-### 7.3 Cloud sticky（会话级）
-
-粘性用于「本会话近期不稳定，执行步态再给端侧一次机会」，**不是**按步数计数，而是 **Unix 时间戳 TTL**（`cloud_sticky_ttl_secs`，默认 600s），保存在 `sessions/<conv>.json` 的 `cloud_sticky_until_unix`。
-
-**何时开启粘性**（续期 TTL）：
-
-- 级联回退到云（`cascade_fallback`）
-- 上游错误（非心跳步态）
-- `GATE_TOOL_ERROR_STREAK`（`force_cloud_sticky`）
-
-**何时清除粘性**：
-
-- 任一路径 **端侧成功**：`edge_ok && !cascade_fallback && !upstream_error`（含 Cascade 端侧过关未升云）
-
-**粘性有效期内的路由**（非硬门控，在 Work 路由之后覆盖）：
-
-| 步态 | 行为 |
-|------|------|
-| `DIRECT_CHAT` / `HEARTBEAT_ACK` | 照常走策略映射（edge / cascade / cloud），**不**被粘性改成纯云 |
-| Work 执行（`TOOL_SELECT`、`TOOL_RESULT_DIGEST`、`FINAL_REPLY` 等） | `STICKY_CASCADE_RETRY` → **Cascade**（先 edge，质量门不过再 cloud） |
-| `INITIAL_PLAN` / 规划意图（`PLAN_INTENT_CLOUD`） | **仍走云** |
-| `RECOVERY_AFTER_FAILURE` | **仍走云**（assistant 失败门控或策略） |
-
-调试时在 `flowy_meta.reason_codes` 中查找 `STICKY_CASCADE_RETRY`。
-
-### 7.4 三层动态优化
-
-| 层级 | 数据源 | 作用 | 持久化 |
-|------|--------|------|--------|
-| **静态配置** | `config.toml` | profile、校验率基线 | 是 |
-| **经验学习** | 每次请求 outcome | 按 `step_kind` 调整难度偏置；足够样本后标记 `edge_trusted` | `experience.json` |
-| **自适应路由** | experience + stats | 运行时微调 `work_verify_sample_rate`、`θ_edge`/`θ_cloud` | **否**（仅内存） |
-
-**自适应路由**（`adaptive_routing_enabled = true`）逻辑摘要：
-
-- **预热**：云验证样本 < `adaptive_min_verified_samples` 时保持配置基线
-- **健康**（回退率 ≤ 目标、信任步态足够）：降低校验抽样率、略放宽 `θ_edge` → 提高端侧使用率
-- ** struggling**（回退率偏高）：提高校验率、收紧阈值 → 保证复杂任务正确率
-- **级联统计**：`stats.json` 中级联回退率 > 28% 时进一步收紧
-- 每约 **30 秒** 或 **40 个请求** 刷新；`flowy stats --lang zh` 可查看生效值与 `ADAPTIVE_*` 原因码
-
-**安全边界**：InitialPlan、复杂多模态、Hard Gates、高难度走云/级联 — **不会被自适应放宽**。
-
-### 7.5 Work 步态与规划
-
-| reason_code | 含义 |
-|-------------|------|
-| `INITIAL_PLAN_CLOUD` | 步态为 `INITIAL_PLAN` |
-| `PLAN_INTENT_CLOUD` | 用户含规划/计划类意图，且处于 ToolSelect 等步态 |
-| `WORK_EXEC_EDGE` | Work 执行步态默认尝试端侧 |
-| `WORK_VERIFY_SAMPLE` | 抽样命中：Cascade + 云端校验（`WorkStrategy::Verify`） |
-| `WORK_CACHE_EDGE` | `experience` 已标记该 `step_kind` 为 `edge_trusted` |
-
-`work_verify_sample_rate`（0–1）控制 `WORK_VERIFY_SAMPLE` 抽样；自适应层可在 `[floor, ceiling]` 内动态调整。
-
-### 7.6 级联（Cascade）
-
-**非流式** `route = cascade` 或 `STICKY_CASCADE_RETRY` / `WORK_VERIFY_SAMPLE` 等路径：
-
-1. 端侧完整生成
-2. **Quality Gate**（`cascade_gate_pass`）通过条件（满足其一即可）：
-   - 非空 `content`，长度 > 8，且不含「不确定」
-   - 合法 `tool_calls`：至少一条，且每条 `function.name` / `arguments` 非空（覆盖 `TOOL_RESULT_DIGEST` 后模型只返回 tool call、无长文本的情况）
-3. 不通过 → 升云并重答（`cascade_fallback = true`，可能续期 sticky）
-4. 通过 → 该步以端侧结果返回（`edge_ok = true`），可清除 sticky
-
-**流式** Cascade：仅在端侧 **HTTP 失败** 时升云，不做中途 token 质量切云。
-
-端侧命中一步 ≈ 节省该步全部云端输入 Token（OpenClaw 场景约 **~52k token/步**）。
-
-### 7.7 常见 reason_codes（调试）
-
-| reason_code | 含义 |
-|-------------|------|
-| `STEP_*` | 当前 `step_kind`（如 `STEP_DIRECT_CHAT`） |
-| `DIFFICULTY_*` / `TOK_IN_*` | 难度分与输入 token 估算 |
-| `EXP_BIAS_*` | 经验偏置 |
-| `GATE_*` | 硬门控命中（casual 一般不出现 `GATE_CTX_OVERFLOW` 全包误判） |
-| `STICKY_CASCADE_RETRY` | 粘性期内 Work 执行走级联 |
-| `MULTIMODAL_SIMPLE_EDGE` | 简单多模态日常走端 |
-| `MULTIMODAL_PROBE` / `MULTIMODAL_COMPLEX_CLOUD` | 多模态探测或复杂走云 |
-| `ADAPTIVE_*` | 自适应层生效说明 |
-
-### 7.8 成本模型（设计约束）
-
-单步云端成本近似 \(c_{in}^{cloud} \cdot T_{in}\)（输出占比 <1% 可忽略）。10 步 loop 全云端约 **528k 输入 token**；7 步改端侧可降至 **~158k（↓70%）**。
 
 ---
 
-## 8. 常见问题
+## 7. 常见问题
 
 **`flowy` not found** — `cargo build --release` 或将 `target/release` 加入 PATH。
 
@@ -1009,11 +1018,11 @@ flowchart LR
 
 **Agent 无真实回复** — 确认上游 `base_url` 可达；未配置任何上游时返回 503。
 
-**OpenClaw 日常「看起来」仍走云**（排障，非默认行为）— 正常标为 casual 时 `step_kind` 应为 `direct_chat` 或 `heartbeat_ack`，决策上多为 **edge / cascade**（见 §7.1）。用 `flowy_meta` 区分三种情况：
+**OpenClaw 日常「看起来」仍走云**（排障，非默认行为）— 正常标为 casual 时 `step_kind` 应为 `direct_chat` 或 `heartbeat_ack`，决策上多为 **edge / cascade**（见 [架构-步态分类](#12-步态分类routingstep_kindrs)）。用 `flowy_meta` 区分三种情况：
 
 1. **`step_kind` 不是 casual** → 未进日常步态，常直接云或走 Work。查：`tool_select` / `initial_plan`（tool 循环中且最新 user 无 easy 关键词）、`tok_rest` ≥ 8192、`n_turns` > 8、含规划意图、assistant 失败恢复。
 2. **`step_kind` 对，但 `route` = `cloud`** → 查 `reason_codes` 里 `GATE_*`、`CONFIG_ROUTE_*`，或 `route = "cloud"` / `premium` + 高难度分。
-3. **`route` = `cascade` 且 `fallback` = true** → 路由先端侧，**质量门未过**升云重答（§7.6）；不是 sticky 把日常钉在云上。
+3. **`route` = `cascade` 且 `fallback` = true** → 路由先端侧，**质量门未过**升云重答（见 [架构-上游执行](#5-上游执行upstreamforwardrs--ssers--verifyrs)）；不是 sticky 把日常钉在云上。
 
 Casual **不强制端侧**；要尽量少云可 `default_profile = "economy"` 或 `routing_mode = "single"`（§6.5）。Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casual 溢出门控只计 `tok_rest`）。
 
@@ -1027,7 +1036,7 @@ Casual **不强制端侧**；要尽量少云可 `default_profile = "economy"` �
 
 ---
 
-## 9. 开发与测试
+## 8. 开发与测试
 
 ```bash
 make test          # 或 cargo test
@@ -1035,20 +1044,11 @@ cargo test routing # 只测路由
 make check
 ```
 
-```
-example/      # 配置示例（见 example/README.md）
-src/
-  config/     # 路径 + config.toml
-  gateway/    # 守护进程（路由、API、上游、stats、experience）
-  stats_cmd.rs
-  main.rs     # CLI + __serve
-tests/        # CLI 集成测试
-Makefile      # 常用 dev/ops 目标
-```
+源码结构见 [架构-源码结构](#源码结构)。配置示例见 `example/`。
 
 ---
 
-## 10. 路线图
+## 9. 路线图
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -1062,7 +1062,7 @@ Makefile      # 常用 dev/ops 目标
 
 ---
 
-## 11. 附录
+## 10. 附录
 
 ### OpenClaw system 分段标记（实现参考）
 
