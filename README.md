@@ -45,38 +45,421 @@
 
 ## 架构
 
+### 整体架构概览
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  flowy（单一二进制）                                          │
-│    flowy gateway start  →  后台 re-exec 自身为 HTTP 守护进程   │
-│    flowy env / stats / setup / gateway status  →  CLI 管理   │
-└───────────────────────────────┬─────────────────────────────┘
-                                │
-                    OpenClaw / Hermes ────────┘
-                    POST /v1/chat/completions
-                                │
-        ┌───────────────────────┼───────────────────────┐
-        ▼                       ▼                       ▼
-  Hard Gates            Difficulty + Policy      Experience + Adaptive
-  (命中则定路)           (Profile / Cascade)       (运行时微调)
-        │                       │                       │
-        └───────────────────────┴───────────────────────┘
-                                ▼
-                    Edge Runtime / Cloud Adapter
+┌──────────────────────────────────────────────────────────────────────┐
+│  flowy（单一二进制 / 动态库）                                           │
+│    CLI 层:  gateway start/stop/restart, setup, stats, env, status    │
+│    HTTP 层: Axum 服务器, OpenAI 兼容 API, 管理端点, Web 配置页        │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │
+                   Agent (OpenClaw/Hermes)
+                   POST /v1/chat/completions
+                               │
+┌──────────────────────────────┼──────────────────────────────────────┐
+│                              ▼                                       │
+│  ┌───────────────── Routing Engine (decide()) ──────────────────┐   │
+│  │                                                               │   │
+│  │  [1] SignalExtractor   提取消息特征、token估算、步态线索       │   │
+│  │  [2] StepKind          推断步态类型（direct_chat / tool_select │   │
+│  │                            / initial_plan / ...）              │   │
+│  │  [3] Hard Gates        硬约束门控（命中则跳过评分直接定路）    │   │
+│  │  [4] DifficultyScore   加权难度评分 [0,1] + 经验偏置          │   │
+│  │  [5] Classifier        朴素贝叶斯预测 edge_ok 概率 -> 融合难度 │   │
+│  │  [6] Policy            根据 Profile + mode 映射为路由层        │   │
+│  │  [7] WorkStrategy      Work 步态: CachedEdge / Verify / Plan  │   │
+│  │  [8] StickyCascade     粘性期内 Work 执行步态走级联            │   │
+│  │  [9] Multimodal        视觉模型能力探测与路由                   │   │
+│  │  [10] EdgeBusy         端侧负载感知 -> 非 casual 临时升云      │   │
+│  │  [11] UpstreamAvail    上游可用性检查 -> 单路强制               │   │
+│  └──────────────────────────┬────────────────────────────────────┘   │
+│                             ▼                                        │
+│  ┌───────────────── Upstream Execution ─────────────────────────┐   │
+│  │  Edge / Cloud / Cascade / Verify / Multimodal Probe          │   │
+│  │  SSE 流式转发 + TTFT/TPS 指标 + FlowyMeta 注入               │   │
+│  └──────────────────────────┬────────────────────────────────────┘   │
+│                             ▼                                        │
+│  ┌───────────────── Learning Feedback ──────────────────────────┐   │
+│  │  ExperienceStore    按 step_kind 记录 outcome -> 偏置学习    │   │
+│  │  ClassifierStore     特征向量 + edge_ok 标签 -> 贝叶斯更新   │   │
+│  │  SessionStore        粘性状态 + tok_loop_delta               │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                             ▼                                        │
+│  ┌───────────────── Adaptive Tuner (定时刷新) ──────────────────┐   │
+│  │  每 30s / 40 请求: 调整 verify_sample_rate, θ_edge, θ_cloud │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-**路由决策流水线**（每次 `POST /v1/chat/completions`）：
+> **核心原则**：路由仅由请求体 `messages[]` / `tools[]` 与 `config.toml` 推断，不依赖自定义 Header。调试通过响应体内 `flowy_meta`（非流式）或 `X-Flowy-*` 响应头（流式）查看每一步决策原因。
 
-1. **硬约束层** — 命中则直接定路由，不算分（端侧不可用、上下文溢出、连续 tool 错误、高危工具、assistant 失败恢复等）
-2. **信号提取** — 从 `messages[]` / `tools[]` 提取 token 估算、步态 `step_kind`、会话 `cloud_sticky_until`
-3. **难度评分** — 可解释加权公式 \(d \in [0,1]\)，叠加经验偏置 `EXP_BIAS`
-4. **策略映射** — Profile 的 `θ_edge` / `θ_cloud` + `routing_mode`（`DirectChat` / `HeartbeatAck` 为 casual 步态，**不强制端侧**，可走 edge / cascade / cloud）
-5. **Work 步态** — `InitialPlan` / 规划意图 → 云；执行步态默认端侧或抽样 `WORK_VERIFY_SAMPLE`（Cascade+云校验）
-6. **Cloud sticky 覆盖** — 粘性有效期内 Work 执行步态 → `STICKY_CASCADE_RETRY`（先端后侧）；日常/心跳不受影响
-7. **多模态 / 端侧繁忙** — 简单多模态日常可走端；复杂多模态走云；端侧忙时 **Work/级联** 步态可临时升云，**casual 不受影响**
-8. **自适应层**（可选）— 根据 `experience.json` + `stats.json` 运行时微调校验率与阈值（不写回配置）
+### 源码结构
 
-> **重要**：路由 **不读取** 请求体外的 Flowy 自定义头；步态与难度仅由 `messages[]` / `tools[]` 与 `config.toml` 推断。调试请看响应 JSON 的 **`flowy_meta`**（`route`、`step_kind`、`reason_codes` 等）；流式响应另带 `X-Flowy-*` 头（与 `flowy_meta` 字段对应）。
+```
+src/
+├── main.rs                 CLI 入口 + __serve 守护进程模式
+├── lib.rs                 动态库入口（FFI 嵌入）
+├── client.rs              Gateway HTTP 客户端（CLI → Gateway）
+├── daemon_ctl.rs           进程生命周期管理（start/stop/restart)
+├── env_cmd.rs             flowy env 命令
+├── setup_cmd.rs           flowy setup 命令
+├── stats_cmd.rs           flowy stats 命令
+├── cli_settings.rs         CLI 设置
+├── embedded.rs             FFI 嵌入式运行模式
+├── ffi.rs                  C FFI 导出
+├── config/
+│   ├── mod.rs
+│   ├── paths.rs            配置文件路径解析
+│   ├── file.rs             ConfigFile (TOML 结构)
+│   └── setup.rs            交互式配置向导
+└── gateway/
+    ├── mod.rs              模块声明与重导出
+    ├── config.rs           AppConfig 运行时配置 + TOML 映射
+    ├── config_manager.rs   运行时配置热更新（Arc<RwLock>）
+    ├── server.rs           Axum HTTP 服务器启动 + 优雅关闭
+    ├── daemon.rs           PID 文件管理 + 进程健康检查
+    ├── edge_load.rs        端侧并发推理计数器（Atomic）
+    ├── error.rs            AppError 枚举（400/401/500/502/503）
+    ├── logging.rs          tracing 初始化（文件 + stderr）
+    ├── routing/            路由决策引擎（核心）
+    │   ├── mod.rs
+    │   ├── decision.rs     decide() 主决策流水线
+    │   ├── signals.rs      请求信号提取器
+    │   ├── step_kind.rs    步态分类
+    │   ├── gates.rs        硬约束门控
+    │   ├── difficulty.rs   难度评分
+    │   ├── policy.rs       Profile + routing_mode 策略映射
+    │   ├── work.rs         Work 步态策略（CachedEdge / Verify）
+    │   ├── adaptive.rs     自适应路由参数计算
+    │   ├── adaptive_tuner.rs 定时刷新自适应参数
+    │   ├── edge_busy.rs    端侧负载回退
+    │   ├── upstream_availability.rs 上游可用性
+    │   ├── conversation.rs 会话键生成（稳定哈希）
+    │   └── tests.rs
+    ├── classifier/         朴素贝叶斯分类器
+    │   ├── mod.rs
+    │   ├── data.rs         持久化数据（LabelCounts）
+    │   ├── features.rs     特征工程（FeatureVector）
+    │   ├── model.rs        朴素贝叶斯推理 + 训练
+    │   └── store.rs        内存存储 + 定时刷盘 + 衰减
+    ├── experience/         经验学习
+    │   ├── mod.rs
+    │   ├── data.rs         持久化数据（StepExperience）
+    │   ├── outcome.rs      RequestOutcome 定义
+    │   ├── store.rs        经验存储 + 偏置计算
+    │   └── tests.rs
+    ├── session/            会话状态
+    │   ├── mod.rs
+    │   ├── data.rs         会话数据（sticky_until, last_tok_in）
+    │   └── store.rs        内存 + 按需懒加载 + 定时刷盘
+    ├── stats/              统计系统
+    │   ├── mod.rs          GatewayStats（双范围: 会话 + 全局）
+    │   ├── data.rs         累加计数器 + 持久化
+    │   └── metrics.rs      上游调用指标 + SSE 解析
+    ├── multimodal/         多模态路由
+    │   ├── mod.rs          策略枚举
+    │   ├── data.rs         模型能力缓存
+    │   ├── fingerprint.rs  上游指纹（缓存失效依据）
+    │   └── store.rs        能力查询 + 探测记录
+    ├── api/                HTTP 处理层
+    │   ├── mod.rs          路由注册
+    │   ├── routes.rs       路由表定义
+    │   ├── chat.rs         聊天接口主处理
+    │   ├── auth.rs         请求鉴权
+    │   ├── admin.rs        管理端点
+    │   ├── setup.rs        配置页 Web UI
+    │   ├── meta.rs         FlowyMeta 构建 + 响应注入
+    │   └── openai.rs       OpenAI 类型定义（请求/响应）
+    ├── upstream/           上游 LLM 转发
+    │   ├── mod.rs          转发入口
+    │   ├── forward.rs      上游 HTTP 客户端
+    │   ├── sse.rs          SSE 流式封装 + 指标采集
+    │   └── verify.rs       云端校验边缘输出
+    └── tests/
+```
+
+### 详细模块设计
+
+#### 1. 路由决策引擎（`routing/decision.rs`）
+
+`decide()` 函数是系统的核心，每次聊天请求都会执行一次完整的决策流水线：
+
+1. **`SignalExtractor::extract()`** — 深入解析请求体，提取约 35 个信号字段
+2. **`resolve_step_kind()`** — 根据信号推断步态类型
+3. **`FeatureVector::from_signals()`** — 构建分类器特征向量
+4. **固定路由检查** — 若 `config.route` 为 `edge`/`cloud`/`cascade` 则直接使用
+5. **`check_hard_gates()`** — 遍历 8 条门控规则，命中则跳过评分
+6. **`DifficultyScore::compute()`** — 加权公式 + 经验偏置 → `[0, 1]`
+7. **分类器预测** — `predict_and_fuse()` 融合经验与贝叶斯
+8. **`map_policy_with_thresholds()`** — Profile 阈值映射为 `RouteTier`
+9. **`apply_work_route()`** — Work 步态特殊策略（Plan→Cloud / CachedEdge / Verify）
+10. **Cloud Sticky 覆盖** — 粘性期内 Work 执行步态 → Cascade
+11. **多模态策略** — `route_hint()` 查询视觉模型能力 → 修正路由
+12. **`apply_edge_busy_fallback()`** — 端侧繁忙时非 casual 步态升云
+13. **`finalize_route()`** — 检查上游可用性，仅一路可用时强制定向
+
+##### 1.1 信号提取器（`routing/signals.rs`）
+
+`SignalExtractor` 通过静态分析请求体计算：
+
+| 信号类别 | 具体字段 |
+|---------|---------|
+| **Token 估算** | `tok_system`、`tok_tools_schema`、`tok_rest`（transcript）、`tok_total_in`、`tok_loop_delta`（本轮新增）、`tok_out_estimate` |
+| **轮次分析** | `n_tool_defs`、`n_turns`、`last_user_tok`、`loop_steps` |
+| **状态标记** | `pending_tool_calls`、`tool_arg_ready`、`last_role_tool`、`assistant_failed_recent`、`had_tool_roundtrip` |
+| **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`、`cron_background` |
+| **意图识别** | `intent_hard`（关键词: 分析/总结/对比/误解/修复/优化等）、`intent_easy`（你好/天气/谢谢/再讲等）、`intent_plan`（计划/方案/路线图等），中英文双语 |
+| **工具分析** | `risky_tool_tier1`（exec/write/browser/sessions_spawn 等）、`consecutive_tool_error_streak`（连续 2+ 条含错误关键词的 tool result） |
+| **多模态探测** | 检查 `content` 是否含 `image_url` 或 `data:image` |
+
+**关键设计**：`tok_loop_delta` 通过 `SessionStore::get_last_tok_in()` 计算 `tok_total_in - last_tok_in`，用于检测 Agent 循环中是否出现大量新增 token（如从外部注入长上下文）。
+
+##### 1.2 步态分类（`routing/step_kind.rs`）
+
+`resolve_step_kind()` 通过信号组合推断步态类型：
+
+| 步态 | 判定逻辑 | 难度偏置 | 典型路由 |
+|------|---------|---------|---------|
+| `HeartbeatAck` | `is_heartbeat_poll` 匹配 | -0.60 | casual |
+| `DirectChat` | `is_casual_chat()` 通过（关键实现见下文） | -0.55 | casual |
+| `ToolSelect` | `pending_tool_calls == false && intent_hard == false` 且 `tools` 存在 | -0.10 | Work |
+| `ToolArgFill` | `pending_tool_calls == true && tool_arg_ready == true` | -0.25 | Work |
+| `ToolResultDigest` | `last_role_tool == true` | -0.45 | Work |
+| `InitialPlan` | `n_turns == 0 && !is_casual` | +0.35 | **云端** |
+| `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
+| `RecoveryAfterFailure` | `assistant_failed_recent == true` | +0.55 | **云端** |
+| `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
+| `MemoryCompact` | `memory_compact_hint == true` | +0.20 | Work |
+| `CronBackground` | `cron_background == true` | -0.15 | Work |
+
+`is_casual_chat()` 的实现要点：
+- **体量**：`tok_rest`（仅 transcript，不含 system/tools schema）< 8192
+- **轮次**：用户消息数 ≤ 8
+- **排除**：有 tool 往返、`pending_tool_calls`、`intent_hard`、assistant 失败恢复、图+tools 并存
+- **多轮 + tools**：最新 user 须命中 easy 意图关键词
+- **多轮无 tools**：最新 user 很短（`last_user_tok ≤ 512`）也可视为 casual 跟帖
+
+> **重要**：Casual 步态只标类型，**不强制端侧**；最终路由由 `routing_mode` + 难度分决定。
+
+##### 1.3 硬约束门控（`routing/gates.rs`）
+
+每条门控规则返回 `Option<HardGate>`，命中后直接定路，不执行后续评分：
+
+| 门控 | 条件 | 路由结果 |
+|------|------|---------|
+| `GATE_EDGE_DOWN` | 端侧未配置或不可用 | **cloud**（或 503） |
+| `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
+| `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
+| `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
+| `GATE_RISKY_TOOL` | Tier-1 工具（`exec`/`write`/`edit`/`browser`/`sessions_spawn`/`message`） | **cloud** |
+| `GATE_OPENCLAW_COMPACT` | `MEMORY_COMPACT` 提示且上下文 > 12K token | **cloud** |
+| `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
+| `MULTIMODAL_COMPLEX_CLOUD` | 非 `DirectChat` 的多模态（含图片 + 内容或 tools） | **cloud** |
+
+##### 1.4 难度评分（`routing/difficulty.rs`）
+
+`DifficultyScore::compute()` 使用 sigmoid 转换的加权线性公式：
+
+```
+raw = 0.40 × ctx_ratio + 0.15 × tool_ratio + 0.25 × intent_hard
+      - 0.35 × intent_easy + 0.10 × multimodal + step_kind.bias() + experience_bias
+
+d = 1.0 / (1.0 + e^(-raw))
+```
+
+其中：
+- `ctx_ratio = tok_total_in / ctx_edge_max_tokens`（上下文饱和度）
+- `tool_ratio = n_tool_defs / 50`（工具定义密度，上限 1.0）
+- `intent_hard` / `intent_easy` 为 0 或 1
+- `step_kind.bias()` 见上表
+- `experience_bias` 来自 `ExperienceStore::bias_for(step_kind)`
+
+##### 1.5 策略映射（`routing/policy.rs`）
+
+四个内置 Profile，各定义了基于阈值的路由策略：
+
+| Profile | θ_edge | θ_cloud | 默认 Mode | 说明 |
+|---------|--------|---------|-----------|------|
+| `economy` | 0.40 | 0.60 | Cascade | 更多走端侧 |
+| `balanced` | 0.35 | 0.55 | Cascade | 默认均衡 |
+| `premium` | 0.25 | 0.45 | Single | 更多走云端 |
+| `privacy` | 0.45 | 0.65 | Edge | 尽量端侧（Recovery 除外） |
+
+`map_policy_with_thresholds(difficulty, profile, mode, theta_edge, theta_cloud)`：
+- `d < θ_edge` → Edge
+- `θ_edge ≤ d < θ_cloud` → 根据 mode 决定：`single` 走 Cloud，`cascade` 走 Cascade，`split` 走 Cloud
+- `d ≥ θ_cloud` → Cloud
+
+##### 1.6 Work 步态策略（`routing/work.rs`）
+
+Agent 循环中的执行步态（`ToolSelect`/`ToolResultDigest`/`FinalReply` 等）采用特殊策略：
+
+| 策略 | 触发条件 | 行为 |
+|------|---------|------|
+| `InitialPlan` → Cloud | `is_plan_step()` 判断: 步态为 `InitialPlan` 或 `intent_plan == true` | 强制云端 |
+| `WorkExecEdge` | `is_work_step()` 且难度未超 θ_edge | 默认走端侧 |
+| `CachedEdge` | `experience.edge_trusted(step_kind)` 返回 true | 直接走端，不校验 |
+| `Verify` | `should_work_verify_sample()` 命中抽样 | Cascade + 云端校验（验证 tool 名称或文本兼容性） |
+| `StickyCascadeRetry` | `sticky_cascade_applies()` 粘性期内 | Cascade 重试端侧 |
+
+`should_work_verify_sample()` 使用确定性哈希做抽样，确保同一会话+步态+token 数的请求抽样结果一致（避免连续入样）。
+
+##### 1.7 Cloud Sticky 会话粘性（`routing/work.rs` + `session/store.rs`）
+
+粘性以 **Unix 时间戳 TTL** 实现，保存于 `sessions/<conv>.json` 的 `cloud_sticky_until_unix`。
+
+| 操作 | 触发条件 |
+|------|---------|
+| **开启/续期** | cascade_fallback、upstream_error（非心跳）、GATE_TOOL_ERROR_STREAK |
+| **清除** | 任一路径端侧成功（edge_ok && !fallback && !upstream_error） |
+| **有效期行为** | Work 执行步态 → `STICKY_CASCADE_RETRY`；casual 步态不受影响；InitialPlan/Recovery 仍走云 |
+
+##### 1.8 多模态路由（`routing/decision.rs` + `multimodal/`）
+
+视觉模型能力通过主动探测学习缓存：
+
+1. 首次遇到某模型的图片请求时，`route_hint()` 返回 `Probe`
+2. 先尝试端侧，记录结果到 `MultimodalStore`（`record_edge()`/`record_cloud()`）
+3. 下次同模型请求 → `CachedEdge` 或 `CachedCloud`
+4. 若上游 URL/Key 变化（指纹变更），清空缓存重新探测
+
+简单多模态日常（DirectChat + 仅 1-2 张图片）可走端侧；复杂多模态（非 DirectChat 或含工具）走云端。
+
+#### 2. 朴素贝叶斯分类器（`classifier/`）
+
+作为经验学习的补充，分类器从另一个维度学习路由模式。
+
+**特征工程**（`features.rs`）：
+- `step_kind:<type>`、`ctx_bucket:<low|mid|high>`、`tool_bucket:<none|few|many>`
+- `loop_bucket:<none|short|long>`、`turn_bucket:<short|long>`、`intent:<easy|hard|plan|neutral>`
+- 布尔标记：`multimodal`、`risky_tool_tier1`、`pending_tool_calls`、`assistant_failed_recent`、`is_heartbeat_poll`、`had_tool_roundtrip`、`tools_enabled`
+
+**推理**（`model.rs`）：
+- 对数空间朴素贝叶斯 + Laplace 平滑：`P(edge_ok | features) ∝ log prior + Σ log P(f_i | edge_ok)`
+- 融合难度：`d_final = (1-w) × d_heuristic + w × (1 - p_edge)`，权重 `w` 随样本数线性增长至 `min_samples`
+- 冷启动时通过 `seed_heuristic_priors()` 注入领域先验
+
+**训练**：
+- `label_from_outcome(outcome)` → `EdgeOk`（端侧成功）或 `CloudNeeded`（需云）
+- `should_record_outcome()` 确保仅在端侧确实被尝试时才记录
+- 指数衰减（默认 72 小时半衰期）老化旧观测，适应环境变化
+
+**持久化**：
+- `classifier.json` 存储先验与特征计数，版本化 + 原子写入
+- 每隔 5 秒自动刷盘
+- 每小时执行一次衰减
+
+#### 3. 经验学习（`experience/`）
+
+按 `step_kind` 维度记录路由结果，产出两种能力：
+
+| 能力 | 算法 |
+|------|------|
+| **难度偏置** | `bias = learning_rate × (fallback_rate - target_fallback)`，截断在 `[-max_bias, +max_bias]` |
+| **边缘可信** | `edge_trusted()` 在 verified_samples ≥ 3 且 fallback_rate ≤ target_fallback 时返回 true |
+
+`RequestOutcome` 三元组：`{edge_ok, cascade_fallback, upstream_error}`。
+
+持久化：`experience.json`，记录每个 `step_kind` 的 edge_ok / cascade_fallback / upstream_error 计数。
+
+#### 4. 自适应路由（`routing/adaptive.rs` + `adaptive_tuner.rs`）
+
+`AdaptiveTuner` 每 30 秒或 40 请求执行 `compute_effective_routing()`：
+
+- **预热期**：云端验证样本 < `adaptive_min_verified_samples` → 保持配置基线
+- **健康状态**（回退率 ≤ 目标 + 信任步态充足）：
+  - 降低 `work_verify_sample_rate`
+  - 放宽 `θ_edge`（最多 `adaptive_max_theta_shift`）
+  - 提高端侧使用率
+- **吃力状态**（回退率偏高）：
+  - 提高校验抽样率
+  - 收紧阈值
+  - 保证复杂任务正确率
+- **级联统计覆盖**：`stats.json` 中等级级联回退率 > 28% 时进一步收紧
+
+安全边界：InitialPlan、复杂多模态、Hard Gates、高难度走云/级联不会被自适应放宽。
+
+#### 5. 上游执行（`upstream/forward.rs` + `sse.rs` + `verify.rs`）
+
+**执行模式**：
+
+| 模式 | 流程 |
+|------|------|
+| **Edge** | 调用端侧 → 返回结果 |
+| **Cloud** | 调用云端 → 返回结果 |
+| **Cascade** | 调用端侧 → `cascade_gate_pass()` 检查 → 失败则升云重答（`fallback=true`） |
+| **Verify** | 调用端侧 + 调用云端 → `cloud_verifies_edge()` 对比 → 信任端侧或采纳云端 |
+| **Probe**（多模态） | 调用端侧 → 记录能力 → 失败则调云端 → 记录能力 |
+
+**质量门**（`cascade_gate_pass`）：端侧结果满足其一即过关：
+- 非空 `content`，长度 > 8，不含「不确定」
+- 合法 `tool_calls`：至少一条，且每条 `function.name` / `arguments` 非空
+
+**云端校验**（`cloud_verifies_edge`）：
+- Tool calls：名称精确匹配且顺序一致
+- 文本：Jaccard 相似度 ≥ 12%，双方 ≥ 8 字符，云端不说不确定
+
+**流式处理**（`sse.rs`）：封装 `reqwest` SSE 流，逐块解析 `data:` 行，采集 `TTFT`、`usage`、吞吐量等指标，按需注入 `X-Flowy-*` 头。
+
+#### 6. 统计系统（`stats/`）
+
+双范围设计：
+
+| 范围 | 生命周期 | 持久化 |
+|------|---------|-------|
+| **Session（会话）** | 进程级，进程退出即丢失 | 内存 |
+| **Global（全局）** | 跨进程重启 | `stats.json`（version 2） |
+
+`StatsData` 计数器覆盖：请求量、路由分布、上游 Token（输入/输出/缓存）、Cascade 结果、延迟（TTFT/TPS）、Cloud Input Saved、错误分布、步态分布。
+
+#### 7. 配置管理（`config_manager.rs`）
+
+`ConfigManager` 以 `Arc<RwLock<AppConfig>>` 持有运行中配置：
+
+- **热更新**：`POST /v1/admin/setup` → `apply_setup()` 写回 `config.toml` 并重载内存
+- **恢复默认**：`POST /v1/admin/setup/init` → `write_default_setup()`
+- **文件重载**：`reload_from_file()` 重新解析 TOML
+
+#### 8. 守护进程生命周期（`daemon_ctl.rs` + `daemon.rs`）
+
+```
+flowy gateway start
+  → daemon_ctl::start_daemon()
+    → 生成 `flowy __serve` 子进程（setsid 分离会话）
+    → wait_until_healthy() 轮询 /health
+    → 返回 PID
+
+flowy gateway stop
+  → daemon_ctl::stop_daemon()
+    → POST /v1/admin/shutdown（带 token）
+    → 超时后 SIGTERM / SIGKILL
+
+flowy gateway restart
+  → POST /v1/admin/restart
+    → schedule_daemon_restart() 生成 __restart-wait 辅助进程
+    → 辅助进程等待旧 PID 退出后执行 `__serve`
+    → 最多重试 20 次等待健康
+```
+
+#### 9. 端侧负载感知（`edge_load.rs`）
+
+`EdgeInferenceTracker` 使用 `AtomicU32` 追踪并发推理数。通过 RAII 守卫 `EdgeInferenceGuard`（`begin()` 返回，`drop()` 时递减），确保不会漏减计数。
+
+#### 10. 会话管理（`session/`）
+
+每会话独立 JSON 文件 `sessions/<conv>.json`，内容：
+
+| 字段 | 说明 |
+|------|------|
+| `last_tok_in` | 上次请求总 token 数，用于计算 `tok_loop_delta` |
+| `cloud_sticky_until_unix` | 粘性到期时间戳 |
+| `last_assistant_failed` | 上次 assistant 是否失败 |
+
+实现特点：
+- 按需懒加载（首次访问时读盘）
+- 脏标记追踪，每 5 秒批量刷盘
+- 会话键（`conversation_key()`）仅哈希 anchor messages（第一条 system + 第一条 user + tool 名称），在 Agent 循环中保持稳定
 
 ---
 
