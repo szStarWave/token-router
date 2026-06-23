@@ -325,34 +325,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "flowy-router"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "clap",
- "dialoguer",
- "dirs",
- "futures",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tokio-util",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1475,6 +1447,34 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
+name = "token-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "clap",
+ "dialoguer",
+ "dirs",
+ "futures",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "tokio"

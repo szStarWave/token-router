@@ -144,8 +144,8 @@ struct StatsLabels {
 fn labels(lang: StatsLang) -> StatsLabels {
     match lang {
         StatsLang::En => StatsLabels {
-            title_global: "Flowy Gateway Stats (global / all-time)",
-            title_session: "Flowy Gateway Stats (current session)",
+            title_global: "Token Router Gateway Stats (global / all-time)",
+            title_session: "Token Router Gateway Stats (current session)",
             gateway: "Gateway",
             scope: "Scope",
             stats_file: "Stats file",
@@ -257,8 +257,8 @@ fn labels(lang: StatsLang) -> StatsLabels {
             scope_session: "session",
         },
         StatsLang::Zh => StatsLabels {
-            title_global: "Flowy 网关统计（全局 / 累计）",
-            title_session: "Flowy 网关统计（当前会话）",
+            title_global: "Token Router 网关统计（全局 / 累计）",
+            title_session: "Token Router 网关统计（当前会话）",
             gateway: "网关",
             scope: "范围",
             stats_file: "统计文件",
@@ -637,7 +637,7 @@ pub async fn print_stats(
         client
             .stats_session()
             .await
-            .context("fetch session stats (is `flowy gateway start` running?)")?
+            .context("fetch session stats (is `token-router gateway start` running?)")?
     };
 
     if json {

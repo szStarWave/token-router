@@ -91,12 +91,12 @@ mod tests {
 
     fn stub_sse_stream(req: &ChatCompletionRequest, tier: &str) -> SseStream {
         let content = if tier == "edge" {
-            "[flowy-router] edge stub — configure [upstream.edge] in ~/.flowy-router/config.toml"
+            "[token-router] edge stub — configure [upstream.edge] in ~/.token-router/config.toml"
         } else {
-            "[flowy-router] cloud stub — configure [upstream.cloud] in ~/.flowy-router/config.toml"
+            "[token-router] cloud stub — configure [upstream.cloud] in ~/.token-router/config.toml"
         };
 
-        let id = format!("flowy-stub-{}", uuid::Uuid::new_v4());
+        let id = format!("token-router-stub-{}", uuid::Uuid::new_v4());
         let created = now_epoch();
         let model = req.model.clone();
 

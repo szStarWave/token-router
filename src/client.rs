@@ -14,6 +14,7 @@ pub struct GatewayClient {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HealthResponse {
+    pub service: String,
     pub status: String,
     pub edge_configured: bool,
     pub cloud_configured: bool,
@@ -21,6 +22,7 @@ pub struct HealthResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GatewayStatus {
+    pub service: String,
     pub status: String,
     pub version: String,
     pub listen: String,
@@ -133,7 +135,7 @@ impl GatewayClient {
 
     fn attach_admin_token(&self, req: RequestBuilder) -> RequestBuilder {
         if let Some(token) = &self.admin_token {
-            req.header("X-Flowy-Admin-Token", token)
+            req.header("X-Token-Router-Admin-Token", token)
         } else {
             req
         }

@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+/// Application data directory name under user home (e.g. `~/{APP_DIR_NAME}/`).
+pub const APP_DIR_NAME: &str = ".token-router";
+
 /// User home directory (cross-platform).
 ///
 /// - Linux / macOS: `$HOME`
@@ -8,9 +11,9 @@ pub fn user_home() -> anyhow::Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve user home directory"))
 }
 
-/// Application root: `{user_home}/.flowy-router`
+/// Application root: `{user_home}/{APP_DIR_NAME}`
 pub fn app_dir() -> anyhow::Result<PathBuf> {
-    Ok(user_home()?.join(".flowy-router"))
+    Ok(user_home()?.join(APP_DIR_NAME))
 }
 
 pub fn config_file() -> anyhow::Result<PathBuf> {
@@ -54,7 +57,7 @@ pub fn display_home() -> String {
 pub fn display_app_dir() -> String {
     app_dir()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| format!("{}/.flowy-router", display_home()))
+        .unwrap_or_else(|_| format!("{}/{}", display_home(), APP_DIR_NAME))
 }
 
 pub fn is_under_app_dir(path: &Path) -> bool {

@@ -1,17 +1,17 @@
 [package]
-name = "flowy-router"
+name = "token-router"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Flowy Router — edge/cloud LLM routing gateway and CLI"
+description = "Token Router — edge/cloud LLM routing gateway and CLI"
 
 [lib]
-name = "flowy_router"
+name = "token_router"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [[bin]]
-name = "flowy-router"
+name = "token-router"
 path = "src/main.rs"
 
 [dependencies]

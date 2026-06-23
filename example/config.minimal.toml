@@ -1,8 +1,8 @@
 # 示例：最小配置（Gateway 可启动；聊天前须至少一侧 upstream）
 #
-# 首次 flowy gateway start 自动生成的默认模板与此结构类似。
+# 首次 token-router gateway start 自动生成的默认模板与此结构类似。
 # 使用:
-#   flowy --config example/config.minimal.toml gateway start
+#   token-router --config example/config.minimal.toml gateway start
 #
 # 启动后编辑本文件，取消注释并填写 [upstream.edge] 或 [upstream.cloud]，再 restart。
 

@@ -20,7 +20,7 @@ pub fn init(data_dir: &std::path::Path, log_to_stderr: bool) -> anyhow::Result<P
         .with_context(|| format!("open log file {}", log_path.display()))?;
 
     let filter = EnvFilter::from_default_env()
-        .add_directive("flowy_router=info".parse().context("log filter")?);
+        .add_directive("token_router=info".parse().context("log filter")?);
 
     let file_layer = fmt::layer()
         .with_ansi(false)

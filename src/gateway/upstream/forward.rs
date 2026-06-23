@@ -3,7 +3,7 @@ use reqwest::Client;
 use std::time::Instant;
 
 use crate::gateway::agent_usage::AgentCloudUsageStore;
-use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, FlowyMeta};
+use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::config::AppConfig;
 use crate::gateway::config_manager::ConfigManager;
 use crate::gateway::error::{AppError, AppResult};
@@ -648,7 +648,7 @@ fn attach_meta(
         0.0
     };
 
-    resp.flowy_meta = Some(FlowyMeta {
+    resp.token_router_meta = Some(TokenRouterMeta {
         route: format!("{:?}", decision.route).to_ascii_lowercase(),
         fallback,
         difficulty_score: decision.difficulty,
@@ -708,7 +708,7 @@ mod cascade_gate_tests {
                 finish_reason: "stop".into(),
             }],
             usage: None,
-            flowy_meta: None,
+            token_router_meta: None,
         }
     }
 

@@ -2,22 +2,22 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use flowy_router::cli_settings::CliSettings;
-use flowy_router::client;
-use flowy_router::config::{self, ensure_initialized, load_from_path};
-use flowy_router::daemon_ctl;
-use flowy_router::env_cmd;
-use flowy_router::gateway::{self, init_logging, AppConfig};
-use flowy_router::setup_cmd;
-use flowy_router::stats_cmd;
+use token_router::cli_settings::CliSettings;
+use token_router::client;
+use token_router::config::{self, ensure_initialized, load_from_path};
+use token_router::daemon_ctl;
+use token_router::env_cmd;
+use token_router::gateway::{self, init_logging, AppConfig};
+use token_router::setup_cmd;
+use token_router::stats_cmd;
 use tracing::info;
 
 /// CLI for Flowy Router — gateway daemon and management commands.
-/// Configuration: `~/.flowy-router/config.toml` (all platforms).
+/// Configuration: `~/.token-router/config.toml` (all platforms).
 #[derive(Debug, Parser)]
-#[command(name = "flowy", version, about)]
+#[command(name = "token-router", version, about)]
 struct Cli {
-    /// Override path to config.toml (default: ~/.flowy-router/config.toml).
+    /// Override path to config.toml (default: ~/.token-router/config.toml).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 

@@ -9,7 +9,7 @@
 
 CARGO       ?= cargo
 CROSS       := cross
-BIN         := flowy-router
+BIN         := token-router
 TARGET      ?= target
 RELEASE_BIN := $(TARGET)/release/$(BIN)
 DEBUG_BIN   := $(TARGET)/debug/$(BIN)
@@ -25,7 +25,7 @@ CONFIG      ?=
 CONFIG_FLAG := $(if $(CONFIG),--config $(CONFIG),)
 
 # Release binary if built; otherwise `cargo run --`.
-FLOWY       = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
+ROUTER      = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
 
 .PHONY: help build release release-dylib release-arm release-arm64 \
         test check clean install \
@@ -34,11 +34,11 @@ FLOWY       = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
 ifeq ($(UNAME_S),Windows)
-  DYLIB := $(TARGET)/release/flowy_router.dll
+  DYLIB := $(TARGET)/release/token_router.dll
 else ifeq ($(UNAME_S),Darwin)
-  DYLIB := $(TARGET)/release/libflowy_router.dylib
+  DYLIB := $(TARGET)/release/libtoken_router.dylib
 else
-  DYLIB := $(TARGET)/release/libflowy_router.so
+  DYLIB := $(TARGET)/release/libtoken_router.so
 endif
 
 help:
@@ -57,7 +57,7 @@ help:
 	@echo "  stats-zh         Session stats (Chinese)"
 	@echo ""
 	@echo "Options:"
-	@echo "  CONFIG=path      Pass --config to flowy (e.g. CONFIG=example/config.toml)"
+	@echo "  CONFIG=path      Pass --config to token-router (e.g. CONFIG=example/config.toml)"
 
 build:
 	$(CARGO) build
@@ -68,7 +68,7 @@ release:
 release-dylib: release
 	@test -f "$(DYLIB)" || (echo "expected dylib at $(DYLIB)" && exit 1)
 	@echo "Built $(DYLIB)"
-	@echo "C header: ffi/flowy_router.h"
+	@echo "C header: ffi/token_router.h"
 	@echo "Electron example: example/electron/"
 
 release-arm: release-arm64
@@ -78,31 +78,31 @@ release-arm64:
 	@echo "Built $(ARM64_RELEASE)"
 
 start:
-	$(FLOWY) $(CONFIG_FLAG) gateway start
+	$(ROUTER) $(CONFIG_FLAG) gateway start
 
 stop:
-	$(FLOWY) $(CONFIG_FLAG) gateway stop
+	$(ROUTER) $(CONFIG_FLAG) gateway stop
 
 restart:
-	$(FLOWY) $(CONFIG_FLAG) gateway restart
+	$(ROUTER) $(CONFIG_FLAG) gateway restart
 
 status:
-	$(FLOWY) $(CONFIG_FLAG) gateway status
+	$(ROUTER) $(CONFIG_FLAG) gateway status
 
 env:
-	$(FLOWY) $(CONFIG_FLAG) env
+	$(ROUTER) $(CONFIG_FLAG) env
 
 setup:
-	$(FLOWY) $(CONFIG_FLAG) setup
+	$(ROUTER) $(CONFIG_FLAG) setup
 
 stats:
-	$(FLOWY) $(CONFIG_FLAG) stats
+	$(ROUTER) $(CONFIG_FLAG) stats
 
 stats-global:
-	$(FLOWY) $(CONFIG_FLAG) stats --global
+	$(ROUTER) $(CONFIG_FLAG) stats --global
 
 stats-zh:
-	$(FLOWY) $(CONFIG_FLAG) stats --lang zh
+	$(ROUTER) $(CONFIG_FLAG) stats --lang zh
 
 stats-global-zh:
-	$(FLOWY) $(CONFIG_FLAG) stats --global --lang zh
+	$(ROUTER) $(CONFIG_FLAG) stats --global --lang zh

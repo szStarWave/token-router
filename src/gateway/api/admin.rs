@@ -13,6 +13,7 @@ use crate::gateway::routing::Profile;
 
 #[derive(Serialize)]
 pub struct GatewayStatus {
+    pub service: &'static str,
     pub status: &'static str,
     pub version: &'static str,
     pub listen: String,
@@ -73,6 +74,7 @@ pub async fn stats(
 pub async fn status(State(state): State<AppState>) -> Json<GatewayStatus> {
     let config = state.config();
     Json(GatewayStatus {
+        service: "token-router",
         status: "running",
         version: env!("CARGO_PKG_VERSION"),
         listen: config.listen_addr.clone(),
@@ -141,7 +143,7 @@ fn check_admin_token(
         return Ok(());
     };
     let provided = headers
-        .get("x-flowy-admin-token")
+        .get("x-token-router-admin-token")
         .and_then(|v| v.to_str().ok());
     if provided == Some(expected.as_str()) {
         Ok(())

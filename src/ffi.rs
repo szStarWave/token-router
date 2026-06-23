@@ -5,11 +5,11 @@ use std::path::Path;
 
 use crate::embedded;
 
-pub const FLOWY_OK: i32 = 0;
-pub const FLOWY_ERR_ALREADY_RUNNING: i32 = 1;
-pub const FLOWY_ERR_NOT_RUNNING: i32 = 2;
-pub const FLOWY_ERR_INVALID_ARG: i32 = 3;
-pub const FLOWY_ERR_INTERNAL: i32 = 4;
+pub const TOKEN_OK: i32 = 0;
+pub const TOKEN_ERR_ALREADY_RUNNING: i32 = 1;
+pub const TOKEN_ERR_NOT_RUNNING: i32 = 2;
+pub const TOKEN_ERR_INVALID_ARG: i32 = 3;
+pub const TOKEN_ERR_INTERNAL: i32 = 4;
 
 fn write_cstr(out: *mut c_char, out_len: usize, message: &str) {
     if out.is_null() || out_len == 0 {
@@ -26,23 +26,23 @@ fn write_cstr(out: *mut c_char, out_len: usize, message: &str) {
 fn map_error(err: &anyhow::Error) -> i32 {
     let msg = err.to_string();
     if msg.contains("already running") {
-        FLOWY_ERR_ALREADY_RUNNING
+        TOKEN_ERR_ALREADY_RUNNING
     } else if msg.contains("not running") {
-        FLOWY_ERR_NOT_RUNNING
+        TOKEN_ERR_NOT_RUNNING
     } else {
-        FLOWY_ERR_INTERNAL
+        TOKEN_ERR_INTERNAL
     }
 }
 
 /// Library version string (static, do not free).
 #[unsafe(no_mangle)]
-pub extern "C" fn flowy_router_version() -> *const c_char {
+pub extern "C" fn token_router_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
 /// Start the gateway in a background thread. `config_path` may be null for the default path.
 #[unsafe(no_mangle)]
-pub extern "C" fn flowy_router_start(
+pub extern "C" fn token_router_start(
     config_path: *const c_char,
     error_out: *mut c_char,
     error_out_len: usize,
@@ -55,13 +55,13 @@ pub extern "C" fn flowy_router_start(
             Ok(s) => Some(Path::new(s)),
             Err(e) => {
                 write_cstr(error_out, error_out_len, &format!("invalid config_path: {e}"));
-                return FLOWY_ERR_INVALID_ARG;
+                return TOKEN_ERR_INVALID_ARG;
             }
         }
     };
 
     match embedded::start(path) {
-        Ok(_) => FLOWY_OK,
+        Ok(_) => TOKEN_OK,
         Err(e) => {
             let code = map_error(&e);
             write_cstr(error_out, error_out_len, &e.to_string());
@@ -72,9 +72,9 @@ pub extern "C" fn flowy_router_start(
 
 /// Stop the in-process gateway.
 #[unsafe(no_mangle)]
-pub extern "C" fn flowy_router_stop(error_out: *mut c_char, error_out_len: usize) -> i32 {
+pub extern "C" fn token_router_stop(error_out: *mut c_char, error_out_len: usize) -> i32 {
     match embedded::stop() {
-        Ok(()) => FLOWY_OK,
+        Ok(()) => TOKEN_OK,
         Err(e) => {
             let code = map_error(&e);
             write_cstr(error_out, error_out_len, &e.to_string());
@@ -85,21 +85,21 @@ pub extern "C" fn flowy_router_stop(error_out: *mut c_char, error_out_len: usize
 
 /// Returns 1 when the embedded gateway is running, otherwise 0.
 #[unsafe(no_mangle)]
-pub extern "C" fn flowy_router_is_running() -> i32 {
+pub extern "C" fn token_router_is_running() -> i32 {
     i32::from(embedded::is_running())
 }
 
 /// Write the gateway base URL (e.g. `http://127.0.0.1:8787`) into `url_out`.
 /// Returns the number of bytes written excluding the NUL terminator, or a negative error code.
 #[unsafe(no_mangle)]
-pub extern "C" fn flowy_router_gateway_url(url_out: *mut c_char, url_out_len: usize) -> i32 {
+pub extern "C" fn token_router_gateway_url(url_out: *mut c_char, url_out_len: usize) -> i32 {
     if url_out.is_null() || url_out_len == 0 {
-        return -FLOWY_ERR_INVALID_ARG;
+        return -TOKEN_ERR_INVALID_ARG;
     }
 
     let Some(url) = embedded::gateway_url() else {
         write_cstr(url_out, url_out_len, "gateway is not running");
-        return -FLOWY_ERR_NOT_RUNNING;
+        return -TOKEN_ERR_NOT_RUNNING;
     };
 
     if url.len() >= url_out_len {
@@ -108,7 +108,7 @@ pub extern "C" fn flowy_router_gateway_url(url_out: *mut c_char, url_out_len: us
             url_out_len,
             &format!("url buffer too small (need {} bytes)", url.len() + 1),
         );
-        return -FLOWY_ERR_INVALID_ARG;
+        return -TOKEN_ERR_INVALID_ARG;
     }
 
     write_cstr(url_out, url_out_len, &url);

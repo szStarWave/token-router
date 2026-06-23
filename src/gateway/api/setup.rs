@@ -97,7 +97,7 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Option<Response> {
         return None;
     };
     let provided = headers
-        .get("x-flowy-admin-token")
+        .get("x-token-router-admin-token")
         .and_then(|v| v.to_str().ok());
     if provided == Some(expected.as_str()) {
         return None;
@@ -116,7 +116,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Flowy Router — 配置</title>
+  <title>Token Router — 配置</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -132,12 +132,12 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>Flowy Router — 配置</h1>
+  <h1>Token Router — 配置</h1>
   <p class="hint">路由、经验学习、上游 URL 等保存后立即生效（<code>session_persist_enabled</code> 需重启）。云端 model 默认 <code>auto</code>。</p>
   <label for="agent_id">Agent ID（留空=全局默认；指定后下方配置仅对该 agent 生效）</label>
   <input id="agent_id" placeholder="" />
   <label for="admin_token">Admin Token（若 config 中配置了 admin_token）</label>
-  <input id="admin_token" type="password" placeholder="X-Flowy-Admin-Token" autocomplete="off" />
+  <input id="admin_token" type="password" placeholder="X-Token-Router-Admin-Token" autocomplete="off" />
 
   <fieldset>
     <legend>路由 gateway</legend>
@@ -230,7 +230,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     function headers() {
       const h = { 'Content-Type': 'application/json' };
       const t = document.getElementById('admin_token').value.trim();
-      if (t) h['X-Flowy-Admin-Token'] = t;
+      if (t) h['X-Token-Router-Admin-Token'] = t;
       return h;
     }
     function fill(view) {

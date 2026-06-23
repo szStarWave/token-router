@@ -66,7 +66,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Load from `~/.flowy-router/config.toml` (initializes app dir + template if missing).
+    /// Load from `~/.token-router/config.toml` (initializes app dir + template if missing).
     pub fn load() -> anyhow::Result<Self> {
         let (path, _) = ensure_initialized(None)?;
         let (file, config_path) = load_from_path(&path)?;

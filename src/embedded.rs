@@ -35,11 +35,11 @@ pub fn start(config_path: Option<&Path>) -> Result<String> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
     let thread = thread::Builder::new()
-        .name("flowy-gateway".into())
+        .name("token-router-gateway".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("flowy-gateway-worker")
+                .thread_name("token-router-gateway-worker")
                 .build()
                 .context("create tokio runtime")?;
 

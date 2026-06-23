@@ -1,11 +1,11 @@
 # Flowy Router — 推荐示例配置
 #
 # 复制:
-#   Linux/macOS: cp example/config.toml ~/.flowy-router/config.toml
-#   Windows:     copy example\config.toml %USERPROFILE%\.flowy-router\config.toml
+#   Linux/macOS: cp example/config.toml ~/.token-router/config.toml
+#   Windows:     copy example\config.toml %USERPROFILE%\.token-router\config.toml
 #
 # 或直接指定:
-#   flowy --config example/config.toml gateway start
+#   token-router --config example/config.toml gateway start
 #   make start CONFIG=example/config.toml
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ ctx_edge_max_tokens = 65536
 # --- Work 步态云端校验（ToolSelect 等）---
 # work_verify_sample_rate = 0.1        # 0=不校验，1=每步校验；默认 0.1
 
-# --- 运行时自适应（仅内存，不写回配置；见 flowy stats 自适应分区）---
+# --- 运行时自适应（仅内存，不写回配置；见 token-router stats 自适应分区）---
 # adaptive_routing_enabled = true
 # adaptive_min_verified_samples = 20   # 预热：云验证样本不足时用上面基线
 # adaptive_verify_rate_floor = 0.05

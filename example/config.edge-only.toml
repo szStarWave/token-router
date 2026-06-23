@@ -2,7 +2,7 @@
 #
 # 适用: 离线、隐私、或已有足够强的本地模型
 # 使用:
-#   flowy --config example/config.edge-only.toml gateway start
+#   token-router --config example/config.edge-only.toml gateway start
 #   make start CONFIG=example/config.edge-only.toml
 #
 # 说明:

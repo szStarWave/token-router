@@ -145,7 +145,7 @@ fn print_human(r: &EnvReport) {
         if r.paths.config_exists {
             "exists"
         } else {
-            "missing — run `flowy gateway start` to create"
+            "missing — run `token-router gateway start` to create"
         }
     );
     println!("  pid_file:       {}", r.paths.pid_file);

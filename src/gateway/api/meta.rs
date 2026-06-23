@@ -1,10 +1,14 @@
 use axum::http::{HeaderMap, HeaderValue};
 
-use crate::gateway::api::openai::{ChatCompletionResponse, FlowyMeta};
+use crate::gateway::api::openai::{ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::stats::metrics::tokens_from_response;
 use crate::gateway::routing::{Profile, RouteDecision, RouteTier, StepKind};
 
-pub fn build_flowy_meta(decision: &RouteDecision, fallback: bool, resp: &ChatCompletionResponse) -> FlowyMeta {
+pub fn build_token_router_meta(
+    decision: &RouteDecision,
+    fallback: bool,
+    resp: &ChatCompletionResponse,
+) -> TokenRouterMeta {
     let (tokens_in, tokens_out, _) = tokens_from_response(resp, decision.tokens_in_estimate);
     let input_ratio = if tokens_in + tokens_out > 0 {
         tokens_in as f32 / (tokens_in + tokens_out) as f32
@@ -12,7 +16,7 @@ pub fn build_flowy_meta(decision: &RouteDecision, fallback: bool, resp: &ChatCom
         0.9933
     };
 
-    FlowyMeta {
+    TokenRouterMeta {
         route: tier_name(decision.route).to_string(),
         fallback,
         difficulty_score: decision.difficulty,
@@ -26,36 +30,36 @@ pub fn build_flowy_meta(decision: &RouteDecision, fallback: bool, resp: &ChatCom
     }
 }
 
-pub fn flowy_meta_headers(decision: &RouteDecision, fallback: bool) -> HeaderMap {
+pub fn token_router_meta_headers(decision: &RouteDecision, fallback: bool) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    insert(&mut headers, "x-flowy-route", tier_name(decision.route));
+    insert(&mut headers, "x-token-router-route", tier_name(decision.route));
     insert(
         &mut headers,
-        "x-flowy-fallback",
+        "x-token-router-fallback",
         if fallback { "true" } else { "false" },
     );
     insert(
         &mut headers,
-        "x-flowy-step-kind",
+        "x-token-router-step-kind",
         step_kind_name(decision.step_kind),
     );
     insert(
         &mut headers,
-        "x-flowy-profile",
+        "x-token-router-profile",
         profile_name(decision.profile),
     );
     if let Ok(v) = HeaderValue::from_str(&format!("{:.4}", decision.difficulty)) {
-        headers.insert("x-flowy-difficulty", v);
+        headers.insert("x-token-router-difficulty", v);
     }
     if let Some(p) = decision.edge_ok_probability {
         if let Ok(v) = HeaderValue::from_str(&format!("{:.4}", p)) {
-            headers.insert("x-flowy-edge-prob", v);
+            headers.insert("x-token-router-edge-prob", v);
         }
     }
     if !decision.reason_codes.is_empty() {
         let joined = decision.reason_codes.join(",");
         if let Ok(v) = HeaderValue::from_str(&joined) {
-            headers.insert("x-flowy-reason-codes", v);
+            headers.insert("x-token-router-reason-codes", v);
         }
     }
     headers

@@ -33,7 +33,7 @@ impl IntoResponse for AppError {
         let body = Json(json!({
             "error": {
                 "message": message,
-                "type": "flowy_router_error",
+                "type": "token_router_error",
             }
         }));
 

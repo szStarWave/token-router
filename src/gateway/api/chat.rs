@@ -7,7 +7,7 @@ use axum::{
 use tracing::info;
 
 use crate::gateway::api::auth::require_gateway_api_key;
-use crate::gateway::api::meta::{build_flowy_meta, flowy_meta_headers};
+use crate::gateway::api::meta::{build_token_router_meta, token_router_meta_headers};
 use crate::gateway::api::openai::ChatCompletionRequest;
 use crate::gateway::api::routes::AppState;
 use crate::gateway::experience::RequestOutcome;
@@ -72,7 +72,7 @@ pub async fn chat_completions(
                     .body(Body::from_stream(byte_stream))
                     .map_err(|e| AppError::Internal(e.into()))?;
                 let headers = resp.headers_mut();
-                headers.extend(flowy_meta_headers(&decision, fallback));
+                headers.extend(token_router_meta_headers(&decision, fallback));
                 apply_sse_headers(headers);
                 Ok(resp.into_response())
             }
@@ -91,10 +91,10 @@ pub async fn chat_completions(
     } else {
         match state.upstream.complete(&req, &decision, agent_id.as_deref()).await {
             Ok(mut resp) => {
-                let fallback = resp.flowy_meta.as_ref().is_some_and(|m| m.fallback);
+                let fallback = resp.token_router_meta.as_ref().is_some_and(|m| m.fallback);
                 let outcome = RequestOutcome::success(&decision, fallback);
                 record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
-                resp.flowy_meta = Some(build_flowy_meta(&decision, fallback, &resp));
+                resp.token_router_meta = Some(build_token_router_meta(&decision, fallback, &resp));
                 Ok(Json(resp).into_response())
             }
             Err(e) => {

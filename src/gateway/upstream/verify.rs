@@ -84,7 +84,7 @@ mod tests {
                 finish_reason: "tool_calls".into(),
             }],
             usage: None,
-            flowy_meta: None,
+            token_router_meta: None,
         }
     }
 
@@ -106,7 +106,7 @@ mod tests {
                 finish_reason: "stop".into(),
             }],
             usage: None,
-            flowy_meta: None,
+            token_router_meta: None,
         }
     }
 

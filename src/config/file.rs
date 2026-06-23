@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paths;
 
-/// On-disk `~/.flowy-router/config.toml`
+/// On-disk `~/.token-router/config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(default)]
@@ -268,7 +268,7 @@ impl ConfigFile {
 
 pub fn default_config_template() -> String {
     r#"# Flowy Router configuration
-# Path: ~/.flowy-router/config.toml (Linux/macOS) or %USERPROFILE%\.flowy-router\config.toml (Windows)
+# Path: ~/.token-router/config.toml (Linux/macOS) or %USERPROFILE%\.token-router\config.toml (Windows)
 
 [gateway]
 listen = "127.0.0.1:11080"
@@ -309,13 +309,13 @@ ctx_edge_max_tokens = 65536
     .to_string()
 }
 
-/// Load config from `~/.flowy-router/config.toml` (file must already exist).
+/// Load config from `~/.token-router/config.toml` (file must already exist).
 pub fn load() -> anyhow::Result<(ConfigFile, PathBuf)> {
     let path = paths::config_file()?;
     load_from_path(&path)
 }
 
-/// Create `~/.flowy-router/` (and `sessions/`) plus `config.toml` when missing.
+/// Create `~/.token-router/` (and `sessions/`) plus `config.toml` when missing.
 ///
 /// Returns the config path and whether a new template file was written.
 pub fn ensure_initialized(path: Option<&Path>) -> anyhow::Result<(PathBuf, bool)> {
@@ -337,7 +337,7 @@ pub fn ensure_initialized(path: Option<&Path>) -> anyhow::Result<(PathBuf, bool)
 pub fn load_from_path(path: &Path) -> anyhow::Result<(ConfigFile, PathBuf)> {
     if !path.exists() {
         anyhow::bail!(
-            "config not found: {}. Run `flowy gateway start` to create it.",
+            "config not found: {}. Run `token-router gateway start` to create it.",
             path.display()
         );
     }

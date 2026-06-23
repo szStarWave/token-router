@@ -156,7 +156,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
         let _ = ready.send(());
     }
 
-    info!(%addr, "flowy gateway listening");
+    info!(%addr, "token-router gateway listening");
     info!(
         edge = config.edge_base_url.is_some(),
         cloud = config.cloud_base_url.is_some(),

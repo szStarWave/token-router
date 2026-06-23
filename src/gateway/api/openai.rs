@@ -259,7 +259,7 @@ pub struct ChatCompletionResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flowy_meta: Option<FlowyMeta>,
+    pub token_router_meta: Option<TokenRouterMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,7 +270,7 @@ pub struct Choice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FlowyMeta {
+pub struct TokenRouterMeta {
     pub route: String,
     pub fallback: bool,
     pub difficulty_score: f32,

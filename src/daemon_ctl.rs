@@ -138,7 +138,7 @@ pub async fn status_daemon(client: &GatewayClient, json: bool) -> Result<()> {
                     if json {
                         println!("{}", serde_json::to_string_pretty(&u)?);
                     } else {
-                        println!("Flowy Gateway");
+                        println!("Token Router");
                         println!("  Status:  unknown (pid {pid}, HTTP down)");
                         println!("  URL:     {}", client.base_url());
                     }
@@ -150,7 +150,7 @@ pub async fn status_daemon(client: &GatewayClient, json: bool) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else {
-                println!("Flowy Gateway");
+                println!("Token Router");
                 println!("  Status:  stopped");
                 println!("  URL:     {}", client.base_url());
             }
@@ -279,7 +279,7 @@ fn detach_child_process(cmd: &mut Command) {
 fn detach_child_process(_cmd: &mut Command) {}
 
 fn print_human_status(s: &crate::client::GatewayStatus) {
-    println!("Flowy Gateway");
+    println!("Token Router");
     println!("  Status:   {}", s.status);
     println!("  Version:  {}", s.version);
     println!("  PID:      {}", s.pid);

@@ -16,23 +16,23 @@
 **复制为默认配置**
 
 ```bash
-mkdir -p ~/.flowy-router
-cp example/config.toml ~/.flowy-router/config.toml
+mkdir -p ~/.token-router
+cp example/config.toml ~/.token-router/config.toml
 # 编辑 upstream.base_url、api_key（均为选填）
-flowy gateway restart
+token-router gateway restart
 ```
 
 **不复制，直接指定路径**
 
 ```bash
-flowy --config example/config.toml gateway start
+token-router --config example/config.toml gateway start
 make start CONFIG=example/config.toml
 make start CONFIG=example/config.toml
 ```
 
 ## 运行后可观测
 
-Gateway 启动后会在 `~/.flowy-router/` 写入（或更新）：
+Gateway 启动后会在 `~/.token-router/` 写入（或更新）：
 
 | 文件 | 内容 |
 |------|------|
@@ -41,8 +41,8 @@ Gateway 启动后会在 `~/.flowy-router/` 写入（或更新）：
 | `sessions/` | 每会话路由状态 |
 
 ```bash
-flowy stats --lang zh              # 当前会话（中文）
-flowy stats --global --lang zh     # 全部历史
+token-router stats --lang zh              # 当前会话（中文）
+token-router stats --global --lang zh     # 全部历史
 make stats-zh
 make stats-global-zh CONFIG=example/config.toml
 ```

@@ -68,6 +68,7 @@ pub fn router(state: AppState) -> Router {
 
 #[derive(Serialize)]
 struct HealthResponse {
+    service: &'static str,
     status: &'static str,
     edge_configured: bool,
     cloud_configured: bool,
@@ -76,6 +77,7 @@ struct HealthResponse {
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let config = state.config();
     Json(HealthResponse {
+        service: "token-router",
         status: "ok",
         edge_configured: config.edge_base_url.is_some(),
         cloud_configured: config.cloud_base_url.is_some(),
