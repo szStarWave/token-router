@@ -1,0 +1,11 @@
+{
+  "name": "token-router-electron-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node main.mjs"
+  },
+  "dependencies": {
+    "koffi": "^2.10.0"
+  }
+}

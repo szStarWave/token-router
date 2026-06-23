@@ -1,0 +1,11 @@
+# electron-builder — 将 token_router.dll 打入安装包
+# 复制到宿主项目并按需调整 from/to
+
+extraResources:
+  - from: resources/
+    to: resources/
+    filter:
+      - "**/*"
+
+# 打包后 DLL 路径（运行时）:
+#   process.resourcesPath/resources/win32/x64/token_router.dll

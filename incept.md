@@ -71,6 +71,11 @@ UI invokeIpc('token-router:ensureStarted')
 make release-dylib
 # Windows 产物: target/release/token_router.dll
 
+# 或一键打包 Electron 接入所需全部文件（含 zip）:
+make package-electron-win
+# 输出: target/dist/token-router-electron-win32-x64/
+#       target/dist/token-router-electron-win32-x64.zip
+
 mkdir -p your-app/resources/win32/x64
 cp target/release/token_router.dll your-app/resources/win32/x64/
 ```
@@ -648,7 +653,7 @@ curl -s http://127.0.0.1:11080/v1/chat/completions \
 | `src/embedded.rs` | 进程内 Gateway 线程 |
 | `ffi/token_router.h` | C 头文件 |
 | `example/electron/main.mjs` | koffi 最小示例 |
-| `Makefile` | `release-dylib` 目标 |
+| `Makefile` | `release-dylib`、`package-electron-win` 目标 |
 | `incept.html` | 本文 HTML 版 |
 
 ### FlowyClaw（参考宿主）

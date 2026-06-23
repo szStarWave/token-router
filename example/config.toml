@@ -1,9 +1,10 @@
-# Flowy Router — 推荐示例配置
+# Token Router — 推荐示例配置
 #
 # 复制:
 #   Linux/macOS: cp example/config.toml ~/.token-router/config.toml
 #   Windows:     copy example\config.toml %USERPROFILE%\.token-router\config.toml
 #
+# Electron 嵌入：也可复制打包产物 config/config.toml 到上述路径
 # 或直接指定:
 #   token-router --config example/config.toml gateway start
 #   make start CONFIG=example/config.toml
@@ -36,7 +37,7 @@ ctx_edge_max_tokens = 65536
 # 可选：入站鉴权（Authorization: Bearer 或 x-api-key）
 # api_key = "flowy-local"
 
-# 可选：保护 POST /v1/admin/shutdown（头 X-Flowy-Admin-Token）
+# 可选：保护 POST /v1/admin/shutdown（头 X-Token-Router-Admin-Token）
 # admin_token = "change-me"
 
 # --- 经验学习（持久化 experience.json）---
@@ -74,7 +75,7 @@ base_url = "http://127.0.0.1:11434/v1"
 
 [upstream.cloud]
 base_url = "https://api.deepseek.com/v1"
-model = "auto"               # auto = 保留客户端 model，由 Flowy 路由
+model = "auto"               # auto = 保留客户端 model，由 token-router 路由
 # api_key = "sk-your-deepseek-api-key"
 
 # ---------------------------------------------------------------------------
