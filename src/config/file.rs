@@ -267,7 +267,7 @@ impl ConfigFile {
 }
 
 pub fn default_config_template() -> String {
-    r#"# Flowy Router configuration
+    r#"# Token Router configuration
 # Path: ~/.token-router/config.toml (Linux/macOS) or %USERPROFILE%\.token-router\config.toml (Windows)
 
 [gateway]
@@ -276,7 +276,7 @@ route = "auto"                 # auto | edge | cloud | cascade
 routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
 ctx_edge_max_tokens = 65536
-# api_key = "flowy-local"        # optional: inbound auth when set
+# api_key = "token-local"        # optional: inbound auth when set
 # admin_token = "change-me"      # optional: protects POST /v1/admin/shutdown|restart
 # experience_enabled = true
 # experience_learning_rate = 0.08
