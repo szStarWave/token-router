@@ -1,0 +1,2998 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Token Router</title>
+  <link rel="icon" type="image/png" href="/app-icon.png" />
+  <script src="https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js"></script>
+  <script>
+    (function () {
+      try {
+        var raw = localStorage.getItem('tokenrouter-auth');
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        var s = parsed && parsed.state;
+        if (s && s.isLoggedIn && s.authToken) {
+          document.documentElement.dataset.auth = 'logged-in';
+        }
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+  <style>
+    :root,
+    [data-effective-theme="dark"] {
+      color-scheme: dark;
+      --background: hsl(240, 10%, 4%);
+      --foreground: hsl(0, 0%, 98%);
+      --content1: hsl(240, 6%, 10%);
+      --content2: hsl(240, 5%, 13%);
+      --content3: hsl(240, 5%, 16%);
+      --primary: hsl(212, 100%, 50%);
+      --primary-fg: hsl(0, 0%, 100%);
+      --primary-30: hsla(212, 100%, 50%, 0.3);
+      --default-400: hsl(240, 4%, 46%);
+      --default-500: hsl(240, 4%, 56%);
+      --success: hsl(142, 71%, 45%);
+      --warning: hsl(38, 92%, 50%);
+      --danger: hsl(0, 84%, 60%);
+      --edge: hsl(160, 60%, 45%);
+      --cloud: hsl(262, 70%, 58%);
+      --divider: hsl(240, 5%, 18%);
+      --card-border: hsla(240, 5%, 22%, 0.6);
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      --log-bg: hsl(240, 10%, 6%);
+      --log-info: hsl(212, 80%, 70%);
+      --scrollbar: hsla(240, 4%, 46%, 0.5);
+      --scrollbar-hover: hsla(240, 4%, 46%, 0.8);
+    }
+
+    [data-effective-theme="light"] {
+      color-scheme: light;
+      --background: hsl(0, 0%, 98%);
+      --foreground: hsl(240, 10%, 10%);
+      --content1: hsl(0, 0%, 100%);
+      --content2: hsl(240, 5%, 96%);
+      --content3: hsl(240, 5%, 92%);
+      --primary: hsl(212, 100%, 45%);
+      --primary-fg: hsl(0, 0%, 100%);
+      --primary-30: hsla(212, 100%, 45%, 0.15);
+      --default-400: hsl(240, 4%, 46%);
+      --default-500: hsl(240, 4%, 40%);
+      --success: hsl(142, 65%, 38%);
+      --warning: hsl(38, 92%, 42%);
+      --danger: hsl(0, 72%, 50%);
+      --edge: hsl(160, 55%, 38%);
+      --cloud: hsl(262, 65%, 52%);
+      --divider: hsl(240, 6%, 88%);
+      --card-border: hsla(240, 6%, 82%, 0.9);
+      --shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+      --log-bg: hsl(240, 8%, 95%);
+      --log-info: hsl(212, 80%, 38%);
+      --scrollbar: hsla(240, 4%, 46%, 0.35);
+      --scrollbar-hover: hsla(240, 4%, 46%, 0.55);
+    }
+
+    :root {
+      --radius: 12px;
+      --radius-sm: 8px;
+      --sider-width: 330px;
+      --titlebar-h: 49px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: var(--font);
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 14px;
+      line-height: 1.5;
+      user-select: none;
+    }
+
+    .app { display: flex; height: 100vh; width: 100%; }
+    .app.resizing { cursor: ew-resize; }
+
+    /* ── Sidebar ── */
+    .sider {
+      width: var(--sider-width);
+      min-width: 60px;
+      max-width: 400px;
+      height: 100%;
+      background: var(--background);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .sider.narrow { width: 60px; }
+
+    .sider-header {
+      height: 49px;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+    }
+    .brand { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .brand-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--primary), hsl(262, 70%, 58%));
+      display: grid; place-items: center; flex-shrink: 0;
+    }
+    .brand-icon svg { width: 18px; height: 18px; color: white; }
+    .brand h1 { font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sider.narrow .brand h1 { display: none; }
+
+    .icon-btn {
+      width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
+      background: transparent; color: var(--foreground); cursor: pointer;
+      display: grid; place-items: center; transition: background 0.15s;
+      -webkit-app-region: no-drag;
+    }
+    .icon-btn:hover { background: var(--content2); }
+    .icon-btn.active { background: var(--primary); color: var(--primary-fg); }
+    .icon-btn svg { width: 20px; height: 20px; }
+
+    .route-tabs {
+      margin: 8px; padding: 4px; border-radius: var(--radius);
+      background: var(--content1); box-shadow: var(--shadow);
+      display: flex; gap: 2px;
+    }
+    .sider.narrow .route-tabs { flex-direction: column; margin: 4px; }
+    .route-tab {
+      flex: 1; padding: 8px 4px; border: none; border-radius: var(--radius-sm);
+      background: transparent; color: var(--default-500); font-size: 12px;
+      font-weight: 600; cursor: pointer; transition: all 0.15s;
+    }
+    .route-tab:hover { color: var(--foreground); background: var(--content2); }
+    .route-tab.active { background: var(--primary); color: var(--primary-fg); font-weight: 700; }
+    .sider.narrow .route-tab { font-size: 10px; padding: 6px 2px; }
+
+    .segment-tabs {
+      display: flex; gap: 4px; padding: 4px; border-radius: var(--radius);
+      background: var(--content2); margin-bottom: 16px;
+    }
+    .segment-tab {
+      flex: 1; padding: 8px 10px; border: none; border-radius: var(--radius-sm);
+      background: transparent; color: var(--default-500); font-size: 13px;
+      font-weight: 600; cursor: pointer; transition: all 0.15s;
+    }
+    .segment-tab:hover { color: var(--foreground); background: var(--content3); }
+    .segment-tab.active { background: var(--primary); color: var(--primary-fg); }
+
+    .setting-row { margin-bottom: 20px; }
+    .setting-row:last-child { margin-bottom: 0; }
+    .setting-label {
+      font-size: 13px; font-weight: 600; color: var(--foreground);
+      margin-bottom: 8px;
+    }
+    .setting-desc { font-size: 11px; color: var(--default-400); margin-top: 6px; }
+
+    .card-grid {
+      flex: 1; overflow-y: auto; overflow-x: clip;
+      padding: 8px; display: grid;
+      grid-template-columns: 1fr 1fr; gap: 8px;
+      align-content: start;
+    }
+    .sider.narrow .card-grid { grid-template-columns: 1fr; padding: 8px 4px; gap: 8px; }
+
+    .sider-footer {
+      flex-shrink: 0;
+      border-top: 1px solid var(--divider);
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--background);
+    }
+    .sider-credits-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      padding: 4px 2px;
+    }
+    .sider-credits-main {
+      position: relative;
+      flex: 0 1 auto;
+      min-width: 0;
+    }
+    .sider-credits-hover {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: help;
+      padding: 2px 0;
+    }
+    .sider-credits-popover {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      min-width: 220px;
+      z-index: 60;
+      padding: 10px 12px;
+      margin-bottom: 2px;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content1);
+      box-shadow: var(--shadow);
+    }
+    .sider-credits-popover::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 100%;
+      height: 8px;
+    }
+    .sider-credits-popover[hidden] { display: none !important; }
+    .sider-credits-breakdown-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 2px 0;
+    }
+    .sider-credits-breakdown-label {
+      color: var(--foreground);
+      min-width: 0;
+    }
+    .sider-credits-breakdown-value {
+      color: var(--default-400);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+    .sider-credits-popover-hint {
+      font-size: 12px;
+      color: var(--default-400);
+      margin: 0;
+    }
+    .sider-credits-popover-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--divider);
+    }
+    .sider-credits-popover-link {
+      border: none;
+      background: none;
+      color: var(--primary);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: none;
+    }
+    .sider-credits-popover-link:hover { text-decoration: underline; }
+    .sider-credits-popover-refresh {
+      min-width: 64px;
+      height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content2);
+      color: var(--default-500);
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .sider-credits-popover-refresh:hover:not(:disabled) {
+      background: var(--content3);
+      color: var(--foreground);
+    }
+    .sider-credits-popover-refresh:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .sider-credits-row svg {
+      width: 18px;
+      height: 18px;
+      color: var(--default-400);
+      flex-shrink: 0;
+    }
+    #sider-credits-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--foreground);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .sider-credits-more {
+      flex-shrink: 0;
+      height: 28px;
+      padding: 0 8px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--primary);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.15s;
+    }
+    .sider-credits-more:hover { background: var(--primary-30); }
+    .sider-credits-more svg {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+    }
+    .sider-user-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 4px 2px;
+    }
+    .sider-user-avatar {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: var(--primary);
+      color: var(--primary-fg);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .sider-user-avatar img,
+    #sider-user-avatar-fallback {
+      position: absolute;
+      inset: 0;
+    }
+    .sider-user-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .sider-user-avatar img[hidden],
+    #sider-user-avatar-fallback[hidden] {
+      display: none !important;
+    }
+    #sider-user-avatar-fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .sider-user-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sider.narrow .sider-footer { padding: 8px 6px; }
+    .sider.narrow .sider-user-meta,
+    .sider.narrow .sider-credits-more { display: none; }
+    .sider.narrow .sider-credits-main { display: flex; justify-content: center; }
+    .sider.narrow .sider-credits-hover { justify-content: center; }
+    .sider.narrow .sider-credits-popover {
+      left: auto;
+      right: auto;
+      min-width: 200px;
+      transform: translateX(-20%);
+    }
+    .sider.narrow #sider-credits-value { font-size: 12px; }
+    .sider.narrow .sider-user-row { justify-content: center; }
+
+    .model-select { position: relative; width: 100%; }
+    .model-select-trigger {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content2);
+      color: var(--foreground);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      text-align: left;
+    }
+    .model-select-trigger:hover { background: var(--content3); }
+    .model-select.open .model-select-trigger {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px var(--primary-30);
+    }
+    .model-select-trigger-inner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+    .model-select-label {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .model-select-chevron {
+      width: 16px;
+      height: 16px;
+      color: var(--default-400);
+      flex-shrink: 0;
+      transition: transform 0.15s;
+    }
+    .model-select.open .model-select-chevron { transform: rotate(180deg); }
+    .model-select-icon,
+    .model-select-option-icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .model-select-icon-emoji {
+      width: 20px;
+      height: 20px;
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .model-select-icon-fallback {
+      width: 20px;
+      height: 20px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      color: var(--default-400);
+      background: var(--content3);
+      border-radius: 4px;
+    }
+    .model-select-menu {
+      position: absolute;
+      z-index: 40;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      max-height: 280px;
+      overflow-y: auto;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content1);
+      box-shadow: var(--shadow);
+      padding: 4px;
+    }
+    .model-select-option {
+      width: 100%;
+      border: none;
+      background: transparent;
+      color: var(--foreground);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      text-align: left;
+    }
+    .model-select-option:hover { background: var(--content2); }
+    .model-select-option.active {
+      background: var(--primary-30);
+      color: var(--primary);
+    }
+    .model-select-option-label {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .model-select-empty {
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--default-400);
+    }
+
+    /* clash-party style: CardBody (icon + corner chip) + CardFooter (title) */
+    .nav-card {
+      border-radius: var(--radius); background: var(--content1);
+      box-shadow: var(--shadow); border: none;
+      cursor: pointer; overflow: hidden; min-width: 0;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .nav-card:hover { background: var(--primary-30); }
+    .nav-card.active { background: var(--primary); color: var(--primary-fg); }
+    .nav-card:active { transform: scale(0.97); }
+    .nav-card.nav-card-wide { grid-column: span 2; }
+    .sider.narrow .nav-card.nav-card-wide { grid-column: span 1; }
+
+    /* 6 half-width nav cards (edge / cloud / routing / agents / logs / settings) */
+    .nav-card:not(.nav-card-wide) { min-height: 96px; }
+    .nav-card:not(.nav-card-wide) .nav-card-body { padding: 8px 0 4px; }
+    .nav-card:not(.nav-card-wide) .nav-card-icon { width: 44px; height: 48px; }
+    .nav-card:not(.nav-card-wide) .nav-card-foot { padding: 8px 12px 14px; }
+    .nav-card:not(.nav-card-wide) .nav-card-corner { margin: 10px 10px 0 0; }
+
+    .nav-card-expand { display: flex; flex-direction: column; min-width: 0; }
+    .nav-card-only {
+      display: none; width: 36px; height: 36px; margin: 0 auto;
+      border: none; border-radius: var(--radius-sm);
+      background: var(--content2); color: var(--foreground);
+      cursor: pointer; place-items: center; flex-shrink: 0;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-card-only svg {
+      width: 20px; height: 20px;
+      stroke: currentColor; fill: none;
+      stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .sider.narrow .nav-card { background: transparent; box-shadow: none; }
+    .sider.narrow .nav-card:not(.nav-card-wide) { min-height: 0; }
+    .sider.narrow .nav-card-expand { display: none; }
+    .sider.narrow .nav-card-only { display: grid; }
+    .sider.narrow .nav-card.active .nav-card-only { background: var(--primary); color: var(--primary-fg); }
+    .sider.narrow .nav-card:not(.active) .nav-card-only:hover { background: var(--content2); }
+
+    .nav-card-body { padding: 0; }
+    .nav-card-body-wide { padding: 10px 12px 6px; }
+    .nav-card-top {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      min-width: 0;
+    }
+    .nav-card-icon {
+      width: 40px; height: 36px; display: grid; place-items: center;
+      flex-shrink: 0; color: inherit;
+    }
+    .nav-card-icon svg {
+      width: 24px; height: 24px;
+      stroke: currentColor; fill: none;
+      stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .nav-card.accent-edge:not(.active) .nav-card-icon { color: var(--edge); }
+    .nav-card.accent-cloud:not(.active) .nav-card-icon { color: var(--cloud); }
+
+    .nav-card-head {
+      display: flex; justify-content: space-between; align-items: center;
+      height: 32px; min-width: 0; gap: 8px;
+    }
+    .nav-card-stat {
+      font-size: 15px; font-weight: 700; line-height: 32px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      min-width: 0; flex: 1; font-variant-numeric: tabular-nums;
+    }
+    .nav-card-sub {
+      font-size: 11px; font-weight: 600; opacity: 0.75;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-top: 2px; line-height: 1.3;
+    }
+    .nav-card.active .nav-card-sub { opacity: 0.85; }
+
+    .nav-card-foot {
+      padding: 4px 12px 10px; display: flex;
+      align-items: center; justify-content: space-between; gap: 8px;
+      min-width: 0;
+    }
+    .nav-card-title {
+      font-size: 13px; font-weight: 700;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      min-width: 0; flex: 1;
+    }
+    .nav-card-meta {
+      font-size: 13px; font-weight: 700;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      min-width: 0; text-align: right; flex-shrink: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .nav-card-corner { margin: 4px 8px 0 0; flex-shrink: 0; }
+    .nav-card-action {
+      width: 32px; height: 32px; flex-shrink: 0;
+      color: inherit;
+    }
+    .nav-card-action svg { width: 22px; height: 22px; }
+
+    .nav-card.active .icon-btn { color: inherit; }
+    .nav-card.active .icon-btn:hover { background: rgba(255, 255, 255, 0.14); }
+
+    .nav-card-body-wide .progress-track { margin-top: 8px; height: 6px; }
+
+    .tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; line-height: 1.35;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .tag.bordered {
+      background: var(--primary);
+      border: 1px solid transparent;
+      color: var(--primary-fg);
+    }
+    .tag.bordered.ok { background: var(--success); border-color: transparent; color: #fff; }
+    .tag.bordered.off { background: var(--default-500); border-color: transparent; color: #fff; }
+    .tag.bordered.warn { background: var(--warning); border-color: transparent; color: #fff; }
+    .tag.bordered.info { background: var(--primary); border-color: transparent; color: #fff; }
+    .tag.bordered.neutral { background: var(--default-500); border-color: transparent; color: #fff; }
+    .nav-card.active .tag.bordered:not(.ok):not(.off):not(.warn):not(.info):not(.neutral) {
+      background: rgba(255, 255, 255, 0.28);
+      border-color: transparent;
+      color: #fff;
+    }
+    .nav-card.active .tag.bordered.ok {
+      background: var(--success);
+      border-color: transparent;
+      color: #fff;
+    }
+    .nav-card.active .tag.bordered.off {
+      background: rgba(255, 255, 255, 0.28);
+      border-color: transparent;
+      color: #fff;
+    }
+    .nav-card.active .tag.bordered.warn {
+      background: var(--warning);
+      border-color: transparent;
+      color: #fff;
+    }
+    .nav-card.active .tag.bordered.info,
+    .nav-card.active .tag.bordered.neutral {
+      background: rgba(255, 255, 255, 0.28);
+      border-color: transparent;
+      color: #fff;
+    }
+    .tag .dot { width: 5px; height: 5px; flex-shrink: 0; }
+
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    .progress-track {
+      height: 6px; border-radius: 99px; background: rgba(255,255,255,0.12);
+      overflow: hidden; display: flex;
+    }
+    .nav-card:not(.active) .progress-track { background: var(--content3); }
+    .progress-edge { background: var(--edge); }
+    .progress-cloud { background: var(--cloud); }
+    .progress-cascade { background: var(--warning); }
+
+    .resize-handle {
+      width: 5px; cursor: ew-resize; flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .resize-handle:hover, .app.resizing .resize-handle { background: var(--primary); }
+    .divider-v { width: 1px; background: var(--divider); flex-shrink: 0; }
+
+    /* ── Main ── */
+    .main {
+      flex: 1; min-width: 0; height: 100%;
+      display: flex; flex-direction: column;
+    }
+    .page-header {
+      height: var(--titlebar-h); padding: 8px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--background); border-bottom: 1px solid var(--divider);
+      position: sticky; top: 0; z-index: 10;
+      -webkit-app-region: drag;
+    }
+    .page-title { font-size: 17px; font-weight: 600; }
+    .page-header-right {
+      display: flex; align-items: center; gap: 10px;
+      -webkit-app-region: no-drag;
+    }
+    .page-actions { display: flex; gap: 8px; }
+
+    .window-controls {
+      display: none; align-items: center; gap: 2px;
+      margin-left: 2px; padding-left: 10px;
+      border-left: 1px solid var(--divider);
+    }
+    .tauri-app .window-controls { display: flex; }
+    .window-ctrl {
+      width: 36px; height: 28px; border: none;
+      border-radius: var(--radius-sm); background: transparent;
+      color: var(--default-500); cursor: pointer;
+      display: grid; place-items: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .window-ctrl:hover { background: var(--content2); color: var(--foreground); }
+    .window-ctrl.close:hover { background: var(--danger); color: #fff; }
+    .window-ctrl-icon {
+      position: relative; width: 14px; height: 14px; display: block;
+    }
+    .window-ctrl-icon svg {
+      position: absolute; top: 0; left: 0; width: 14px; height: 14px;
+    }
+    .window-ctrl-icon svg[hidden] { display: none; }
+
+    .page-content {
+      flex: 1; min-height: 0; padding: 16px;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .page {
+      display: none; flex: 1; min-height: 0;
+      flex-direction: column; overflow-y: auto;
+    }
+    .page.active { display: flex; }
+    #page-logs.active { overflow: hidden; }
+
+    .btn {
+      padding: 8px 14px; border-radius: var(--radius-sm); border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--primary); color: var(--primary-fg); }
+    .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+    .btn-ghost { background: var(--content2); color: var(--foreground); }
+    .btn-ghost:hover:not(:disabled) { background: var(--content3); }
+    .btn-sm { padding: 6px 10px; font-size: 12px; }
+    .btn svg { width: 16px; height: 16px; }
+
+    .panel {
+      background: var(--content1); border-radius: var(--radius);
+      padding: 16px; margin-bottom: 16px; box-shadow: var(--shadow);
+    }
+    .panel-title {
+      font-size: 13px; font-weight: 700; color: var(--default-400);
+      text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px;
+    }
+
+    .stat-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .stat-box {
+      background: var(--content2); border-radius: var(--radius-sm);
+      padding: 14px;
+    }
+    .stat-box .label { font-size: 12px; color: var(--default-500); margin-bottom: 4px; }
+    .stat-box .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .stat-box .sub { font-size: 11px; color: var(--default-400); margin-top: 2px; }
+    .stat-box.edge .value { color: var(--edge); }
+    .stat-box.cloud .value { color: var(--cloud); }
+    .stat-box.saved .value { color: var(--success); }
+
+    .token-chart {
+      width: 100%;
+      height: 300px;
+      min-height: 240px;
+    }
+
+    .form-grid { display: grid; gap: 12px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 720px) { .form-row { grid-template-columns: 1fr; } }
+    label { display: block; font-size: 12px; color: var(--default-500); margin-bottom: 4px; }
+    input, select, textarea {
+      width: 100%; padding: 8px 10px; border-radius: var(--radius-sm);
+      border: 1px solid var(--divider); background: var(--content2);
+      color: var(--foreground); font-size: 13px; font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-30);
+    }
+    .hint { font-size: 11px; color: var(--default-400); margin-top: 4px; }
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 0; }
+    .checkbox-row input { width: auto; flex-shrink: 0; }
+    .checkbox-row label { margin-bottom: 0; }
+    .form-row > .checkbox-row { align-self: center; }
+
+    .upstream-view { display: none; }
+    .upstream-view.active { display: block; }
+
+    .upstream-hero {
+      display: flex; align-items: center; gap: 14px;
+      padding: 18px 20px; border-radius: var(--radius);
+      background: var(--content1); box-shadow: var(--shadow);
+      margin-bottom: 16px; min-width: 0;
+    }
+    .upstream-hero.edge { border-left: 4px solid var(--edge); }
+    .upstream-hero.cloud { border-left: 4px solid var(--cloud); }
+    .upstream-hero-icon {
+      width: 48px; height: 48px; border-radius: 12px;
+      display: grid; place-items: center; flex-shrink: 0;
+    }
+    .upstream-hero.edge .upstream-hero-icon {
+      background: hsla(160, 60%, 45%, 0.12); color: var(--edge);
+    }
+    .upstream-hero.cloud .upstream-hero-icon {
+      background: hsla(262, 70%, 58%, 0.12); color: var(--cloud);
+    }
+    .upstream-hero-icon svg {
+      width: 26px; height: 26px;
+      stroke: currentColor; fill: none;
+      stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .upstream-hero-main { flex: 1; min-width: 0; }
+    .upstream-hero-main h2 {
+      font-size: 18px; font-weight: 700; margin-bottom: 4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .upstream-hero-main p {
+      font-size: 13px; color: var(--default-500); line-height: 1.45;
+    }
+    .upstream-hero-status { flex-shrink: 0; }
+
+    .upstream-stats {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px; margin-bottom: 16px;
+    }
+    @media (max-width: 640px) { .upstream-stats { grid-template-columns: 1fr; } }
+
+    .upstream-form-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    }
+    @media (max-width: 720px) { .upstream-form-grid { grid-template-columns: 1fr; } }
+    .upstream-form-grid .span-2 { grid-column: span 2; }
+    @media (max-width: 720px) { .upstream-form-grid .span-2 { grid-column: span 1; } }
+
+    .upstream-actions {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      justify-content: flex-end;
+      margin-top: 16px; padding-top: 16px;
+      border-top: 1px solid var(--divider);
+    }
+
+    .gateway-control-actions {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    }
+    .gateway-control-group {
+      display: flex; gap: 8px; flex-wrap: wrap;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--divider); }
+    th { color: var(--default-500); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+    td.adaptive-reasons { text-align: left; font-size: 12px; line-height: 1.5; color: var(--default-400); }
+    tr:hover td { background: var(--content2); }
+
+    .route-chart { display: flex; height: 12px; border-radius: 99px; overflow: hidden; margin: 12px 0; }
+    .route-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+    .route-legend span { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+    .log-view {
+      font-family: var(--mono); font-size: 12px; line-height: 1.6;
+      background: var(--log-bg); border-radius: var(--radius-sm);
+      padding: 12px; overflow-y: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    #page-logs .panel {
+      flex: 1; min-height: 0; margin-bottom: 0;
+      display: flex; flex-direction: column;
+    }
+    #page-logs .panel-title { flex-shrink: 0; }
+    #page-logs .log-view {
+      flex: 1; min-height: 0;
+    }
+    .log-line { padding: 1px 0; }
+    .log-line.info { color: var(--log-info); }
+    .log-line.warn { color: var(--warning); }
+    .log-line.err { color: var(--danger); }
+
+    .conn-badge.off { background: hsla(0, 0%, 50%, 0.15); color: var(--default-400); }
+
+    /* ── Login (Flowy account) ── */
+    html:not([data-auth="logged-in"]) #app { display: none !important; }
+    html[data-auth="logged-in"] #login-screen { display: none !important; }
+    .login-screen {
+      position: fixed; inset: 0; z-index: 200;
+      display: flex; flex-direction: column;
+      background: var(--background); color: var(--foreground);
+    }
+    .login-screen.hidden { display: none; }
+    .login-screen-header {
+      height: var(--titlebar-h); padding: 8px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      -webkit-app-region: drag;
+    }
+    .login-window-controls { -webkit-app-region: no-drag; }
+    .login-screen-body {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      padding: 24px 16px;
+    }
+    .login-card {
+      width: 100%; max-width: 420px;
+      background: var(--content1); border-radius: var(--radius);
+      box-shadow: var(--shadow); border: 1px solid var(--card-border);
+      padding: 32px 28px; position: relative;
+    }
+    .login-brand {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      margin-bottom: 20px;
+    }
+    .login-brand-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      background: linear-gradient(135deg, var(--primary), hsl(262, 70%, 58%));
+      display: grid; place-items: center;
+    }
+    .login-brand-icon svg { width: 22px; height: 22px; color: #fff; stroke: currentColor; fill: none; stroke-width: 1.75; }
+    .login-brand h2 { font-size: 20px; font-weight: 700; }
+    .login-viewport {
+      position: relative;
+      height: 360px;
+    }
+    .login-view {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+    }
+    .login-view.active { display: flex; }
+    .login-title { font-size: 16px; font-weight: 700; text-align: center; margin-bottom: 16px; flex-shrink: 0; }
+    .login-form {
+      flex: 1;
+      display: flex; flex-direction: column; justify-content: center;
+      gap: 14px; min-height: 0;
+    }
+    .login-code-row { display: flex; gap: 8px; }
+    .login-code-row input { flex: 1; min-width: 0; }
+    .login-code-row .btn { flex-shrink: 0; white-space: nowrap; }
+    .login-submit {
+      width: 100%;
+      justify-content: center;
+      text-align: center;
+    }
+    .login-tabs {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--divider);
+    }
+    .login-tabs.hidden { display: none; }
+    .login-view.hidden { display: none !important; }
+    .login-tab {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content2);
+      color: var(--default-500);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .login-tab:hover { background: var(--content3); color: var(--foreground); }
+    .login-tab.active {
+      background: var(--primary-30);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+    .login-wechat-wrap {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #wechat-qr-container {
+      width: 100%;
+      height: 300px;
+      flex-shrink: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+    }
+    #wechat-qr-container iframe {
+      width: 300px !important;
+      height: 300px !important;
+      border: none;
+      display: block;
+    }
+    .login-hint {
+      font-size: 12px;
+      color: var(--default-500);
+      text-align: center;
+      width: 100%;
+      margin: 0;
+    }
+    #login-wechat-hint {
+      padding: 0 12px;
+      line-height: 1.5;
+    }
+    .login-invite {
+      display: block;
+      width: min(100%, 280px);
+      margin: 24px auto 0;
+      text-align: center;
+    }
+    .login-toast {
+      position: fixed; top: 56px; left: 50%; transform: translateX(-50%) translateY(-12px);
+      opacity: 0; pointer-events: none; z-index: 210;
+      padding: 10px 16px; border-radius: var(--radius-sm);
+      background: var(--content2); box-shadow: var(--shadow); font-size: 13px;
+      transition: all 0.25s ease; max-width: 90vw;
+    }
+    .login-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .login-toast.err { border-left: 3px solid var(--danger); }
+    .login-toast.ok { border-left: 3px solid var(--success); }
+    .security-dialog {
+      position: fixed; inset: 0; z-index: 220;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.45); padding: 20px;
+    }
+    .security-dialog.open { display: flex; }
+    .security-panel {
+      width: 100%; max-width: 520px; max-height: 80vh;
+      background: var(--content1); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .security-body {
+      flex: 1; overflow-y: auto; font-size: 12px; line-height: 1.55;
+      color: var(--default-500); padding: 8px; background: var(--content2);
+      border-radius: var(--radius-sm);
+    }
+    .security-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; z-index: 100;
+      padding: 12px 16px; border-radius: var(--radius-sm);
+      background: var(--content2); box-shadow: var(--shadow);
+      font-size: 13px; transform: translateY(80px); opacity: 0;
+      transition: all 0.25s ease;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.ok { border-left: 3px solid var(--success); }
+    .toast.err { border-left: 3px solid var(--danger); }
+
+    .conn-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+      background: var(--content2);
+    }
+    .conn-badge.live { background: hsla(142, 71%, 45%, 0.15); color: var(--success); }
+    .conn-badge.off { background: hsla(0, 84%, 60%, 0.15); color: var(--danger); }
+    .pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    .endpoint-box {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; background: var(--content2);
+      border-radius: var(--radius-sm); font-family: var(--mono); font-size: 12px;
+    }
+    .endpoint-box code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+  </style>
+</head>
+<body>
+<div id="login-screen" class="login-screen">
+  <header class="login-screen-header window-drag">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </div>
+      <h1>Token Router</h1>
+    </div>
+    <div class="window-controls login-window-controls">
+      <button class="window-ctrl" id="login-win-min" type="button" data-i18n-aria-label="window.minimize" aria-label="Minimize">
+        <span class="window-ctrl-icon"><svg viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2"/></svg></span>
+      </button>
+      <button class="window-ctrl" id="login-win-max" type="button" data-i18n-aria-label="window.maximize" aria-label="Maximize">
+        <span class="window-ctrl-icon">
+          <svg id="login-icon-win-max" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+          <svg id="login-icon-win-restore" hidden viewBox="0 0 12 12"><path d="M4 2.5h5.5V8M8 4h2.5V9.5H4.5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        </span>
+      </button>
+      <button class="window-ctrl close" id="login-win-close" type="button" data-i18n-aria-label="window.close" aria-label="Close">
+        <span class="window-ctrl-icon"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3L3 9" stroke="currentColor" stroke-width="1.2"/></svg></span>
+      </button>
+    </div>
+  </header>
+  <div class="login-screen-body">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-brand-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>
+        </div>
+        <h2>Token Router</h2>
+      </div>
+
+      <div class="login-viewport">
+        <div id="login-wechat-view" class="login-view active">
+          <div class="login-title" id="login-wechat-title">微信登录</div>
+          <div class="login-wechat-wrap">
+            <div id="wechat-qr-container"></div>
+            <p class="login-hint" id="login-wechat-hint">请使用微信扫描二维码登录</p>
+          </div>
+        </div>
+
+        <div id="login-email-view" class="login-view">
+          <div class="login-title" id="login-email-title">邮箱登录</div>
+          <div class="login-form">
+            <input type="email" id="login-email" placeholder="请输入邮箱" autocomplete="email" />
+            <div class="login-code-row">
+              <input type="text" id="login-code" placeholder="请输入验证码" autocomplete="one-time-code" />
+              <button type="button" class="btn btn-ghost btn-sm" id="login-send-code">获取验证码</button>
+            </div>
+            <button type="button" class="btn btn-primary login-submit" id="login-submit">登录</button>
+          </div>
+        </div>
+      </div>
+
+      <input type="text" id="login-invite" class="login-invite" placeholder="请输入邀请码（选填）" maxlength="16" autocomplete="off" />
+
+      <div class="login-tabs" id="login-tabs">
+        <button type="button" class="login-tab active" data-mode="wechat" id="login-tab-wechat">微信扫码登录</button>
+        <button type="button" class="login-tab" data-mode="email" id="login-tab-email">邮箱登录</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="security-dialog" class="security-dialog">
+  <div class="security-panel">
+    <h3 id="security-title">用户声明</h3>
+    <div class="security-body" id="security-body"></div>
+    <div class="security-actions">
+      <button type="button" class="btn btn-ghost" id="security-cancel">取消</button>
+      <button type="button" class="btn btn-primary" id="security-agree">同意并继续</button>
+    </div>
+  </div>
+</div>
+
+<div id="login-toast" class="login-toast"></div>
+
+<div class="app" id="app">
+  <!-- Sidebar -->
+  <aside class="sider" id="sider">
+    <div class="sider-header window-drag">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <h1>Token Router</h1>
+      </div>
+    </div>
+
+    <div class="route-tabs" id="route-tabs">
+      <button class="route-tab active" data-route="auto" data-i18n="route.auto">智能</button>
+      <button class="route-tab" data-route="edge" data-i18n="route.edge">端侧</button>
+      <button class="route-tab" data-route="cloud" data-i18n="route.cloud">云端</button>
+      <button class="route-tab" data-route="cascade" data-i18n="route.cascade">级联</button>
+    </div>
+
+    <div class="card-grid" id="card-grid">
+      <!-- Gateway (wide, like mihomo-core-card) -->
+      <div class="nav-card nav-card-wide active" data-page="overview" data-nav-id="overview">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.gateway" title="Gateway">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body nav-card-body-wide">
+            <div class="nav-card-head">
+              <span class="nav-card-stat" id="card-version">v0.1.0</span>
+              <button type="button" class="icon-btn nav-card-action" data-i18n-title="action.restartGateway" title="重启" onclick="event.stopPropagation(); restartGateway()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 3v6h-6"/></svg>
+              </button>
+            </div>
+            <div class="nav-card-sub" id="card-uptime">—</div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.gateway">网关状态</span>
+            <span class="tag bordered ok" id="card-status"><span class="dot pulse"></span><span data-i18n="status.running">运行中</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats (wide) -->
+      <div class="nav-card nav-card-wide" data-page="stats" data-nav-id="stats">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.routeStats" title="路由统计">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 5-9"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body nav-card-body-wide">
+            <div class="nav-card-head">
+              <span class="nav-card-stat" id="card-saved">—</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-edge" id="bar-edge" style="width:0%"></div>
+              <div class="progress-cascade" id="bar-cascade" style="width:0%"></div>
+              <div class="progress-cloud" id="bar-cloud" style="width:0%"></div>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.routeStats">路由统计</span>
+            <span class="tag bordered" id="card-req-total">0 请求</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Edge -->
+      <div class="nav-card accent-edge" data-page="upstream" data-nav-id="edge">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.edge" title="端侧 Edge">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+              </div>
+              <span class="tag bordered ok nav-card-corner" id="chip-edge"><span class="dot"></span><span data-i18n="status.configured">已配置</span></span>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.edge">端侧</span>
+            <span class="nav-card-meta" id="card-edge-model">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cloud -->
+      <div class="nav-card accent-cloud" data-page="upstream" data-nav-id="cloud">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.cloud" title="云端 Cloud">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h11a4 4 0 010-8 5 5 0 00-9.9-1.1A4 4 0 007 18z"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h11a4 4 0 010-8 5 5 0 00-9.9-1.1A4 4 0 007 18z"/></svg>
+              </div>
+              <span class="tag bordered ok nav-card-corner" id="chip-cloud"><span class="dot"></span><span data-i18n="status.configured">已配置</span></span>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.cloud">云端</span>
+            <span class="nav-card-meta" id="card-cloud-model">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Routing -->
+      <div class="nav-card" data-page="routing" data-nav-id="routing">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.routing" title="策略">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 7.5l7 7"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 7.5l7 7"/></svg>
+              </div>
+              <span class="tag bordered nav-card-corner" id="card-route-tag" data-i18n="route.auto">智能</span>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.routing">策略</span>
+            <span class="nav-card-meta" id="card-profile">均衡</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agents -->
+      <div class="nav-card" data-page="agents" data-nav-id="agents">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.agents" title="Agent">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="3.5"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="3.5"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              </div>
+              <span class="tag bordered nav-card-corner" id="card-agents">2</span>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.agents">Agent</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logs -->
+      <div class="nav-card" data-page="logs" data-nav-id="logs">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.logs" title="日志">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/><path d="M8 9h2"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/><path d="M8 9h2"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.logs">日志</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings -->
+      <div class="nav-card" data-page="settings" data-nav-id="settings">
+        <button type="button" class="nav-card-only" data-i18n-title="nav.settings" title="设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <div class="nav-card-expand">
+          <div class="nav-card-body">
+            <div class="nav-card-top">
+              <div class="nav-card-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="nav-card-foot">
+            <span class="nav-card-title" data-i18n="nav.settings">设置</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="sider-footer no-drag" id="sider-footer">
+      <div class="sider-credits-row">
+        <div class="sider-credits-main" id="sider-credits-main">
+          <div class="sider-credits-hover" id="sider-credits-hover">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="12" cy="12" r="8"/><path d="M12 6v2"/><path d="M12 16v2"/><path d="M9 9.5h4.5a2 2 0 110 4H9"/>
+            </svg>
+            <span id="sider-credits-value">0</span>
+          </div>
+          <div class="sider-credits-popover" id="sider-credits-popover" hidden>
+            <div id="sider-credits-breakdown"></div>
+            <div class="sider-credits-popover-foot">
+              <button type="button" class="sider-credits-popover-link" id="sider-credits-view-billing" data-i18n="sidebar.viewBilling">查看积分账单</button>
+              <button type="button" class="sider-credits-popover-refresh" id="sider-credits-popover-refresh" data-i18n="action.refresh">刷新</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="sider-credits-more" id="sider-credits-more">
+          <span id="sider-credits-more-label" data-i18n="sidebar.getMoreCredits">获取更多积分</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/>
+          </svg>
+        </button>
+      </div>
+      <div class="sider-user-row" id="sider-user-row">
+        <div class="sider-user-avatar" id="sider-user-avatar">
+          <img id="sider-user-avatar-img" alt="" hidden />
+          <span id="sider-user-avatar-fallback">?</span>
+        </div>
+        <div class="sider-user-meta">
+          <span class="sider-user-name" id="sider-user-name"></span>
+        </div>
+      </div>
+    </footer>
+  </aside>
+
+  <div class="resize-handle" id="resize-handle"></div>
+  <div class="divider-v"></div>
+
+  <!-- Main -->
+  <main class="main">
+    <header class="page-header">
+      <div class="page-title window-drag" id="page-title" data-i18n="page.overview">概览</div>
+      <div class="page-header-right">
+        <div class="page-actions">
+          <span class="conn-badge off" id="conn-badge"><span class="dot"></span><span data-i18n="conn.offline">未连接</span></span>
+          <button class="btn btn-ghost btn-sm" onclick="refreshAll()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 3v6h-6"/></svg>
+            <span data-i18n="action.refresh">刷新</span>
+          </button>
+        </div>
+        <div class="window-controls" id="window-controls">
+          <button class="window-ctrl" id="btn-win-min" type="button" data-i18n-aria-label="window.minimize" aria-label="Minimize" data-i18n-title="window.minimize">
+            <span class="window-ctrl-icon">
+              <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M2 6h8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+          <button class="window-ctrl" id="btn-win-max" type="button" data-i18n-aria-label="window.maximize" aria-label="Maximize">
+            <span class="window-ctrl-icon">
+              <svg id="icon-win-max" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <rect x="1.75" y="1.75" width="8.5" height="8.5" stroke="currentColor" stroke-width="1.25"/>
+              </svg>
+              <svg id="icon-win-restore" hidden viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <rect x="3.25" y="0.75" width="7.5" height="7.5" stroke="currentColor" stroke-width="1.25"/>
+                <rect x="0.75" y="3.25" width="7.5" height="7.5" stroke="currentColor" stroke-width="1.25"/>
+              </svg>
+            </span>
+          </button>
+          <button class="window-ctrl close" id="btn-win-close" type="button" data-i18n-aria-label="window.close" aria-label="Close" data-i18n-title="window.close">
+            <span class="window-ctrl-icon">
+              <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-content">
+      <!-- Overview -->
+      <section class="page active" id="page-overview">
+        <div class="panel">
+          <div class="panel-title" data-i18n="overview.endpoint">Agent 接入点</div>
+          <div class="endpoint-box">
+            <code id="endpoint-url">http://127.0.0.1:11080/v1</code>
+            <button class="btn btn-ghost btn-sm" onclick="copyEndpoint()" data-i18n="action.copy">复制</button>
+          </div>
+          <p class="hint" style="margin-top:8px" data-i18n="overview.endpointHint">OpenClaw / Hermes 将 OpenAI 兼容 base_url 指向此地址即可。</p>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-box"><div class="label" data-i18n="stat.totalReq">总请求</div><div class="value" id="stat-req">—</div><div class="sub" id="stat-rpm">—</div></div>
+          <div class="stat-box edge"><div class="label" data-i18n="stat.edgeRoute">端侧路由</div><div class="value" id="stat-edge-pct">—</div><div class="sub" id="stat-edge-n">—</div></div>
+          <div class="stat-box cloud"><div class="label" data-i18n="stat.cloudRoute">云端路由</div><div class="value" id="stat-cloud-pct">—</div><div class="sub" id="stat-cloud-n">—</div></div>
+          <div class="stat-box saved"><div class="label" data-i18n="stat.cloudSaved">节省云端输入</div><div class="value" id="stat-saved">—</div><div class="sub" data-i18n="stat.estTokens">估算 Token</div></div>
+          <div class="stat-box"><div class="label" data-i18n="stat.fallbackRate">级联回退率</div><div class="value" id="stat-fallback">—</div><div class="sub" id="stat-cascade-detail">—</div></div>
+          <div class="stat-box"><div class="label" data-i18n="stat.avgTtft">平均 TTFT</div><div class="value" id="stat-ttft">—</div><div class="sub" data-i18n="stat.ttftSub">首 Token 延迟</div></div>
+        </div>
+
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-title" data-i18n="overview.routeDist">路由分布</div>
+          <div class="route-chart">
+            <div class="progress-edge" id="chart-edge" style="width:0%"></div>
+            <div class="progress-cascade" id="chart-cascade" style="width:0%"></div>
+            <div class="progress-cloud" id="chart-cloud" style="width:0%"></div>
+          </div>
+          <div class="route-legend">
+            <span><span class="legend-dot progress-edge"></span> <span data-i18n="legend.edge">端侧</span> <strong id="leg-edge">0%</strong></span>
+            <span><span class="legend-dot progress-cascade"></span> <span data-i18n="legend.cascade">级联</span> <strong id="leg-cascade">0%</strong></span>
+            <span><span class="legend-dot progress-cloud"></span> <span data-i18n="legend.cloud">云端</span> <strong id="leg-cloud">0%</strong></span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title" data-i18n="overview.stepKinds">步态分布 Top 5</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th data-i18n="col.stepKind">步态</th><th data-i18n="col.count">次数</th><th data-i18n="col.share">占比</th></tr></thead>
+              <tbody id="step-kind-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Upstream: Edge -->
+      <section class="page" id="page-upstream">
+        <div id="upstream-edge-view" class="upstream-view active">
+          <div class="upstream-hero edge">
+            <div class="upstream-hero-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+            </div>
+            <div class="upstream-hero-main">
+              <h2 data-i18n="upstream.edgeTitle">端侧</h2>
+              <p data-i18n="upstream.edgeDesc">本地 OpenAI 兼容推理服务（Ollama、vLLM 等）</p>
+            </div>
+            <span class="tag bordered ok upstream-hero-status" id="upstream-edge-status"><span class="dot"></span><span data-i18n="status.configured">已配置</span></span>
+          </div>
+
+          <div class="upstream-stats">
+            <div class="stat-box edge">
+              <div class="label" data-i18n="upstream.routeShare">路由占比</div>
+              <div class="value" id="upstream-edge-route-pct">—</div>
+              <div class="sub" data-i18n="upstream.edgeRouteSub">端侧路由请求</div>
+            </div>
+            <div class="stat-box edge">
+              <div class="label" data-i18n="upstream.routeCount">路由次数</div>
+              <div class="value" id="upstream-edge-req">—</div>
+              <div class="sub" id="upstream-edge-model-hint">—</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title" data-i18n="upstream.connection">连接</div>
+            <div class="upstream-form-grid">
+              <div class="span-2">
+                <label data-i18n="field.baseUrl">Base URL</label>
+                <input id="edge_url" data-i18n-placeholder="ph.edgeUrl" placeholder="http://127.0.0.1:11434/v1" />
+                <p class="hint" data-i18n="upstream.edgeUrlHint">指向本地推理服务的 OpenAI 兼容 API 根路径。</p>
+              </div>
+              <div>
+                <label data-i18n="field.model">Model</label>
+                <input id="edge_model" data-i18n-placeholder="ph.edgeModel" placeholder="qwen3:8b" />
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title" data-i18n="upstream.credentials">认证与安全</div>
+            <div class="upstream-form-grid">
+              <div class="span-2">
+                <label data-i18n="field.apiKey">API Key</label>
+                <input id="edge_key" type="password" data-i18n-placeholder="ph.keepKey" placeholder="留空则不修改" autocomplete="off" />
+                <p class="hint" data-i18n="upstream.keyHint">留空表示不修改已保存的密钥。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="upstream-actions">
+            <button class="btn btn-primary" onclick="saveUpstream()" data-i18n="action.saveUpstream">保存配置</button>
+            <button class="btn btn-ghost" onclick="loadSetup()" data-i18n="action.reload">重新加载</button>
+          </div>
+        </div>
+
+        <!-- Upstream: Cloud -->
+        <div id="upstream-cloud-view" class="upstream-view">
+          <div class="upstream-hero cloud">
+            <div class="upstream-hero-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h11a4 4 0 010-8 5 5 0 00-9.9-1.1A4 4 0 007 18z"/></svg>
+            </div>
+            <div class="upstream-hero-main">
+              <h2 data-i18n="upstream.cloudTitle">云端</h2>
+              <p data-i18n="upstream.cloudDesc">Flowy 云端模型（登录后自动获取）</p>
+            </div>
+            <span class="tag bordered ok upstream-hero-status" id="upstream-cloud-status"><span class="dot"></span><span data-i18n="status.configured">已配置</span></span>
+          </div>
+
+          <div class="upstream-stats">
+            <div class="stat-box cloud">
+              <div class="label" data-i18n="upstream.routeShare">路由占比</div>
+              <div class="value" id="upstream-cloud-route-pct">—</div>
+              <div class="sub" data-i18n="upstream.cloudRouteSub">云端路由请求</div>
+            </div>
+            <div class="stat-box cloud">
+              <div class="label" data-i18n="upstream.tokenBudgetCap">Token 预算上限</div>
+              <div class="value" id="upstream-cloud-budget">—</div>
+              <div class="sub" id="upstream-cloud-req">—</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title" data-i18n="upstream.connection">连接</div>
+            <div class="upstream-form-grid">
+              <div class="span-2">
+                <label data-i18n="field.model">Model</label>
+                <div id="cloud_model_picker"></div>
+                <input type="hidden" id="cloud_url" value="" />
+                <p class="hint" data-i18n="upstream.cloudModelPickHint">从账号可用模型列表中选择。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title" data-i18n="upstream.limits">配额</div>
+            <div class="upstream-form-grid">
+              <div>
+                <label data-i18n="field.tokenBudget">Token 预算（5h 窗口，0=不限）</label>
+                <input id="cloud_token_budget" type="number" min="0" step="10000" data-i18n-placeholder="ph.cloudBudget" placeholder="500000" />
+                <p class="hint" data-i18n="upstream.budgetHint">5 小时滑动窗口内的云端 Token 上限，0 为不限。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="upstream-actions">
+            <button class="btn btn-primary" onclick="saveUpstream()" data-i18n="action.saveUpstream">保存配置</button>
+            <button class="btn btn-ghost" onclick="loadSetup()" data-i18n="action.reload">重新加载</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Routing -->
+      <section class="page" id="page-routing">
+        <div class="panel">
+          <div class="panel-title" data-i18n="routing.mode">路由模式</div>
+          <div class="form-row">
+            <div><label data-i18n="field.route">策略</label>
+              <select id="route">
+                <option value="auto">auto — 智能路由</option>
+                <option value="edge">edge — 全部端侧</option>
+                <option value="cloud">cloud — 全部云端</option>
+                <option value="cascade">cascade — 先端后云</option>
+              </select>
+            </div>
+            <div><label><span data-i18n="field.routingMode">路由模式</span><span data-i18n="field.routingModeHint">（route=auto 时生效）</span></label>
+              <select id="routing_mode">
+                <option value="single">single — 单路径</option>
+                <option value="cascade">cascade — 级联</option>
+                <option value="split">split — 分流</option>
+              </select>
+            </div>
+            <div><label data-i18n="field.defaultProfile">默认 Profile</label>
+              <select id="default_profile">
+                <option value="economy">economy — 更多端侧</option>
+                <option value="balanced">balanced — 均衡</option>
+                <option value="premium">premium — 更多云端</option>
+                <option value="privacy">privacy — 尽量端侧</option>
+              </select>
+            </div>
+            <div><label data-i18n="field.ctxEdgeMaxTokens">端侧上下文上限</label><input id="ctx_edge_max" type="number" min="4096" max="2000000" step="1024" /></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title" data-i18n="routing.experience">经验学习 & 自适应</div>
+          <div class="form-row">
+            <div class="checkbox-row"><input type="checkbox" id="experience_enabled" /><label for="experience_enabled" data-i18n="field.experienceEnabled">启用经验学习</label></div>
+            <div class="checkbox-row"><input type="checkbox" id="adaptive_routing_enabled" /><label for="adaptive_routing_enabled" data-i18n="field.adaptiveRoutingEnabled">启用自适应路由</label></div>
+            <div><label data-i18n="field.workVerifySampleRate">工作步态校验抽样率</label><input id="work_verify_sample_rate" type="number" min="0" max="1" step="0.05" /></div>
+            <div><label data-i18n="field.cloudStickyTtlSecs">云端粘性时长（秒）</label><input id="cloud_sticky_ttl_secs" type="number" min="0" step="60" /></div>
+            <div><label data-i18n="field.experienceLearningRate">经验学习率</label><input id="experience_learning_rate" type="number" min="0" max="1" step="0.01" /></div>
+            <div><label data-i18n="field.experienceTargetFallback">目标级联回退率</label><input id="experience_target_fallback" type="number" min="0" max="1" step="0.01" /></div>
+          </div>
+        </div>
+
+        <div class="upstream-actions">
+          <button class="btn btn-primary" onclick="saveRouting()" data-i18n="action.saveRouting">保存配置</button>
+          <button class="btn btn-ghost" onclick="resetDefaults()" data-i18n="action.resetDefault">恢复默认</button>
+        </div>
+      </section>
+
+      <!-- Stats -->
+      <section class="page" id="page-stats">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button class="btn btn-ghost btn-sm scope-btn active" data-scope="session" data-i18n="stats.session">会话</button>
+          <button class="btn btn-ghost btn-sm scope-btn" data-scope="global" data-i18n="stats.global">全局累计</button>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="stats.tokenTrend">Token 趋势</div>
+          <div id="token-chart" class="token-chart"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="stats.token">Token 统计</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th data-i18n="col.metric">指标</th><th data-i18n="col.edge">端侧</th><th data-i18n="col.cloud">云端</th><th data-i18n="col.total">合计</th></tr></thead>
+              <tbody id="token-table"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="stats.cascadeLatency">级联 & 延迟</div>
+          <div class="stat-grid" id="stats-detail"></div>
+        </div>
+        <div class="panel" id="adaptive-panel" style="display:none">
+          <div class="panel-title" data-i18n="stats.adaptive">自适应路由（运行时）</div>
+          <div class="table-wrap"><table><tbody id="adaptive-table"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- Agents -->
+      <section class="page" id="page-agents">
+        <div class="panel">
+          <div class="panel-title" data-i18n="agents.title">Agent 专属配置</div>
+          <div class="form-row" style="margin-bottom:16px">
+            <div><label data-i18n="field.agentId">Agent ID（留空=全局）</label><input id="agent_id" data-i18n-placeholder="ph.agentId" placeholder="openclaw / hermes" /></div>
+            <div style="display:flex;align-items:flex-end"><button class="btn btn-ghost" onclick="loadSetup()" data-i18n="action.loadAgent">加载 Agent 配置</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th data-i18n="col.agent">Agent</th><th data-i18n="col.cloudBudget">云端预算</th><th data-i18n="col.tokensUsed">已用 Token</th><th data-i18n="col.usage">使用率</th></tr></thead>
+              <tbody id="agent-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs -->
+      <section class="page" id="page-logs">
+        <div class="panel">
+          <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span data-i18n="logs.title">Gateway 日志</span>
+            <button class="btn btn-ghost btn-sm" onclick="clearLogs()" data-i18n="action.clear">清空</button>
+          </div>
+          <div class="log-view" id="log-view"></div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="page" id="page-settings">
+        <div class="panel">
+          <div class="panel-title" data-i18n="settings.appearance">外观</div>
+          <div class="setting-row">
+            <div class="setting-label" data-i18n="settings.theme">主题</div>
+            <div class="segment-tabs" id="theme-tabs">
+              <button type="button" class="segment-tab" data-theme-pref="light" data-i18n="theme.light">浅色</button>
+              <button type="button" class="segment-tab" data-theme-pref="dark" data-i18n="theme.dark">深色</button>
+              <button type="button" class="segment-tab active" data-theme-pref="system" data-i18n="theme.system">跟随系统</button>
+            </div>
+            <p class="setting-desc" data-i18n="settings.themeHint">跟随系统时自动匹配操作系统亮暗模式。</p>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label" data-i18n="settings.language">语言</div>
+            <div class="segment-tabs" id="lang-tabs">
+              <button type="button" class="segment-tab active" data-lang="zh" data-i18n="lang.zh">中文</button>
+              <button type="button" class="segment-tab" data-lang="en" data-i18n="lang.en">English</button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="settings.connection">连接</div>
+          <div class="form-grid">
+            <div><label data-i18n="field.gatewayUrl">Gateway Base URL</label><input id="gateway_base" value="http://127.0.0.1:11080" /></div>
+            <div><label data-i18n="field.adminToken">Admin Token</label><input id="admin_token" type="password" data-i18n-placeholder="ph.adminToken" placeholder="X-Token-Router-Admin-Token" autocomplete="off" /></div>
+          </div>
+          <p class="hint" data-i18n="settings.tauriHint">Tauri 集成时可改为 invoke('token-router:ensureStarted') 自动获取 URL。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="settings.gatewayControl">网关控制</div>
+          <div class="gateway-control-actions">
+            <div class="gateway-control-group">
+              <button type="button" class="btn btn-primary" id="btn-gateway-start" onclick="startGateway()" data-i18n="action.startGateway">启动</button>
+              <button type="button" class="btn btn-ghost" id="btn-gateway-stop" onclick="stopGateway()" data-i18n="action.stopGateway">停止</button>
+            </div>
+            <div class="gateway-control-group">
+              <button type="button" class="btn btn-ghost" id="btn-gateway-restart" onclick="restartGateway()" data-i18n="action.restartGateway">重启</button>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="settings.account">账号</div>
+          <button type="button" class="btn btn-ghost" id="btn-logout" data-i18n="action.logout">退出登录</button>
+        </div>
+        <div class="panel">
+          <div class="panel-title" data-i18n="settings.dataDir">数据目录</div>
+          <div class="endpoint-box"><code id="data-dir">—</code></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  const STORAGE_THEME = 'tr-theme';
+  const STORAGE_LOCALE = 'tr-locale';
+
+  const PAGE_TITLE_KEYS = {
+    overview: 'page.overview',
+    upstream: 'page.upstream',
+    upstream_edge: 'page.upstreamEdge',
+    upstream_cloud: 'page.upstreamCloud',
+    routing: 'page.routing',
+    stats: 'page.stats',
+    agents: 'page.agents',
+    logs: 'page.logs',
+    settings: 'page.settings',
+  };
+
+  const I18N = {
+    zh: {
+      'page.overview': '概览', 'page.upstream': '上游配置',       'page.upstreamEdge': '端侧',
+      'page.upstreamCloud': '云端', 'page.routing': '策略', 'page.stats': '统计',
+      'page.agents': 'Agent', 'page.logs': '日志', 'page.settings': '设置',
+      'route.auto': '智能', 'route.edge': '端侧', 'route.cloud': '云端', 'route.cascade': '级联',
+      'nav.gateway': '网关状态', 'nav.cloudInputSaved': '节省云端输入', 'nav.routeStats': '路由统计',
+      'nav.localModel': '本地模型', 'nav.cloudModel': '云端模型', 'nav.edge': '端侧',
+      'nav.cloud': '云端', 'nav.routing': '策略', 'nav.agents': 'Agent',
+      'nav.logs': '日志', 'nav.settings': '设置',
+      'nav.agentManage': '专属配置', 'nav.logStream': 'Gateway 输出', 'nav.appPrefs': '外观与连接',
+      'status.running': '运行中', 'status.stopped': '已停止', 'status.configured': '已配置',
+      'status.notConfigured': '未配置', 'status.live': '实时', 'status.local': '本地',
+      'conn.connected': '已连接', 'conn.offline': '未连接',
+      'action.refresh': '刷新', 'action.copy': '复制', 'action.saveUpstream': '保存配置',
+      'action.reload': '重新加载', 'action.saveRouting': '保存配置', 'action.resetDefault': '恢复默认',
+      'action.loadAgent': '加载 Agent 配置', 'action.clear': '清空',
+      'action.startGateway': '启动', 'action.stopGateway': '停止', 'action.restartGateway': '重启',
+      'overview.endpoint': 'Agent 接入点', 'overview.endpointHint': 'OpenClaw / Hermes 将 OpenAI 兼容 base_url 指向此地址即可。',
+      'overview.routeDist': '路由分布', 'overview.stepKinds': '步态分布 Top 5',
+      'stepKind.direct_chat': '直接对话', 'stepKind.tool_select': '工具选择',
+      'stepKind.tool_result_digest': '工具结果摘要', 'stepKind.heartbeat_ack': '心跳确认',
+      'stepKind.initial_plan': '初始规划', 'stepKind.final_reply': '最终回复',
+      'stepKind.recovery_after_failure': '失败恢复',
+      'stat.totalReq': '总请求', 'stat.edgeRoute': '端侧路由', 'stat.cloudRoute': '云端路由',
+      'stat.cloudSaved': '节省云端输入', 'stat.estTokens': '估算 Token', 'stat.fallbackRate': '级联回退率',
+      'stat.avgTtft': '平均 TTFT', 'stat.ttftSub': '首 Token 延迟',
+      'stat.cascadeEdgeOk': '级联端侧成功', 'stat.cascadeFallback': '级联回退',
+      'stat.avgTps': '平均 TPS', 'stat.avgReqMs': '平均请求耗时',
+      'stat.inputToken': '输入 Token', 'stat.outputToken': '输出 Token',
+      'stat.cachedToken': '缓存 Token', 'stat.cloudSavedRow': '节省云端',
+      'chart.edgeInput': '端侧输入', 'chart.edgeOutput': '端侧输出',
+      'chart.cloudInput': '云端输入', 'chart.cloudOutput': '云端输出',
+      'stats.session': '会话', 'stats.global': '全局累计',
+      'stats.tokenTrend': 'Token 趋势', 'stats.token': 'Token 统计',
+      'stats.cascadeLatency': '级联 & 延迟', 'stats.adaptive': '自适应路由（运行时）',
+      'upstream.edgeTitle': '端侧', 'upstream.cloudTitle': '云端',
+      'upstream.edgeDesc': '本地 OpenAI 兼容推理服务（Ollama、vLLM 等）',
+      'upstream.cloudDesc': 'Flowy 云端模型（登录后自动获取）',
+      'upstream.connection': '连接', 'upstream.credentials': '认证与安全', 'upstream.limits': '配额与认证',
+      'upstream.routeShare': '路由占比', 'upstream.routeCount': '路由次数',
+      'upstream.cloudDesc': 'Flowy 云端模型（登录后自动获取）',
+      'upstream.edgeRouteSub': '端侧路由请求', 'upstream.cloudRouteSub': '云端路由请求',
+      'upstream.tokenBudgetCap': 'Token 预算上限',
+      'upstream.edgeUrlHint': '指向本地推理服务的 OpenAI 兼容 API 根路径。',
+      'upstream.cloudBaseAutoHint': '由 Flowy 账号服务自动配置，无需填写。',
+      'upstream.cloudModelPickHint': '从账号可用模型列表中选择。',
+      'upstream.cloudAuthAutoHint': 'API Key 使用当前登录 Token，无需填写。',
+      'upstream.budgetHint': '5 小时滑动窗口内的云端 Token 上限，0 为不限。',
+      'upstream.keyHint': '留空表示不修改已保存的密钥。',
+      'upstream.modelCurrent': '当前模型：{model}',
+      'routing.mode': '路由模式', 'routing.experience': '经验学习 & 自适应',
+      'agents.title': 'Agent 专属配置', 'agents.empty': '暂无 Agent 专属配置', 'agents.unlimited': '不限',
+      'logs.title': 'Gateway 日志',
+      'settings.appearance': '外观', 'settings.theme': '主题', 'settings.themeHint': '跟随系统时自动匹配操作系统亮暗模式。',
+      'settings.language': '语言', 'settings.connection': '连接', 'settings.gatewayControl': '网关控制',
+      'settings.account': '账号', 'settings.dataDir': '数据目录', 'settings.tauriHint': "Tauri 集成时可改为 invoke('token-router:ensureStarted') 自动获取 URL。",
+      'action.logout': '退出登录',
+      'sidebar.refreshCredits': '刷新积分',
+      'sidebar.getMoreCredits': '获取更多积分',
+      'theme.light': '浅色', 'theme.dark': '深色', 'theme.system': '跟随系统',
+      'lang.zh': '中文', 'lang.en': 'English',
+      'window.minimize': '最小化', 'window.maximize': '最大化', 'window.restore': '还原', 'window.close': '关闭',
+      'field.baseUrl': 'Base URL', 'field.model': 'Model', 'field.apiKey': 'API Key',
+      'field.tokenBudget': 'Token 预算（5h 窗口，0=不限）', 'field.agentId': 'Agent ID（留空=全局）',
+      'field.gatewayUrl': 'Gateway Base URL', 'field.adminToken': 'Admin Token',
+      'col.stepKind': '步态', 'col.count': '次数', 'col.share': '占比',
+      'col.metric': '指标', 'col.total': '合计', 'col.cloudBudget': '云端预算',
+      'col.tokensUsed': '已用 Token', 'col.usage': '使用率',
+      'ph.edgeUrl': 'http://127.0.0.1:11434/v1', 'ph.edgeModel': 'qwen3:8b',
+      'ph.cloudUrl': 'https://api.deepseek.com/v1', 'ph.auto': 'auto', 'ph.keepKey': '留空则不修改',
+      'ph.adminToken': 'X-Token-Router-Admin-Token', 'ph.agentId': 'openclaw / hermes',
+      'opt.route.auto': 'auto — 智能路由', 'opt.route.edge': 'edge — 全部端侧',
+      'opt.route.cloud': 'cloud — 全部云端', 'opt.route.cascade': 'cascade — 先端后云',
+      'opt.profile.economy': 'economy — 更多端侧', 'opt.profile.balanced': 'balanced — 均衡',
+      'opt.profile.premium': 'premium — 更多云端',       'opt.profile.privacy': 'privacy — 尽量端侧',
+      'profile.economy': '更多端侧', 'profile.balanced': '均衡',
+      'profile.premium': '更多云端', 'profile.privacy': '尽量端侧',
+      'uptime': '运行 {h}h {m}m', 'requests': '{n} 请求', 'times': '{n} 次',
+      'tag.agentCount': '{n} 个',
+      'brand.name': 'Token Router',
+      'legend.edge': '端侧', 'legend.cascade': '级联', 'legend.cloud': '云端',
+      'col.edge': '端侧', 'col.cloud': '云端', 'col.agent': 'Agent',
+      'field.route': '策略', 'field.routingMode': '路由模式', 'field.routingModeHint': '（route=auto 时生效）',
+      'field.defaultProfile': '默认 Profile', 'field.ctxEdgeMaxTokens': '端侧上下文上限',
+      'field.experienceEnabled': '启用经验学习', 'field.adaptiveRoutingEnabled': '启用自适应路由',
+      'field.workVerifySampleRate': '工作步态校验抽样率', 'field.cloudStickyTtlSecs': '云端粘性时长（秒）',
+      'field.experienceLearningRate': '经验学习率', 'field.experienceTargetFallback': '目标级联回退率',
+      'opt.routingMode.single': 'single — 单路径', 'opt.routingMode.cascade': 'cascade — 级联',
+      'opt.routingMode.split': 'split — 分流',
+      'stat.reqPerMin': '{n} 次/分钟', 'stat.cascadeDetail': '{ok} 成功 / {fallback} 回退', 'stat.msUnit': '{n} 毫秒',
+      'ph.cloudBudget': '500000', 'ph.pickModel': '选择模型',
+      'adaptive.enabled': '已启用', 'adaptive.work_verify_sample_rate': 'Work 校验抽样率',
+      'adaptive.theta_edge': 'θ 端侧阈值', 'adaptive.theta_cloud': 'θ 云端阈值',
+      'adaptive.base_verify_sample_rate': '基准校验抽样率',
+      'adaptive.base_theta_edge': '基准 θ 端侧', 'adaptive.base_theta_cloud': '基准 θ 云端',
+      'adaptive.reasons': '调整原因', 'adaptive.state': '运行状态',
+      'adaptiveReason.ADAPTIVE_ON': '自适应路由已开启',
+      'adaptiveReason.ADAPTIVE_OFF': '自适应路由未开启',
+      'adaptiveReason.ADAPTIVE_SKIP_MODE': '非级联模式，跳过自适应',
+      'adaptiveReason.ADAPTIVE_WARMUP': '预热中（{n}/{total} 样本）',
+      'adaptiveReason.ADAPTIVE_VERIFY_DOWN': '降低校验抽样（scale={scale}）',
+      'adaptiveReason.ADAPTIVE_VERIFY_UP': '提高校验抽样',
+      'adaptiveReason.ADAPTIVE_VERIFY_SLIGHT_UP': '略提高校验抽样',
+      'adaptiveReason.ADAPTIVE_VERIFY_HOLD': '维持校验抽样',
+      'adaptiveReason.ADAPTIVE_EDGE_EASIER': '放宽端侧阈值（shift={shift}）',
+      'adaptiveReason.ADAPTIVE_EDGE_STRICTER': '收紧端侧阈值（shift={shift}）',
+      'adaptiveReason.ADAPTIVE_CASCADE_FB': '级联回退偏高（{pct}%）',
+      'adaptiveState.healthy': '健康',
+      'err.notLoggedIn': '未登录',
+      'sidebar.viewBilling': '查看积分账单', 'sidebar.loading': '加载中…', 'sidebar.empty': '暂无积分明细', 'sidebar.failed': '加载失败',
+      'creditType.DAILY_CHECKIN': '每日签到积分', 'creditType.PLAN': '套餐内积分', 'creditType.PACK': '积分加量包积分',
+      'creditType.SIGNUP': '新用户注册积分', 'creditType.TEAM_SEAT': '团队套餐积分', 'creditType.OTHER': '其他积分',
+      'bool.yes': '是', 'bool.no': '否',
+      'toast.connected': '已连接 Gateway', 'toast.refreshed': '已刷新', 'toast.copied': '已复制',
+      'toast.setupLoaded': '配置已加载', 'toast.loadFail': '加载失败: {msg}',
+      'toast.statsFail': '统计加载失败: {msg}', 'toast.saveFail': '保存失败: {msg}',
+      'toast.upstreamSaved': '配置已保存', 'toast.routingSaved': '配置已保存',
+      'toast.resetOk': '已恢复默认', 'toast.fail': '失败: {msg}',
+      'toast.restarting': 'Gateway 正在重启…',
+      'toast.restartFail': '重启失败: {msg}',       'toast.startFail': '启动失败: {msg}',
+      'toast.stopped': 'Gateway 已停止', 'toast.stopFail': '停止失败: {msg}',
+      'toast.routeMode': '路由模式 → {route}', 'toast.tauriStart': 'Tauri: invoke token_router_start()',
+    },
+    en: {
+      'page.overview': 'Overview', 'page.upstream': 'Upstream', 'page.upstreamEdge': 'Edge',
+      'page.upstreamCloud': 'Cloud', 'page.routing': 'Strategy', 'page.stats': 'Statistics',
+      'page.agents': 'Agents', 'page.logs': 'Logs', 'page.settings': 'Settings',
+      'route.auto': 'Auto', 'route.edge': 'Edge', 'route.cloud': 'Cloud', 'route.cascade': 'Cascade',
+      'nav.gateway': 'Gateway', 'nav.cloudInputSaved': 'Cloud Input Saved', 'nav.routeStats': 'Route Stats',
+      'nav.localModel': 'Local model', 'nav.cloudModel': 'Cloud model', 'nav.edge': 'Edge',
+      'nav.cloud': 'Cloud', 'nav.routing': 'Strategy', 'nav.agents': 'Agents',
+      'nav.logs': 'Logs', 'nav.settings': 'Settings',
+      'nav.agentManage': 'Per-agent config', 'nav.logStream': 'Gateway output', 'nav.appPrefs': 'Appearance & connection',
+      'status.running': 'Running', 'status.stopped': 'Stopped', 'status.configured': 'Configured',
+      'status.notConfigured': 'Not set', 'status.live': 'Live', 'status.local': 'Local',
+      'conn.connected': 'Connected', 'conn.offline': 'Offline',
+      'action.refresh': 'Refresh', 'action.copy': 'Copy', 'action.saveUpstream': 'Save configuration',
+      'action.reload': 'Reload', 'action.saveRouting': 'Save configuration', 'action.resetDefault': 'Reset defaults',
+      'action.loadAgent': 'Load agent config', 'action.clear': 'Clear',
+      'action.startGateway': 'Start', 'action.stopGateway': 'Stop', 'action.restartGateway': 'Restart',
+      'overview.endpoint': 'Agent endpoint', 'overview.endpointHint': 'Point OpenClaw / Hermes OpenAI-compatible base_url here.',
+      'overview.routeDist': 'Route distribution', 'overview.stepKinds': 'Top 5 step kinds',
+      'stepKind.direct_chat': 'Direct chat', 'stepKind.tool_select': 'Tool select',
+      'stepKind.tool_result_digest': 'Tool result digest', 'stepKind.heartbeat_ack': 'Heartbeat ack',
+      'stepKind.initial_plan': 'Initial plan', 'stepKind.final_reply': 'Final reply',
+      'stepKind.recovery_after_failure': 'Recovery after failure',
+      'stat.totalReq': 'Total requests', 'stat.edgeRoute': 'Edge routes', 'stat.cloudRoute': 'Cloud routes',
+      'stat.cloudSaved': 'Cloud input saved', 'stat.estTokens': 'Estimated tokens', 'stat.fallbackRate': 'Cascade fallback',
+      'stat.avgTtft': 'Avg TTFT', 'stat.ttftSub': 'Time to first token',
+      'stat.cascadeEdgeOk': 'Cascade edge OK', 'stat.cascadeFallback': 'Cascade fallback',
+      'stat.avgTps': 'Avg TPS', 'stat.avgReqMs': 'Avg request time',
+      'stat.inputToken': 'Input tokens', 'stat.outputToken': 'Output tokens',
+      'stat.cachedToken': 'Cached tokens', 'stat.cloudSavedRow': 'Cloud saved',
+      'chart.edgeInput': 'Edge input', 'chart.edgeOutput': 'Edge output',
+      'chart.cloudInput': 'Cloud input', 'chart.cloudOutput': 'Cloud output',
+      'stats.session': 'Session', 'stats.global': 'Global total',
+      'stats.tokenTrend': 'Token trend', 'stats.token': 'Token stats',
+      'stats.cascadeLatency': 'Cascade & latency', 'stats.adaptive': 'Adaptive routing (runtime)',
+      'upstream.edgeTitle': 'Edge', 'upstream.cloudTitle': 'Cloud',
+      'upstream.edgeDesc': 'Local OpenAI-compatible inference (Ollama, vLLM, etc.)',
+      'upstream.cloudDesc': 'Flowy cloud models (fetched after sign-in)',
+      'upstream.connection': 'Connection', 'upstream.credentials': 'Credentials', 'upstream.limits': 'Limits & auth',
+      'upstream.routeShare': 'Route share', 'upstream.routeCount': 'Route count',
+      'upstream.cloudDesc': 'Flowy cloud models (fetched after sign-in)',
+      'upstream.edgeRouteSub': 'Edge-routed requests', 'upstream.cloudRouteSub': 'Cloud-routed requests',
+      'upstream.tokenBudgetCap': 'Token budget cap',
+      'upstream.edgeUrlHint': 'OpenAI-compatible API base URL for local inference.',
+      'upstream.cloudBaseAutoHint': 'Base URL is set automatically from your Flowy account.',
+      'upstream.cloudModelPickHint': 'Pick from models available for your account.',
+      'upstream.cloudAuthAutoHint': 'API key is your sign-in token; no manual entry needed.',
+      'upstream.budgetHint': 'Cloud token cap in a 5-hour sliding window; 0 = unlimited.',
+      'upstream.keyHint': 'Leave empty to keep the saved API key.',
+      'upstream.modelCurrent': 'Model: {model}',
+      'routing.mode': 'Routing mode', 'routing.experience': 'Experience & adaptive',
+      'agents.title': 'Per-agent config', 'agents.empty': 'No per-agent overrides', 'agents.unlimited': 'Unlimited',
+      'logs.title': 'Gateway logs',
+      'settings.appearance': 'Appearance', 'settings.theme': 'Theme', 'settings.themeHint': 'System follows OS light/dark preference.',
+      'settings.language': 'Language', 'settings.connection': 'Connection', 'settings.gatewayControl': 'Gateway control',
+      'settings.account': 'Account', 'settings.dataDir': 'Data directory', 'settings.tauriHint': "In Tauri, use invoke('token-router:ensureStarted') for the URL.",
+      'action.logout': 'Sign out',
+      'sidebar.refreshCredits': 'Refresh credits',
+      'sidebar.getMoreCredits': 'Get more credits',
+      'theme.light': 'Light', 'theme.dark': 'Dark', 'theme.system': 'System',
+      'lang.zh': '中文', 'lang.en': 'English',
+      'window.minimize': 'Minimize', 'window.maximize': 'Maximize', 'window.restore': 'Restore', 'window.close': 'Close',
+      'field.baseUrl': 'Base URL', 'field.model': 'Model', 'field.apiKey': 'API Key',
+      'field.tokenBudget': 'Token budget (5h window, 0=unlimited)', 'field.agentId': 'Agent ID (empty=global)',
+      'field.gatewayUrl': 'Gateway base URL', 'field.adminToken': 'Admin token',
+      'col.stepKind': 'Step kind', 'col.count': 'Count', 'col.share': 'Share',
+      'col.metric': 'Metric', 'col.total': 'Total', 'col.cloudBudget': 'Cloud budget',
+      'col.tokensUsed': 'Tokens used', 'col.usage': 'Usage',
+      'ph.edgeUrl': 'http://127.0.0.1:11434/v1', 'ph.edgeModel': 'qwen3:8b',
+      'ph.cloudUrl': 'https://api.deepseek.com/v1', 'ph.auto': 'auto', 'ph.keepKey': 'Leave blank to keep saved key',
+      'ph.adminToken': 'X-Token-Router-Admin-Token', 'ph.agentId': 'openclaw / hermes',
+      'opt.route.auto': 'auto — smart routing', 'opt.route.edge': 'edge — edge only',
+      'opt.route.cloud': 'cloud — cloud only', 'opt.route.cascade': 'cascade — edge then cloud',
+      'opt.profile.economy': 'economy — more edge', 'opt.profile.balanced': 'balanced — balanced',
+      'opt.profile.premium': 'premium — more cloud',       'opt.profile.privacy': 'privacy — prefer edge',
+      'profile.economy': 'More edge', 'profile.balanced': 'Balanced',
+      'profile.premium': 'More cloud', 'profile.privacy': 'Prefer edge',
+      'uptime': 'Up {h}h {m}m', 'requests': '{n} requests', 'times': '{n} times',
+      'tag.agentCount': '{n}',
+      'brand.name': 'Token Router',
+      'legend.edge': 'Edge', 'legend.cascade': 'Cascade', 'legend.cloud': 'Cloud',
+      'col.edge': 'Edge', 'col.cloud': 'Cloud', 'col.agent': 'Agent',
+      'field.route': 'Strategy', 'field.routingMode': 'Routing mode', 'field.routingModeHint': ' (when route=auto)',
+      'field.defaultProfile': 'Default profile', 'field.ctxEdgeMaxTokens': 'Edge context max tokens',
+      'field.experienceEnabled': 'Experience learning', 'field.adaptiveRoutingEnabled': 'Adaptive routing',
+      'field.workVerifySampleRate': 'Work verify sample rate', 'field.cloudStickyTtlSecs': 'Cloud sticky TTL (sec)',
+      'field.experienceLearningRate': 'Experience learning rate', 'field.experienceTargetFallback': 'Target fallback rate',
+      'opt.routingMode.single': 'single — single path', 'opt.routingMode.cascade': 'cascade — cascade',
+      'opt.routingMode.split': 'split — split routing',
+      'stat.reqPerMin': '{n} req/min', 'stat.cascadeDetail': '{ok} ok / {fallback} fallback', 'stat.msUnit': '{n} ms',
+      'ph.cloudBudget': '500000', 'ph.pickModel': 'Select model',
+      'adaptive.enabled': 'Enabled', 'adaptive.work_verify_sample_rate': 'Work verify sample rate',
+      'adaptive.theta_edge': 'θ edge threshold', 'adaptive.theta_cloud': 'θ cloud threshold',
+      'adaptive.base_verify_sample_rate': 'Base verify sample rate',
+      'adaptive.base_theta_edge': 'Base θ edge', 'adaptive.base_theta_cloud': 'Base θ cloud',
+      'adaptive.reasons': 'Adjustment reasons', 'adaptive.state': 'Runtime state',
+      'adaptiveReason.ADAPTIVE_ON': 'Adaptive routing enabled',
+      'adaptiveReason.ADAPTIVE_OFF': 'Adaptive routing disabled',
+      'adaptiveReason.ADAPTIVE_SKIP_MODE': 'Skipped (not cascade mode)',
+      'adaptiveReason.ADAPTIVE_WARMUP': 'Warming up ({n}/{total} samples)',
+      'adaptiveReason.ADAPTIVE_VERIFY_DOWN': 'Lower verify rate (scale={scale})',
+      'adaptiveReason.ADAPTIVE_VERIFY_UP': 'Raise verify rate',
+      'adaptiveReason.ADAPTIVE_VERIFY_SLIGHT_UP': 'Slightly raise verify rate',
+      'adaptiveReason.ADAPTIVE_VERIFY_HOLD': 'Hold verify rate',
+      'adaptiveReason.ADAPTIVE_EDGE_EASIER': 'Easier edge threshold (shift={shift})',
+      'adaptiveReason.ADAPTIVE_EDGE_STRICTER': 'Stricter edge threshold (shift={shift})',
+      'adaptiveReason.ADAPTIVE_CASCADE_FB': 'High cascade fallback ({pct}%)',
+      'adaptiveState.healthy': 'Healthy',
+      'err.notLoggedIn': 'Not signed in',
+      'sidebar.viewBilling': 'View billing', 'sidebar.loading': 'Loading…', 'sidebar.empty': 'No credit breakdown', 'sidebar.failed': 'Failed to load',
+      'creditType.DAILY_CHECKIN': 'Daily check-in', 'creditType.PLAN': 'Plan credits', 'creditType.PACK': 'Credit pack',
+      'creditType.SIGNUP': 'Signup bonus', 'creditType.TEAM_SEAT': 'Team seat', 'creditType.OTHER': 'Other',
+      'bool.yes': 'Yes', 'bool.no': 'No',
+      'toast.connected': 'Connected to Gateway', 'toast.refreshed': 'Refreshed', 'toast.copied': 'Copied',
+      'toast.setupLoaded': 'Config loaded', 'toast.loadFail': 'Load failed: {msg}',
+      'toast.statsFail': 'Stats load failed: {msg}', 'toast.saveFail': 'Save failed: {msg}',
+      'toast.upstreamSaved': 'Configuration saved', 'toast.routingSaved': 'Configuration saved',
+      'toast.resetOk': 'Defaults restored', 'toast.fail': 'Failed: {msg}',
+      'toast.restarting': 'Gateway restarting…',
+      'toast.restartFail': 'Restart failed: {msg}',       'toast.startFail': 'Start failed: {msg}',
+      'toast.stopped': 'Gateway stopped', 'toast.stopFail': 'Stop failed: {msg}',
+      'toast.routeMode': 'Route mode → {route}', 'toast.tauriStart': 'Tauri: invoke token_router_start()',
+    },
+  };
+
+  function emptyStatus() {
+    return {
+      service: 'token-router',
+      status: 'stopped',
+      version: '—',
+      uptime_secs: 0,
+      edge_configured: false,
+      cloud_configured: false,
+    };
+  }
+
+  function emptyStats(scope = 'session') {
+    return {
+      scope,
+      requests_total: 0,
+      routing: { edge: 0, cloud: 0, cascade: 0, edge_pct: 0, cloud_pct: 0, cascade_pct: 0 },
+      cascade: {},
+      tokens: {},
+      token_breakdown: {},
+      latency: {},
+      step_kinds: {},
+      agent_budgets: [],
+    };
+  }
+
+  function emptySetup() {
+    return {
+      gateway: { route: 'auto', routing_mode: 'cascade', default_profile: 'balanced' },
+      cloud: {},
+      edge: {},
+    };
+  }
+
+  function clearLiveData() {
+    state.status = emptyStatus();
+    state.stats = emptyStats(state.scope);
+    state.setup = emptySetup();
+    state.logs = [];
+    state.route = 'auto';
+    window.__statsChart?.clear?.();
+    fillSetup(emptySetup());
+  }
+
+  let state = {
+    page: 'overview',
+    navId: 'overview',
+    route: 'auto',
+    scope: 'session',
+    themePref: 'system',
+    locale: 'zh',
+    connected: false,
+    setup: emptySetup(),
+    stats: emptyStats(),
+    status: emptyStatus(),
+    logs: [],
+  };
+
+  const $ = (sel) => {
+    if (!sel) return null;
+    if (typeof sel !== 'string') return sel;
+    if (sel.startsWith('#') || sel.startsWith('.') || sel.includes(' ')) {
+      return document.querySelector(sel);
+    }
+    return document.getElementById(sel);
+  };
+  const $$ = (sel) => document.querySelectorAll(sel);
+
+  function isTauri() {
+    return typeof window.__TAURI__ !== 'undefined';
+  }
+
+  async function tauriInvoke(cmd, args = {}) {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) throw new Error('Tauri invoke unavailable');
+    return invoke(cmd, args);
+  }
+
+  function invokeErrorMessage(err) {
+    if (typeof err === 'string') return err;
+    if (err?.message) return err.message;
+    return String(err);
+  }
+
+  async function syncGatewayControlButtons() {
+    const startBtn = $('#btn-gateway-start');
+    const stopBtn = $('#btn-gateway-stop');
+    if (!startBtn && !stopBtn) return;
+
+    let running = state.connected;
+    if (isTauri()) {
+      try {
+        const status = await tauriInvoke('gateway_status');
+        running = Boolean(status?.running);
+      } catch (e) {
+        console.warn('gateway_status', e);
+      }
+    }
+
+    if (startBtn) startBtn.disabled = running;
+    if (stopBtn) stopBtn.disabled = !running;
+  }
+
+  async function bootstrapCloudUpstream() {
+    if (!window.__cloudUpstream) return;
+    const currentModel = state.setup?.cloud?.model;
+    const tokenBudget = state.setup?.cloud?.token_budget;
+    try {
+      const result = await window.__cloudUpstream.ensureCloudUpstreamConfigured(
+        state.connected ? apiFetch : null,
+        { currentModel, tokenBudget, silent: true },
+      );
+      if (result?.response?.upstream) fillSetup(result.response.upstream);
+      else if (result?.models?.length) {
+        window.__cloudUpstream.populateCloudModelSelect(result.models, currentModel);
+      }
+    } catch (e) {
+      console.warn('bootstrapCloudUpstream', e);
+    }
+  }
+
+  async function bootstrapTauri() {
+    try {
+      const status = await tauriInvoke('gateway_status');
+      if (!status.running) {
+        const url = await tauriInvoke('gateway_start');
+        if (url) $('#gateway_base').value = url.replace(/\/$/, '');
+      } else if (status.url) {
+        $('#gateway_base').value = status.url.replace(/\/$/, '');
+      }
+      await tryConnect();
+    } catch (e) {
+      console.error('Tauri bootstrap failed', e);
+      state.connected = false;
+      clearLiveData();
+      renderAll();
+    }
+  }
+
+  function initWindowControls() {
+    if (!window.__TAURI__) return;
+    const win = window.__TAURI__.window.getCurrentWindow();
+
+    async function refreshMaxIcon(iconMax, iconRestore, btnMax) {
+      if (!iconMax || !iconRestore) return;
+      const maxed = await win.isMaximized();
+      iconMax.hidden = maxed;
+      iconRestore.hidden = !maxed;
+      if (btnMax) btnMax.title = maxed ? t('window.restore') : t('window.maximize');
+    }
+
+    async function toggleMaximize() {
+      await win.toggleMaximize();
+      refreshMaxIcon($('#icon-win-max'), $('#icon-win-restore'), $('#btn-win-max'));
+      refreshMaxIcon($('#login-icon-win-max'), $('#login-icon-win-restore'), $('#login-win-max'));
+    }
+
+    function wireControls(minId, maxId, closeId) {
+      const btnMin = $(minId);
+      const btnMax = $(maxId);
+      const btnClose = $(closeId);
+      btnMin?.addEventListener('click', () => win.minimize());
+      btnMax?.addEventListener('click', () => toggleMaximize());
+      btnClose?.addEventListener('click', () => win.close());
+    }
+
+    wireControls('btn-win-min', 'btn-win-max', 'btn-win-close');
+    wireControls('login-win-min', 'login-win-max', 'login-win-close');
+
+    $$('.window-drag').forEach((el) => {
+      el.addEventListener('dblclick', (e) => {
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        toggleMaximize();
+      });
+    });
+
+    win.onResized(() => {
+      refreshMaxIcon($('#icon-win-max'), $('#icon-win-restore'), $('#btn-win-max'));
+      refreshMaxIcon($('#login-icon-win-max'), $('#login-icon-win-restore'), $('#login-win-max'));
+    });
+    refreshMaxIcon($('#icon-win-max'), $('#icon-win-restore'), $('#btn-win-max'));
+    refreshMaxIcon($('#login-icon-win-max'), $('#login-icon-win-restore'), $('#login-win-max'));
+    window._refreshWinMaxTitle = () => {
+      refreshMaxIcon($('#icon-win-max'), $('#icon-win-restore'), $('#btn-win-max'));
+      refreshMaxIcon($('#login-icon-win-max'), $('#login-icon-win-restore'), $('#login-win-max'));
+    };
+  }
+
+  function t(key, vars = {}) {
+    let s = I18N[state.locale]?.[key] ?? I18N.zh[key] ?? key;
+    for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, v);
+    return s;
+  }
+
+  function loadPrefs() {
+    state.themePref = localStorage.getItem(STORAGE_THEME) || 'system';
+    state.locale = localStorage.getItem(STORAGE_LOCALE) || 'zh';
+  }
+
+  function savePrefs() {
+    localStorage.setItem(STORAGE_THEME, state.themePref);
+    localStorage.setItem(STORAGE_LOCALE, state.locale);
+  }
+
+  function systemTheme() {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function effectiveTheme() {
+    return state.themePref === 'system' ? systemTheme() : state.themePref;
+  }
+
+  function applyTheme() {
+    document.documentElement.dataset.effectiveTheme = effectiveTheme();
+    $$('#theme-tabs .segment-tab').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.themePref === state.themePref);
+    });
+    if (window.__statsChart) window.__statsChart.onThemeChange();
+  }
+
+  function applySelectOptions() {
+    const route = $('#route');
+    if (route) {
+      const v = route.value;
+      route.innerHTML = ['auto', 'edge', 'cloud', 'cascade']
+        .map(x => `<option value="${x}">${t('opt.route.' + x)}</option>`).join('');
+      route.value = v || 'auto';
+    }
+    const routingMode = $('#routing_mode');
+    if (routingMode) {
+      const v = routingMode.value;
+      routingMode.innerHTML = ['single', 'cascade', 'split']
+        .map(x => `<option value="${x}">${t('opt.routingMode.' + x)}</option>`).join('');
+      routingMode.value = v || 'cascade';
+    }
+    const profile = $('#default_profile');
+    if (profile) {
+      const v = profile.value;
+      profile.innerHTML = ['economy', 'balanced', 'premium', 'privacy']
+        .map(x => `<option value="${x}">${t('opt.profile.' + x)}</option>`).join('');
+      profile.value = v || 'balanced';
+    }
+  }
+
+  function adaptiveFieldLabel(key) {
+    const k = 'adaptive.' + key;
+    return I18N[state.locale]?.[k] ?? I18N.zh[k] ?? key;
+  }
+
+  function formatAdaptiveReason(raw) {
+    if (!raw || typeof raw !== 'string') return raw ?? '';
+    const exact = {
+      ADAPTIVE_ON: 'adaptiveReason.ADAPTIVE_ON',
+      ADAPTIVE_OFF: 'adaptiveReason.ADAPTIVE_OFF',
+      ADAPTIVE_SKIP_MODE: 'adaptiveReason.ADAPTIVE_SKIP_MODE',
+      ADAPTIVE_VERIFY_UP: 'adaptiveReason.ADAPTIVE_VERIFY_UP',
+      ADAPTIVE_VERIFY_SLIGHT_UP: 'adaptiveReason.ADAPTIVE_VERIFY_SLIGHT_UP',
+      ADAPTIVE_VERIFY_HOLD: 'adaptiveReason.ADAPTIVE_VERIFY_HOLD',
+    };
+    if (exact[raw]) return t(exact[raw]);
+
+    let m = raw.match(/^ADAPTIVE_WARMUP\(n=(\d+)\/(\d+)\)$/);
+    if (m) return t('adaptiveReason.ADAPTIVE_WARMUP', { n: m[1], total: m[2] });
+
+    m = raw.match(/^ADAPTIVE_VERIFY_DOWN\(scale=([\d.]+)\)$/);
+    if (m) return t('adaptiveReason.ADAPTIVE_VERIFY_DOWN', { scale: m[1] });
+
+    m = raw.match(/^ADAPTIVE_EDGE_EASIER\(shift=([+-][\d.]+)\)$/);
+    if (m) return t('adaptiveReason.ADAPTIVE_EDGE_EASIER', { shift: m[1] });
+
+    m = raw.match(/^ADAPTIVE_EDGE_STRICTER\(shift=([+-][\d.]+)\)$/);
+    if (m) return t('adaptiveReason.ADAPTIVE_EDGE_STRICTER', { shift: m[1] });
+
+    m = raw.match(/^ADAPTIVE_CASCADE_FB\(([\d.]+)%\)$/);
+    if (m) return t('adaptiveReason.ADAPTIVE_CASCADE_FB', { pct: m[1] });
+
+    const stateKey = 'adaptiveState.' + raw;
+    if (I18N[state.locale]?.[stateKey] ?? I18N.zh[stateKey]) return t(stateKey);
+
+    return raw;
+  }
+
+  function formatAdaptiveValue(v) {
+    if (Array.isArray(v)) {
+      const sep = state.locale === 'zh' ? '；' : '; ';
+      return v.map(formatAdaptiveReason).join(sep);
+    }
+    if (typeof v === 'string' && v.startsWith('ADAPTIVE_')) return formatAdaptiveReason(v);
+    if (typeof v === 'string' && (I18N[state.locale]?.['adaptiveState.' + v] ?? I18N.zh['adaptiveState.' + v])) {
+      return t('adaptiveState.' + v);
+    }
+    if (typeof v === 'number') return v.toFixed ? v.toFixed(3) : v;
+    if (typeof v === 'boolean') return v ? t('bool.yes') : t('bool.no');
+    return v ?? '—';
+  }
+
+  function fmtMs(ms) {
+    if (!ms) return '—';
+    return t('stat.msUnit', { n: Math.round(ms) });
+  }
+
+  function applyI18n() {
+    document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : 'en';
+    $$('[data-i18n]').forEach(el => {
+      const varsRaw = el.dataset.i18nVars;
+      if (varsRaw) {
+        const vars = Object.fromEntries(varsRaw.split(',').map(p => p.trim().split(':')));
+        el.textContent = t(el.dataset.i18n, vars);
+      } else {
+        el.textContent = t(el.dataset.i18n);
+      }
+    });
+    $$('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+    $$('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); });
+    $$('[data-i18n-aria-label]').forEach(el => { el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel)); });
+    applySelectOptions();
+    $$('#lang-tabs .segment-tab').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.lang === state.locale);
+    });
+    const titleKey = state.page === 'upstream' && (state.navId === 'edge' || state.navId === 'cloud')
+      ? 'upstream_' + state.navId : state.page;
+    const pk = PAGE_TITLE_KEYS[titleKey] || PAGE_TITLE_KEYS[state.page];
+    if (pk) $('#page-title').textContent = t(pk);
+    window._refreshWinMaxTitle?.();
+    if (window.__statsChart) {
+      window.__statsChart.setLabelFn(() => ({
+        edgeIn: t('chart.edgeInput'),
+        edgeOut: t('chart.edgeOutput'),
+        cloudIn: t('chart.cloudInput'),
+        cloudOut: t('chart.cloudOutput'),
+      }));
+    }
+  }
+
+  function setThemePref(pref) {
+    state.themePref = pref;
+    savePrefs();
+    applyTheme();
+    updateSidebar();
+  }
+
+  function setLocale(locale) {
+    state.locale = locale;
+    savePrefs();
+    applyI18n();
+    renderAll();
+    document.dispatchEvent(new CustomEvent('app-locale-change', { detail: { locale } }));
+    window.__sidebarUser?.refreshI18n?.();
+    window.__cloudUpstream?.refreshI18n?.();
+  }
+
+  function gatewayBase() {
+    return ($('#gateway_base')?.value || 'http://127.0.0.1:11080').replace(/\/$/, '');
+  }
+
+  function adminHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    const t = $('#admin_token')?.value?.trim();
+    if (t) h['X-Token-Router-Admin-Token'] = t;
+    return h;
+  }
+
+  function toast(msg, ok = true) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.className = 'toast show ' + (ok ? 'ok' : 'err');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), 2800);
+  }
+
+  function fmtNum(n) {
+    if (n == null || isNaN(n)) return '—';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function stepKindLabel(key) {
+    const k = 'stepKind.' + key;
+    return I18N[state.locale]?.[k] ?? I18N.zh[k] ?? key;
+  }
+
+  function profileLabel(id) {
+    if (!id) return '—';
+    const key = 'profile.' + id;
+    return I18N[state.locale]?.[key] ?? I18N.zh[key] ?? id;
+  }
+
+  function fmtPct(n) { return n == null ? '—' : n.toFixed(1) + '%'; }
+  function fmtUptime(s) {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return t('uptime', { h, m });
+  }
+
+  function setStatusTag(el, kind, text, pulse = false) {
+    if (!el) return;
+    const corner = el.classList.contains('nav-card-corner') ? ' nav-card-corner' : '';
+    el.className = ('tag bordered' + (kind ? ' ' + kind : '') + corner).trim();
+    el.innerHTML = pulse
+      ? `<span class="dot pulse"></span><span>${text}</span>`
+      : `<span>${text}</span>`;
+  }
+
+  function navigate(page, navId) {
+    navId = navId || page;
+    state.page = page;
+    state.navId = navId;
+    $$('.nav-card').forEach(c => c.classList.toggle('active', c.dataset.navId === navId));
+    $$('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + page));
+    const titleKey = page === 'upstream' && (navId === 'edge' || navId === 'cloud')
+      ? 'upstream_' + navId : page;
+    const pk = PAGE_TITLE_KEYS[titleKey] || PAGE_TITLE_KEYS[page];
+    $('#page-title').textContent = pk ? t(pk) : page;
+    location.hash = navId === page ? page : page + '-' + navId;
+
+    if (page === 'upstream') updateUpstreamPage();
+    if (page === 'stats') {
+      requestAnimationFrame(() => window.__statsChart?.resize?.());
+    }
+  }
+
+  function setConnBadge() {
+    const el = $('#conn-badge');
+    const key = state.connected ? 'conn.connected' : 'conn.offline';
+    el.className = 'conn-badge ' + (state.connected ? 'live' : 'off');
+    el.innerHTML = `<span class="dot ${state.connected ? 'pulse' : ''}"></span><span>${t(key)}</span>`;
+  }
+
+  function updateSidebar() {
+    const st = state.status, stats = state.stats;
+    $('#card-version').textContent = 'v' + (st.version || '—');
+    $('#card-uptime').textContent = fmtUptime(st.uptime_secs || 0);
+    const running = st.status === 'running';
+    setStatusTag($('#card-status'), running ? 'ok' : 'off', t(running ? 'status.running' : 'status.stopped'), running);
+
+    const r = stats.routing || {};
+    $('#bar-edge').style.width = (r.edge_pct || 0) + '%';
+    $('#bar-cascade').style.width = (r.cascade_pct || 0) + '%';
+    $('#bar-cloud').style.width = (r.cloud_pct || 0) + '%';
+    $('#card-saved').textContent = fmtNum(stats.tokens?.cloud_input_saved_estimate);
+    const reqEl = $('#card-req-total');
+    if (reqEl) {
+      reqEl.className = 'tag bordered';
+      reqEl.textContent = t('requests', { n: (stats.requests_total || 0).toLocaleString() });
+    }
+
+    const edgeOk = st.edge_configured;
+    const cloudOk = st.cloud_configured;
+    setStatusTag($('#chip-edge'), edgeOk ? 'ok' : 'off', t(edgeOk ? 'status.configured' : 'status.notConfigured'));
+    setStatusTag($('#chip-cloud'), cloudOk ? 'ok' : 'off', t(cloudOk ? 'status.configured' : 'status.notConfigured'));
+    const setup = state.setup || {};
+    const edgeModel = setup.edge?.model || (edgeOk ? t('status.configured') : t('status.notConfigured'));
+    const cloudModelId = setup.cloud?.model || (cloudOk ? 'auto' : '');
+    const cloudModelLabel = window.__cloudUpstream?.getCloudModelDisplayName?.(cloudModelId)
+      || cloudModelId
+      || (cloudOk ? 'auto' : t('status.notConfigured'));
+    $('#card-edge-model').textContent = edgeModel || '—';
+    $('#card-cloud-model').textContent = cloudModelLabel || '—';
+    const profileEl = $('#card-profile');
+    if (profileEl) {
+      const profileId = st.default_profile || state.setup?.gateway?.default_profile;
+      profileEl.textContent = profileLabel(profileId);
+    }
+
+    const routeKey = 'route.' + (state.route || st.route || setup.gateway?.route || 'auto');
+    const routeTag = $('#card-route-tag');
+    if (routeTag) {
+      routeTag.className = 'tag bordered nav-card-corner';
+      routeTag.dataset.i18n = routeKey;
+      routeTag.textContent = t(routeKey);
+    }
+
+    const agentsEl = $('#card-agents');
+    if (agentsEl) {
+      agentsEl.className = 'tag bordered nav-card-corner';
+      agentsEl.textContent = t('tag.agentCount', { n: stats.agent_budgets?.length || 0 });
+    }
+
+    $$('.route-tab').forEach(tab => tab.classList.toggle('active', tab.dataset.route === state.route));
+  }
+
+  function updateUpstreamPage() {
+    const edgeView = $('#upstream-edge-view');
+    const cloudView = $('#upstream-cloud-view');
+    if (state.page === 'upstream') {
+      const isCloud = state.navId === 'cloud';
+      if (edgeView) edgeView.classList.toggle('active', !isCloud);
+      if (cloudView) cloudView.classList.toggle('active', isCloud);
+    } else {
+      edgeView?.classList.remove('active');
+      cloudView?.classList.remove('active');
+    }
+
+    const st = state.status || {}, stats = state.stats || {}, r = stats.routing || {};
+    const edgeOk = st.edge_configured;
+    const cloudOk = st.cloud_configured;
+    setStatusTag($('#upstream-edge-status'), edgeOk ? 'ok' : 'off', t(edgeOk ? 'status.configured' : 'status.notConfigured'));
+    setStatusTag($('#upstream-cloud-status'), cloudOk ? 'ok' : 'off', t(cloudOk ? 'status.configured' : 'status.notConfigured'));
+
+    $('#upstream-edge-route-pct').textContent = fmtPct(r.edge_pct);
+    $('#upstream-edge-req').textContent = (r.edge ?? 0).toLocaleString();
+    const edgeModel = state.setup?.edge?.model || '—';
+    const edgeHint = $('#upstream-edge-model-hint');
+    if (edgeHint) edgeHint.textContent = t('upstream.modelCurrent', { model: edgeModel });
+
+    $('#upstream-cloud-route-pct').textContent = fmtPct(r.cloud_pct);
+    const budget = state.setup?.cloud?.token_budget;
+    $('#upstream-cloud-budget').textContent = budget ? fmtNum(budget) : t('agents.unlimited');
+    const cloudReq = $('#upstream-cloud-req');
+    if (cloudReq) cloudReq.textContent = t('upstream.routeCount') + ' · ' + t('times', { n: (r.cloud ?? 0).toLocaleString() });
+  }
+
+  function updateOverview() {
+    const s = state.stats, r = s.routing || {};
+    $('#endpoint-url').textContent = gatewayBase() + '/v1';
+    $('#stat-req').textContent = (s.requests_total || 0).toLocaleString();
+    $('#stat-rpm').textContent = s.requests_per_minute != null
+      ? t('stat.reqPerMin', { n: s.requests_per_minute.toFixed(1) })
+      : '—';
+    $('#stat-edge-pct').textContent = fmtPct(r.edge_pct);
+    $('#stat-edge-n').textContent = t('times', { n: (r.edge || 0).toLocaleString() });
+    $('#stat-cloud-pct').textContent = fmtPct(r.cloud_pct);
+    $('#stat-cloud-n').textContent = t('times', { n: (r.cloud || 0).toLocaleString() });
+    $('#stat-saved').textContent = fmtNum(s.tokens?.cloud_input_saved_estimate);
+    const fb = s.cascade ? s.cascade.fallback_to_cloud / Math.max(1, s.cascade.edge_ok + s.cascade.fallback_to_cloud) * 100 : 0;
+    $('#stat-fallback').textContent = fmtPct(fb);
+    $('#stat-cascade-detail').textContent = t('stat.cascadeDetail', {
+      ok: s.cascade?.edge_ok || 0,
+      fallback: s.cascade?.fallback_to_cloud || 0,
+    });
+    $('#stat-ttft').textContent = fmtMs(s.latency?.avg_ttft_ms);
+
+    ['edge', 'cascade', 'cloud'].forEach(k => {
+      const pct = r[k + '_pct'] || 0;
+      $('#chart-' + k).style.width = pct + '%';
+      $('#leg-' + k).textContent = fmtPct(pct);
+    });
+
+    const kinds = Object.entries(s.step_kinds || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const total = kinds.reduce((a, [, v]) => a + v, 0) || 1;
+    $('#step-kind-table').innerHTML = kinds.map(([k, v]) =>
+      `<tr><td><code>${stepKindLabel(k)}</code></td><td class="num">${v}</td><td class="num">${(v / total * 100).toFixed(1)}%</td></tr>`
+    ).join('');
+  }
+
+  function fillSetup(view) {
+    state.setup = view;
+    const g = view.gateway || {}, cloud = view.cloud || {}, edge = view.edge || {};
+    const set = (id, val) => { const el = $(('#' + id)); if (el) el.value = val ?? ''; };
+    const setChk = (id, val) => { const el = $(('#' + id)); if (el) el.checked = !!val; };
+
+    set('route', g.route || 'auto');
+    set('routing_mode', g.routing_mode || 'cascade');
+    set('default_profile', g.default_profile || 'balanced');
+    set('ctx_edge_max', g.ctx_edge_max_tokens || '');
+    setChk('experience_enabled', g.experience_enabled);
+    setChk('adaptive_routing_enabled', g.adaptive_routing_enabled);
+    set('work_verify_sample_rate', g.work_verify_sample_rate ?? '');
+    set('cloud_sticky_ttl_secs', g.cloud_sticky_ttl_secs ?? '');
+    set('experience_learning_rate', g.experience_learning_rate ?? '');
+    set('experience_target_fallback', g.experience_target_fallback ?? '');
+    set('cloud_url', cloud.base_url || '');
+    if (window.__cloudUpstream?.populateCloudModelSelect) {
+      const models = window.__cloudUpstream.getCachedCloudModels?.() || [];
+      if (models.length) {
+        window.__cloudUpstream.populateCloudModelSelect(models, cloud.model || 'Auto');
+      } else if (cloud.model) {
+        window.__cloudUpstream.populateCloudModelSelect(
+          [{ id: cloud.model, name: cloud.model }],
+          cloud.model,
+        );
+      }
+    }
+    set('cloud_token_budget', cloud.token_budget ?? '');
+    set('edge_url', edge.base_url || '');
+    set('edge_model', edge.model || '');
+    set('agent_id', view.agent_id || '');
+    state.route = g.route || 'auto';
+    if (state.status) state.status.default_profile = g.default_profile || state.status.default_profile;
+  }
+
+  function updateStatsPage() {
+    const s = state.stats, tb = s.token_breakdown || {};
+    if (window.__statsChart) {
+      window.__statsChart.record(state.scope, tb);
+      window.__statsChart.render(state.scope);
+    }
+    const rows = [
+      [t('stat.inputToken'), tb.edge?.input, tb.cloud?.input, tb.total?.input],
+      [t('stat.outputToken'), tb.edge?.output, tb.cloud?.output, tb.total?.output],
+      [t('stat.cachedToken'), tb.edge?.cached, tb.cloud?.cached, tb.total?.cached],
+      [t('stat.cloudSavedRow'), '—', tb.cloud_saved?.input, tb.cloud_saved?.total],
+    ];
+    $('#token-table').innerHTML = rows.map(r =>
+      `<tr><td>${r[0]}</td><td class="num">${fmtNum(r[1])}</td><td class="num">${fmtNum(r[2])}</td><td class="num">${fmtNum(r[3])}</td></tr>`
+    ).join('');
+
+    $('#stats-detail').innerHTML = `
+      <div class="stat-box"><div class="label">${t('stat.cascadeEdgeOk')}</div><div class="value">${s.cascade?.edge_ok ?? '—'}</div></div>
+      <div class="stat-box"><div class="label">${t('stat.cascadeFallback')}</div><div class="value">${s.cascade?.fallback_to_cloud ?? '—'}</div></div>
+      <div class="stat-box"><div class="label">${t('stat.avgTps')}</div><div class="value">${s.latency?.avg_tps?.toFixed(1) ?? '—'}</div></div>
+      <div class="stat-box"><div class="label">${t('stat.avgReqMs')}</div><div class="value">${fmtMs(s.latency?.avg_request_ms)}</div></div>
+    `;
+
+    const ar = s.effective_routing;
+    if (ar) {
+      $('#adaptive-panel').style.display = '';
+      $('#adaptive-table').innerHTML = Object.entries(ar).map(([k, v]) => {
+        const cellClass = k === 'reasons' ? 'adaptive-reasons' : 'num';
+        return `<tr><td>${adaptiveFieldLabel(k)}</td><td class="${cellClass}">${formatAdaptiveValue(v)}</td></tr>`;
+      }).join('');
+    } else {
+      $('#adaptive-panel').style.display = 'none';
+    }
+  }
+
+  function updateAgents() {
+    const budgets = state.stats.agent_budgets || [];
+    $('#agent-table').innerHTML = budgets.length ? budgets.map(a => {
+      const limit = a.budget_limit;
+      const pct = limit ? (a.tokens_used / limit * 100) : null;
+      return `<tr>
+        <td><code>${a.agent_id}</code></td>
+        <td class="num">${limit ? fmtNum(limit) : t('agents.unlimited')}</td>
+        <td class="num">${fmtNum(a.tokens_used)}</td>
+        <td class="num">${pct != null ? pct.toFixed(1) + '%' : '—'}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="4" style="color:var(--default-400)">${t('agents.empty')}</td></tr>`;
+  }
+
+  function renderLogs() {
+    const logs = state.logs || [];
+    $('#log-view').innerHTML = logs.map(l =>
+      `<div class="log-line ${l.level}">[${l.level.toUpperCase()}] ${l.msg}</div>`
+    ).join('');
+    const lv = $('#log-view');
+    lv.scrollTop = lv.scrollHeight;
+  }
+
+  function renderAll() {
+    updateSidebar();
+    updateUpstreamPage();
+    updateOverview();
+    updateStatsPage();
+    updateAgents();
+    renderLogs();
+    if (state.status?.data_dir) $('#data-dir').textContent = state.status.data_dir;
+    else $('#data-dir').textContent = '—';
+    setConnBadge();
+    void syncGatewayControlButtons();
+  }
+
+  async function apiFetch(path, opts = {}) {
+    const url = gatewayBase() + path;
+    const res = await fetch(url, { ...opts, headers: { ...adminHeaders(), ...opts.headers } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || res.statusText);
+    return json;
+  }
+
+  async function tryConnect() {
+    try {
+      const status = await apiFetch('/v1/admin/status');
+      state.status = status;
+      state.connected = true;
+      await loadSetup(true);
+      await loadStats(true);
+      toast(t('toast.connected'));
+    } catch {
+      state.connected = false;
+      clearLiveData();
+    }
+    renderAll();
+  }
+
+  window.loadSetup = async function (silent) {
+    if (!state.connected) {
+      if (!silent) toast(t('conn.offline'), false);
+      return;
+    }
+    try {
+      const agentId = $('#agent_id')?.value?.trim();
+      const path = agentId ? '/v1/admin/setup?agent_id=' + encodeURIComponent(agentId) : '/v1/admin/setup';
+      const view = await apiFetch(path);
+      fillSetup(view);
+      if (window.__cloudUpstream) {
+        void window.__cloudUpstream.refreshCloudUpstreamUi(view?.cloud?.model).catch((e) => {
+          console.warn('refreshCloudUpstreamUi', e);
+        });
+      }
+      if (!silent) toast(t('toast.setupLoaded'));
+      renderAll();
+    } catch (e) {
+      if (!silent) toast(t('toast.loadFail', { msg: e.message }), false);
+    }
+  };
+
+  async function loadStats(silent) {
+    if (!state.connected) return;
+    try {
+      const scope = state.scope;
+      const stats = await apiFetch('/v1/admin/stats?scope=' + scope);
+      state.stats = stats;
+      if (!silent) renderAll();
+    } catch (e) {
+      if (!silent) toast(t('toast.statsFail', { msg: e.message }), false);
+    }
+  }
+
+  window.refreshAll = async function () {
+    await tryConnect();
+    await loadStats(true);
+    renderAll();
+    toast(t('toast.refreshed'));
+  };
+
+  window.saveUpstream = async function () {
+    const body = buildSaveBody(['cloud', 'edge']);
+    await postSetup(body, t('toast.upstreamSaved'));
+  };
+
+  window.saveRouting = async function () {
+    const body = buildSaveBody(['gateway']);
+    await postSetup(body, t('toast.routingSaved'));
+  };
+
+  function buildSaveBody(sections) {
+    const num = (id) => { const v = $('#' + id)?.value?.trim(); return v === '' ? undefined : Number(v); };
+    const body = { agent_id: $('#agent_id')?.value?.trim() || null };
+    if (sections.includes('gateway')) {
+      body.gateway = {
+        route: $('#route').value,
+        routing_mode: $('#routing_mode').value,
+        default_profile: $('#default_profile').value,
+        ctx_edge_max_tokens: num('ctx_edge_max'),
+        experience_enabled: $('#experience_enabled').checked,
+        adaptive_routing_enabled: $('#adaptive_routing_enabled').checked,
+        work_verify_sample_rate: num('work_verify_sample_rate'),
+        cloud_sticky_ttl_secs: num('cloud_sticky_ttl_secs'),
+        experience_learning_rate: num('experience_learning_rate'),
+        experience_target_fallback: num('experience_target_fallback'),
+      };
+    }
+    if (sections.includes('cloud')) {
+      const budgetRaw = $('#cloud_token_budget')?.value?.trim();
+      const modelId = window.__cloudUpstream?.getCloudModelValue?.()
+        || $('#cloud_model_picker')?.dataset?.value
+        || 'Auto';
+      if (window.__cloudUpstream?.buildCloudSavePayload) {
+        body.cloud = window.__cloudUpstream.buildCloudSavePayload(modelId, budgetRaw);
+      } else {
+        body.cloud = {
+          base_url: $('#cloud_url')?.value,
+          model: modelId,
+          token_budget: num('cloud_token_budget'),
+        };
+      }
+    }
+    if (sections.includes('edge')) {
+      body.edge = {
+        base_url: $('#edge_url').value,
+        model: $('#edge_model').value || null,
+      };
+      const ek = $('#edge_key').value;
+      if (ek) body.edge.api_key = ek;
+    }
+    return body;
+  }
+
+  async function postSetup(body, okMsg) {
+    if (!state.connected) {
+      toast(t('conn.offline'), false);
+      return;
+    }
+    try {
+      const res = await apiFetch('/v1/admin/setup', { method: 'POST', body: JSON.stringify(body) });
+      fillSetup(res.upstream);
+      renderAll();
+      toast(res.message || okMsg);
+    } catch (e) {
+      toast(t('toast.saveFail', { msg: e.message }), false);
+    }
+  }
+
+  window.resetDefaults = async function () {
+    if (!state.connected) { toast(t('conn.offline'), false); return; }
+    try {
+      const res = await apiFetch('/v1/admin/setup/init', { method: 'POST' });
+      fillSetup(res.upstream);
+      renderAll();
+      toast(res.message || t('toast.resetOk'));
+    } catch (e) { toast(t('toast.fail', { msg: e.message }), false); }
+  };
+
+  window.restartGateway = async function () {
+    if (isTauri()) {
+      try {
+        const url = await tauriInvoke('gateway_restart');
+        if (url) $('#gateway_base').value = url.replace(/\/$/, '');
+        toast(t('toast.restarting'));
+        setTimeout(tryConnect, 800);
+      } catch (e) {
+        toast(t('toast.restartFail', { msg: invokeErrorMessage(e) }), false);
+      }
+      return;
+    }
+    if (!state.connected) { toast(t('conn.offline'), false); return; }
+    try {
+      await apiFetch('/v1/admin/restart', { method: 'POST' });
+      toast(t('toast.restarting'));
+      setTimeout(tryConnect, 2000);
+    } catch (e) { toast(t('toast.restartFail', { msg: invokeErrorMessage(e) }), false); }
+  };
+
+  window.startGateway = async function () {
+    if (isTauri()) {
+      try {
+        const url = await tauriInvoke('gateway_start');
+        if (url) $('#gateway_base').value = url.replace(/\/$/, '');
+        await tryConnect();
+        toast(t('toast.connected'));
+      } catch (e) {
+        toast(t('toast.startFail', { msg: invokeErrorMessage(e) }), false);
+      }
+      return;
+    }
+    toast(t('conn.offline'), false);
+  };
+
+  window.stopGateway = async function () {
+    if (isTauri()) {
+      try {
+        await tauriInvoke('gateway_stop');
+        state.connected = false;
+        clearLiveData();
+        renderAll();
+        toast(t('toast.stopped'));
+      } catch (e) {
+        toast(t('toast.stopFail', { msg: invokeErrorMessage(e) }), false);
+      }
+      return;
+    }
+    if (!state.connected) { toast(t('conn.offline'), false); return; }
+    try {
+      await apiFetch('/v1/admin/shutdown', { method: 'POST' });
+      state.connected = false;
+      clearLiveData();
+      renderAll();
+      toast(t('toast.stopped'));
+    } catch (e) { toast(t('toast.stopFail', { msg: invokeErrorMessage(e) }), false); }
+  };
+
+  window.copyEndpoint = function () {
+    navigator.clipboard.writeText($('#endpoint-url').textContent).then(() => toast(t('toast.copied')));
+  };
+
+  window.clearLogs = function () { state.logs = []; renderLogs(); };
+
+  function appendLog(level, msg) {
+    state.logs = state.logs || [];
+    state.logs.push({ level, msg: msg + ' @ ' + new Date().toLocaleTimeString() });
+    renderLogs();
+  }
+
+  async function setRouteMode(route) {
+    state.route = route;
+    $$('.route-tab').forEach(t => t.classList.toggle('active', t.dataset.route === route));
+    if ($('#route')) $('#route').value = route;
+    const body = { gateway: { route } };
+    await postSetup(body, t('toast.routeMode', { route: t('route.' + route) }));
+  }
+
+  // Events
+  $$('.nav-card').forEach(card => {
+    card.addEventListener('click', () => navigate(card.dataset.page, card.dataset.navId));
+  });
+
+  $$('.route-tab').forEach(tab => {
+    tab.addEventListener('click', () => setRouteMode(tab.dataset.route));
+  });
+
+  document.addEventListener('cloud-model-change', () => {
+    if (state.connected) saveUpstream();
+  });
+
+  $$('#theme-tabs .segment-tab').forEach(btn => {
+    btn.addEventListener('click', () => setThemePref(btn.dataset.themePref));
+  });
+
+  $$('#lang-tabs .segment-tab').forEach(btn => {
+    btn.addEventListener('click', () => setLocale(btn.dataset.lang));
+  });
+
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (state.themePref === 'system') applyTheme();
+  });
+
+  $$('.scope-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $$('.scope-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.scope = btn.dataset.scope;
+      await loadStats(true);
+      renderAll();
+    });
+  });
+
+  // Sidebar resize
+  const app = $('#app'), sider = $('#sider'), handle = $('#resize-handle');
+  let resizing = false;
+  handle.addEventListener('mousedown', () => { resizing = true; app.classList.add('resizing'); });
+  window.addEventListener('mouseup', () => { resizing = false; app.classList.remove('resizing'); });
+  window.addEventListener('mousemove', (e) => {
+    if (!resizing) return;
+    const w = Math.min(400, Math.max(60, e.clientX));
+    document.documentElement.style.setProperty('--sider-width', w + 'px');
+    sider.classList.toggle('narrow', w <= 70);
+  });
+
+  // Hash routing
+  const hash = location.hash.replace('#', '');
+  if (hash) {
+    const [page, navId] = hash.includes('-') ? hash.split('-') : [hash, hash];
+    if (PAGE_TITLE_KEYS[page] || PAGE_TITLE_KEYS['upstream_' + navId]) navigate(page, navId);
+  }
+
+  // Init — gated behind Flowy login (auth-gate.js calls startMainApp)
+  let mainAppStarted = false;
+  window.startMainApp = function startMainApp() {
+    if (mainAppStarted) return;
+    mainAppStarted = true;
+
+    loadPrefs();
+    applyTheme();
+    applyI18n();
+    renderAll();
+
+    $('#btn-logout')?.addEventListener('click', () => {
+      localStorage.removeItem('tokenrouter-auth');
+      location.reload();
+    });
+
+    const afterBoot = async () => {
+      await bootstrapCloudUpstream();
+      window.__sidebarUser?.refresh?.();
+      renderAll();
+    };
+
+    if (isTauri()) {
+      bootstrapTauri().then(afterBoot);
+    } else {
+      tryConnect().then(afterBoot);
+    }
+    setInterval(async () => {
+      if (state.connected) {
+        await loadStats(true);
+        renderAll();
+      }
+    }, 10000);
+  };
+
+  if (isTauri()) {
+    document.body.classList.add('tauri-app');
+    initWindowControls();
+  }
+
+  window.__appI18n = { dict: I18N, t, locale: () => state.locale };
+})();
+</script>
+<script type="module">
+  import { installDevToolsGate } from '/js/dev-tools-gate.js';
+  import { bootAuth } from '/js/auth-gate.js';
+  import { installCloudUpstreamGlobals } from '/js/cloud-upstream.js';
+  import { initSidebarUser } from '/js/sidebar-user.js';
+  import { installStatsChartGlobals } from '/js/stats-chart.js';
+  installDevToolsGate();
+  installCloudUpstreamGlobals();
+  installStatsChartGlobals();
+  initSidebarUser();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootAuth, { once: true });
+  } else {
+    bootAuth();
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gateway-is-running"
+description = "Enables the gateway_is_running command without any pre-configured scope."
+commands.allow = ["gateway_is_running"]
+
+[[permission]]
+identifier = "deny-gateway-is-running"
+description = "Denies the gateway_is_running command without any pre-configured scope."
+commands.deny = ["gateway_is_running"]

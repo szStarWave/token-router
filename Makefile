@@ -59,7 +59,8 @@ endif
         test check clean install \
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh \
-        package-electron-win clean-package-electron-win
+        package-electron-win clean-package-electron-win \
+        ui-build tauri-dev tauri-build
 
 help:
 	@echo "  build            Build debug CLI + library"
@@ -76,6 +77,10 @@ help:
 	@echo "  stats            Session stats (English)"
 	@echo "  stats-global     Global stats from stats.json"
 	@echo "  stats-zh         Session stats (Chinese)"
+	@echo ""
+	@echo "  ui-build         Build desktop web UI (Vite → desktop/dist)"
+	@echo "  tauri-dev        Run Tauri desktop app (dev)"
+	@echo "  tauri-build      Build Tauri desktop app (release)"
 	@echo ""
 	@echo "Options:"
 	@echo "  CONFIG=path      Pass --config to token-router (e.g. CONFIG=example/config.toml)"
@@ -188,3 +193,14 @@ stats-zh:
 
 stats-global-zh:
 	$(ROUTER) $(CONFIG_FLAG) stats --global --lang zh
+
+ui-build:
+	npm --prefix desktop run build
+
+tauri-dev:
+	npm --prefix desktop run tauri:dev
+
+tauri-build:
+	npm --prefix desktop run build
+	npm --prefix desktop run icons:generate
+	npm --prefix desktop run tauri:build

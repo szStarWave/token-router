@@ -1,0 +1,24 @@
+[[permission]]
+identifier = "allow-gateway-start"
+description = "Enables the gateway_start command."
+commands.allow = ["gateway_start"]
+
+[[permission]]
+identifier = "allow-gateway-stop"
+description = "Enables the gateway_stop command."
+commands.allow = ["gateway_stop"]
+
+[[permission]]
+identifier = "allow-gateway-restart"
+description = "Enables the gateway_restart command."
+commands.allow = ["gateway_restart"]
+
+[[permission]]
+identifier = "allow-gateway-status"
+description = "Enables gateway status query commands."
+commands.allow = ["gateway_is_running", "gateway_url", "gateway_status"]
+
+[[permission]]
+identifier = "allow-show-main-window"
+description = "Enables the show_main_window command."
+commands.allow = ["show_main_window"]

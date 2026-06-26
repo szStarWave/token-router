@@ -2,3 +2,11 @@
 **/*.pid
 .tmp
 /dist
+/node_modules
+/desktop/dist
+/desktop/node_modules
+/desktop/src-tauri/target
+desktop/.env
+tauri-build.log
+desktop/app-icon.png
+build.log

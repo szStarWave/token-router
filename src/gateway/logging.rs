@@ -26,17 +26,13 @@ pub fn init(data_dir: &std::path::Path, log_to_stderr: bool) -> anyhow::Result<P
         .with_ansi(false)
         .with_writer(Mutex::new(file));
 
-    if log_to_stderr {
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(file_layer)
-            .with(fmt::layer())
-            .init();
-    } else {
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(file_layer)
-            .init();
+    if !tracing::dispatcher::has_been_set() {
+        let registry = tracing_subscriber::registry().with(filter).with(file_layer);
+        if log_to_stderr {
+            registry.with(fmt::layer()).try_init()?;
+        } else {
+            registry.try_init()?;
+        }
     }
 
     Ok(log_path)
