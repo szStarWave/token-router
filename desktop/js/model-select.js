@@ -23,10 +23,11 @@ function renderIcon(icon, label, className = 'model-select-icon') {
 }
 
 function resolveDefaultModelId(models, preferred) {
-  if (preferred && models.some((m) => m.id === preferred)) return preferred;
-  const auto = models.find((m) => m.id === 'Auto' || m.id === 'auto');
+  const pref = preferred === 'Auto' ? 'auto' : preferred;
+  if (pref && models.some((m) => m.id === pref)) return pref;
+  const auto = models.find((m) => m.id === 'auto' || m.id === 'Auto');
   if (auto) return auto.id;
-  return models[0]?.id || '';
+  return models[0]?.id || 'auto';
 }
 
 export function mountModelSelect(rootId, { onChange, placeholder = 'Select model' } = {}) {

@@ -27,6 +27,8 @@ pub struct GatewayConfigView {
     pub classifier_prior_alpha: f32,
     pub classifier_decay_half_life_hours: f64,
     pub classifier_prior_from_heuristic: bool,
+    pub listen_port: u16,
+    pub listen_lan: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -52,6 +54,8 @@ pub struct GatewayConfigPatch {
     pub classifier_prior_alpha: Option<f32>,
     pub classifier_decay_half_life_hours: Option<f64>,
     pub classifier_prior_from_heuristic: Option<bool>,
+    pub listen_port: Option<u16>,
+    pub listen_lan: Option<bool>,
 }
 
 impl GatewayConfigPatch {
@@ -77,6 +81,8 @@ impl GatewayConfigPatch {
             && self.classifier_prior_alpha.is_none()
             && self.classifier_decay_half_life_hours.is_none()
             && self.classifier_prior_from_heuristic.is_none()
+            && self.listen_port.is_none()
+            && self.listen_lan.is_none()
     }
 }
 
@@ -131,6 +137,40 @@ pub fn endpoint_configured(ep: &UpstreamEndpoint) -> bool {
     !ep.base_url.trim().is_empty()
 }
 
+pub const LISTEN_PORT_MIN: u16 = 1024;
+pub const LISTEN_PORT_MAX: u16 = 65535;
+pub const DEFAULT_LISTEN_PORT: u16 = 11080;
+
+pub fn listen_port_from_addr(listen: &str) -> u16 {
+    listen
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or(DEFAULT_LISTEN_PORT)
+}
+
+pub fn listen_lan_from_addr(listen: &str) -> bool {
+    let host = listen
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim())
+        .unwrap_or(listen.trim());
+    matches!(host, "0.0.0.0" | "::" | "[::]")
+}
+
+pub fn build_listen_addr(port: u16, lan: bool) -> String {
+    let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    format!("{host}:{port}")
+}
+
+pub fn normalize_listen_port(port: u16) -> Result<u16, String> {
+    if (LISTEN_PORT_MIN..=LISTEN_PORT_MAX).contains(&port) {
+        Ok(port)
+    } else {
+        Err(format!(
+            "listen_port must be between {LISTEN_PORT_MIN} and {LISTEN_PORT_MAX}"
+        ))
+    }
+}
+
 pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
     GatewayConfigView {
         route: g.route.clone(),
@@ -154,6 +194,8 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         classifier_prior_alpha: g.classifier_prior_alpha,
         classifier_decay_half_life_hours: g.classifier_decay_half_life_hours,
         classifier_prior_from_heuristic: g.classifier_prior_from_heuristic,
+        listen_port: listen_port_from_addr(&g.listen),
+        listen_lan: listen_lan_from_addr(&g.listen),
     }
 }
 
@@ -218,6 +260,7 @@ pub fn is_setup_validation_error(msg: &str) -> bool {
         || msg.contains("invalid gateway.")
         || msg.contains("must be between")
         || msg.contains("must be in [")
+        || msg.contains("listen_port")
 }
 
 fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
@@ -359,6 +402,17 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     }
     if let Some(v) = patch.classifier_prior_from_heuristic {
         g.classifier_prior_from_heuristic = v;
+    }
+    let mut listen_port = listen_port_from_addr(&g.listen);
+    let mut listen_lan = listen_lan_from_addr(&g.listen);
+    if let Some(port) = patch.listen_port {
+        listen_port = normalize_listen_port(port)?;
+    }
+    if let Some(lan) = patch.listen_lan {
+        listen_lan = lan;
+    }
+    if patch.listen_port.is_some() || patch.listen_lan.is_some() {
+        g.listen = build_listen_addr(listen_port, listen_lan);
     }
     if g.adaptive_verify_rate_floor > g.adaptive_verify_rate_ceiling {
         return Err(
@@ -510,6 +564,43 @@ mod tests {
             &UpstreamSetupUpdate {
                 gateway: Some(GatewayConfigPatch {
                     ctx_edge_max_tokens: Some(100),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn patch_listen_port_and_lan() {
+        let mut file = ConfigFile::default();
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                gateway: Some(GatewayConfigPatch {
+                    listen_port: Some(12080),
+                    listen_lan: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(file.gateway.listen, "0.0.0.0:12080");
+        let view = view_from_config(&file);
+        assert_eq!(view.gateway.listen_port, 12080);
+        assert!(view.gateway.listen_lan);
+    }
+
+    #[test]
+    fn patch_listen_port_rejects_out_of_range() {
+        let mut file = ConfigFile::default();
+        assert!(apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                gateway: Some(GatewayConfigPatch {
+                    listen_port: Some(80),
                     ..Default::default()
                 }),
                 ..Default::default()

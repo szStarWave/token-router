@@ -53,6 +53,7 @@ fn main() {
                 "gateway_is_running",
                 "gateway_url",
                 "gateway_status",
+                "gateway_read_logs",
                 "show_main_window",
             ]),
         ),

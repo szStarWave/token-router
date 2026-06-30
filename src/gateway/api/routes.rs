@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .route("/setup", get(setup::setup_page))
         .route("/v1/admin/status", get(admin::status))
         .route("/v1/admin/stats", get(admin::stats))
+        .route("/v1/admin/logs", get(admin::logs))
         .route("/v1/admin/setup", get(setup::setup_get).post(setup::setup_post))
         .route("/v1/admin/setup/init", post(setup::setup_init))
         .route("/v1/admin/shutdown", post(admin::shutdown))

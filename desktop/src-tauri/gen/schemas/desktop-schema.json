@@ -351,6 +351,12 @@
           "markdownDescription": "Enables the gateway_is_running command without any pre-configured scope."
         },
         {
+          "description": "Enables the gateway_read_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gateway-read-logs",
+          "markdownDescription": "Enables the gateway_read_logs command without any pre-configured scope."
+        },
+        {
           "description": "Enables the gateway_restart command.",
           "type": "string",
           "const": "allow-gateway-restart",
@@ -391,6 +397,12 @@
           "type": "string",
           "const": "deny-gateway-is-running",
           "markdownDescription": "Denies the gateway_is_running command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gateway_read_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-read-logs",
+          "markdownDescription": "Denies the gateway_read_logs command without any pre-configured scope."
         },
         {
           "description": "Denies the gateway_restart command without any pre-configured scope.",

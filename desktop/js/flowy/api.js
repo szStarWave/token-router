@@ -118,3 +118,13 @@ export async function deviceActivateAfterLogin(token) {
     console.warn('[device/activate]', e);
   }
 }
+
+/** POST /model/localUsage/report — 本地模型用量计价（不扣费，返回 savedPoints 供展示） */
+export async function reportLocalModelUsage(params, token) {
+  const authToken = token ?? getAuthToken();
+  if (!authToken) throw new Error('未登录');
+  const res = await post('/model/localUsage/report', params, authToken);
+  if (res?.code !== 200) throw new Error(res?.msg || '本地模型用量上报失败');
+  if (!res?.data) throw new Error('本地模型用量上报失败');
+  return res.data;
+}

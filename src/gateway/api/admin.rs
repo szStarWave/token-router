@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon_ctl;
 use crate::gateway::api::routes::AppState;
+use crate::gateway::logging::{self, LogsTail};
 use crate::gateway::stats::AgentBudgetSnapshot;
 use crate::gateway::routing::Profile;
 
@@ -104,6 +105,41 @@ pub async fn shutdown(
         Json(serde_json::json!({"status": "shutting_down"})),
     )
         .into_response()
+}
+
+const LOG_CHUNK_CAP: u64 = 512 * 1024;
+
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    /// Byte offset for incremental reads. Omit on first load to tail recent lines.
+    #[serde(default)]
+    pub offset: Option<u64>,
+    /// Max bytes per response (default 64 KiB, cap 512 KiB).
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+}
+
+pub type LogsResponse = LogsTail;
+
+pub async fn logs(
+    State(state): State<AppState>,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<LogsResponse>, axum::response::Response> {
+    let max_bytes = query
+        .max_bytes
+        .unwrap_or(logging::LOG_CHUNK_BYTES)
+        .clamp(1, LOG_CHUNK_CAP);
+    let config = state.config();
+    let path = config.data_dir.join("logs").join("gateway.log");
+
+    match logging::read_log_tail(&path, query.offset, Some(max_bytes)) {
+        Ok(resp) => Ok(Json(resp)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response()),
+    }
 }
 
 pub async fn restart(

@@ -68,6 +68,13 @@ fn gateway_status() -> GatewayStatus {
 }
 
 #[tauri::command]
+fn gateway_read_logs(offset: Option<u64>) -> Result<token_router::gateway::logging::LogsTail, String> {
+    let config = token_router::gateway::AppConfig::load().map_err(|e| e.to_string())?;
+    let path = config.data_dir.join("logs").join("gateway.log");
+    token_router::gateway::logging::read_log_tail(&path, offset, None).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window.show().map_err(|e| e.to_string())?;
@@ -173,6 +180,7 @@ pub fn run() {
             gateway_is_running,
             gateway_url,
             gateway_status,
+            gateway_read_logs,
             show_main_window,
         ])
         .setup(|app| {

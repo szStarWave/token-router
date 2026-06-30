@@ -97,19 +97,25 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
     )?;
     let cloud_key = prompt_api_key("云端", cloud)?;
 
-    let budget_default = current.cloud.as_ref().and_then(|c| c.token_budget).map(|b| b.to_string()).unwrap_or_default();
+    let budget_default = current
+        .cloud
+        .as_ref()
+        .and_then(|c| c.token_budget)
+        .filter(|b| *b > 0)
+        .map(|b| b.to_string())
+        .unwrap_or_else(|| "1000000".to_string());
     let budget_str = prompt_string(
-        "云端 Token 预算（5 小时窗口，超预算 Cloud 降级为 Cascade；0=不限）",
+        "云端 Token 预算（5 小时窗口，超预算 Cloud 降级为 Cascade；0=关闭配额）",
         &budget_default,
     )?;
-    let token_budget = if budget_str.trim().is_empty() {
-        None
+    let token_budget = if budget_str.trim().is_empty() || budget_str.trim() == "0" {
+        Some(Some(0))
     } else {
         match budget_str.trim().parse::<u64>() {
             Ok(v) => Some(Some(v)),
             Err(_) => {
                 println!("⚠ 无效数字，已忽略 token 预算");
-                None
+                Some(Some(0))
             }
         }
     };
