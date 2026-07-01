@@ -102,6 +102,67 @@ pub fn read_log_tail(
     }
 
     let end = (start + max_bytes).min(file_len);
+    let lines = read_log_bytes(path, start, end)?;
+
+    Ok(LogsTail {
+        offset: start,
+        next_offset: file_len,
+        reset,
+        lines,
+    })
+}
+
+/// Read a chunk of log bytes ending at `before` (exclusive upper bound).
+/// Used for lazy-loading older lines when scrolling up in the UI.
+pub fn read_log_before(
+    path: &Path,
+    before: u64,
+    max_bytes: Option<u64>,
+) -> anyhow::Result<LogsTail> {
+    let max_bytes = max_bytes
+        .unwrap_or(LOG_CHUNK_BYTES)
+        .clamp(1, LOG_CHUNK_CAP);
+
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogsTail {
+                offset: 0,
+                next_offset: 0,
+                reset: false,
+                lines: Vec::new(),
+            });
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let file_len = meta.len();
+    let before = before.min(file_len);
+    if before == 0 {
+        return Ok(LogsTail {
+            offset: 0,
+            next_offset: 0,
+            reset: false,
+            lines: Vec::new(),
+        });
+    }
+
+    let start = before.saturating_sub(max_bytes);
+    let lines = read_log_bytes(path, start, before)?;
+
+    Ok(LogsTail {
+        offset: start,
+        next_offset: before,
+        reset: false,
+        lines,
+    })
+}
+
+fn read_log_bytes(path: &Path, start: u64, end: u64) -> anyhow::Result<Vec<LogLine>> {
+    if start >= end {
+        return Ok(Vec::new());
+    }
+
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::Start(start))?;
     let byte_len = (end - start) as usize;
@@ -111,7 +172,7 @@ pub fn read_log_tail(
 
     let text = String::from_utf8_lossy(&buf);
     let skip_first = start > 0;
-    let lines = text
+    Ok(text
         .lines()
         .skip(if skip_first { 1 } else { 0 })
         .filter(|line| !line.is_empty())
@@ -119,14 +180,7 @@ pub fn read_log_tail(
             level: classify_log_level(line),
             text: line.to_string(),
         })
-        .collect();
-
-    Ok(LogsTail {
-        offset: start,
-        next_offset: file_len,
-        reset,
-        lines,
-    })
+        .collect())
 }
 
 fn classify_log_level(line: &str) -> &'static str {
@@ -157,5 +211,27 @@ mod tests {
             classify_log_level("2025-01-01T00:00:00.000000Z  ERROR token_router: failed"),
             "err"
         );
+    }
+
+    #[test]
+    fn read_log_before_returns_older_chunk() {
+        let path = std::env::temp_dir().join(format!(
+            "token-router-log-before-{}.log",
+            std::process::id()
+        ));
+        let mut content = String::new();
+        for i in 0..500 {
+            content.push_str(&format!("2025-01-01T00:00:00.000000Z  INFO token_router: line {i}\n"));
+        }
+        std::fs::write(&path, &content).unwrap();
+        let file_len = content.len() as u64;
+        let before = file_len / 2;
+
+        let older = read_log_before(&path, before, Some(512)).unwrap();
+        assert!(!older.lines.is_empty());
+        assert!(older.offset < before);
+        assert_eq!(older.next_offset, before);
+
+        let _ = std::fs::remove_file(path);
     }
 }

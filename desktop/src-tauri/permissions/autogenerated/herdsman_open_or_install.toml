@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-herdsman-open-or-install"
+description = "Enables the herdsman_open_or_install command without any pre-configured scope."
+commands.allow = ["herdsman_open_or_install"]
+
+[[permission]]
+identifier = "deny-herdsman-open-or-install"
+description = "Denies the herdsman_open_or_install command without any pre-configured scope."
+commands.deny = ["herdsman_open_or_install"]

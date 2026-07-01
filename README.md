@@ -240,7 +240,7 @@ src/
 - **多轮 + tools**：最新 user 须命中 easy 意图关键词
 - **多轮无 tools**：最新 user 很短（`last_user_tok ≤ 512`）也可视为 casual 跟帖
 
-> **重要**：Casual 步态只标类型，**不强制端侧**；最终路由由 `routing_mode` + 难度分决定。
+> **重要**：`DirectChat` / `HeartbeatAck` 在 `d < θ_cloud` 时决策为 **edge**（不再产出 `cascade`）；双上游可用时执行层经 `cascade_gate_pass()` 质量门，不合格自动升云（`fallback=true`）。仅高难度或硬门控直接走云。
 
 ##### 1.3 硬约束门控（`routing/gates.rs`）
 
@@ -249,6 +249,7 @@ src/
 | 门控 | 条件 | 路由结果 |
 |------|------|---------|
 | `GATE_EDGE_DOWN` | 端侧未配置或不可用 | **cloud**（或 503） |
+| `GATE_USER_REJECT` | 最新 user 否定上一轮 assistant（中/英/日/韩/粤关键词，见 `routing/reject_intent.rs`） | **cloud** |
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
 | `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
@@ -476,14 +477,15 @@ Flowy 通过 **多层级质量评估系统** 判断端侧任务是否成功、�
 | **上游错误** | `false` | `false` | `true` | Edge/Cloud 请求本身失败（网络/HTTP错误） |
 | **纯云端** | `false` | `false` | `false` | 决策层直接走了 Cloud，端侧未尝试 |
 
-`RequestOutcome::success(decision, fallback)` 构造函数根据路由类型自动映射（`forward.rs:12`）：
-- `RouteTier::Edge` → `{ edge_ok: true, ... }`
+`RequestOutcome::success(decision, fallback)` 构造函数根据路由类型自动映射：
+- `RouteTier::Edge` + `casual_quality_fallback` + `fallback` → `{ cascade_fallback: true, ... }`（端侧质量门未过，升云重答）
+- `RouteTier::Edge`（其他） → `{ edge_ok: true, ... }`
 - `RouteTier::Cloud` → `{ edge_ok: false, ... }`（端侧未尝试，不算成功也不算失败）
 - `RouteTier::Cascade` → `edge_ok = !fallback, cascade_fallback = fallback`
 
 ##### 11.2 级联质量门（Cascade Gate）
 
-当路由决策为 `Cascade` 时，系统先请求端侧，然后通过 `cascade_gate_pass()`（`forward.rs:584`）判断端侧结果是否合格：
+当路由决策为 `Cascade`，或 `DirectChat` / `HeartbeatAck` 决策为 **edge** 且 `casual_quality_fallback=true`（双上游可用）时，系统先请求端侧，然后通过 `cascade_gate_pass()` 判断端侧结果是否合格：
 
 **文本回复的质量门**（`cascade_text_pass`, `forward.rs:594`）：
 ```
@@ -868,9 +870,13 @@ token-router stats --global --lang zh # 全局累计 + 中文
 | `GET` | `/v1/admin/stats` | 统计；`?scope=global` 为全部历史 |
 | `POST` | `/v1/admin/shutdown` | 优雅关闭；可选 `X-Token-Router-Admin-Token` |
 | `POST` | `/v1/admin/restart` | 优雅关闭并由独立 `__restart-wait` 进程拉起新实例（同 `token-router gateway restart`）；可选 Admin Token |
-| `POST` | `/v1/chat/completions` | OpenAI 兼容聊天（Agent 主入口） |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions 兼容（Agent 主入口） |
+| `POST` | `/v1/responses` | OpenAI Responses API 兼容 |
+| `POST` | `/v1/messages` | Anthropic Messages API 兼容 |
 
-**响应扩展**（非流式 JSON 根上的 `token_router_meta`，Agent 可忽略）：
+三种 LLM API 入口共享同一路由引擎与 edge/cloud 上游配置；请求在网关内归一化为 OpenAI Chat Completions 格式后转发至 `{base_url}/chat/completions`。Agent 可按 SDK 习惯选择入口（OpenAI SDK → `/v1/chat/completions`，Codex/Responses 客户端 → `/v1/responses`，Anthropic SDK → `/v1/messages`）。`token_router_meta` 扩展字段仅出现在 OpenAI Chat Completions 响应中。
+
+**响应扩展**（非流式 JSON 根上的 `token_router_meta`，Agent 可忽略；仅 `/v1/chat/completions`）：
 
 | 字段 | 含义 |
 |------|------|
@@ -1161,15 +1167,17 @@ adaptive_routing_enabled = true
 
 **Agent 无真实回复** — 确认上游 `base_url` 可达；未配置任何上游时返回 503。
 
-**OpenClaw 日常「看起来」仍走云**（排障，非默认行为）— 正常标为 casual 时 `step_kind` 应为 `direct_chat` 或 `heartbeat_ack`，决策上多为 **edge / cascade**（见 [架构-步态分类](#12-步态分类routingstep_kindrs)）。用 `token_router_meta` 区分三种情况：
+**OpenClaw 日常「看起来」仍走云**（排障）— 正常标为 casual 时 `step_kind` 应为 `direct_chat` 或 `heartbeat_ack`，决策上多为 **edge**（见 [架构-步态分类](#12-步态分类routingstep_kindrs)）。用 `token_router_meta` 区分：
 
 1. **`step_kind` 不是 casual** → 未进日常步态，常直接云或走 Work。查：`tool_select` / `initial_plan`（tool 循环中且最新 user 无 easy 关键词）、`tok_rest` ≥ 8192、`n_turns` > 8、含规划意图、assistant 失败恢复。
-2. **`step_kind` 对，但 `route` = `cloud`** → 查 `reason_codes` 里 `GATE_*`、`CONFIG_ROUTE_*`，或 `route = "cloud"` / `premium` + 高难度分。
-3. **`route` = `cascade` 且 `fallback` = true** → 路由先端侧，**质量门未过**升云重答（见 [架构-上游执行](#5-上游执行upstreamforwardrs--ssers--verifyrs)）；不是 sticky 把日常钉在云上。
+2. **`step_kind` 对，但 `route` = `cloud`** → 查 `reason_codes` 里 `GATE_*`（含 `GATE_USER_REJECT` 用户否定纠错）、`CONFIG_ROUTE_*`，或 `premium` + 高难度分。
+3. **`route` = `edge` 且 `fallback` = true** → 决策走端侧，**质量门未过**升云重答（`CASUAL_EDGE_FALLBACK`）；下一轮仍会重新路由判断，DirectChat 不受 sticky 钉云。
 
-Casual **不强制端侧**；要尽量少云可 `default_profile = "economy"` 或 `routing_mode = "single"`（§6.5）。Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casual 溢出门控只计 `tok_rest`）。
+用户用中/英/日/韩/粤说「不对/错了/wrong/違う/틀렸어」等纠正上一轮 assistant 时，当轮 `GATE_USER_REJECT` 升云；下一轮正常跟帖仍按 DirectChat 规则重判。
 
-**日常想用端侧但总是 cascade** — 默认 `routing_mode = cascade` + balanced 难度阈值所致；要更多纯 edge 可改 `routing_mode = "single"` 或 `default_profile = "economy"`。
+Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casual 溢出门控只计 `tok_rest`）。
+
+**日常 meta 显示 edge 但答案来自云** — 见上第 3 点：`route=edge` + `fallback=true` 表示端侧质量门失败后升云，非决策错误。
 
 **粘性期内全是云** — 已移除 `GATE_STICKY_CLOUD`；**日常/心跳** 不受粘性改路；**Work 执行** 在粘性期走 `STICKY_CASCADE_RETRY`（先端后云）。端侧成功会清除 sticky。
 

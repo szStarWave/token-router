@@ -135,7 +135,7 @@ fn default_profile() -> String {
 }
 
 fn default_ctx_edge_max() -> u32 {
-    65_536
+    100_000
 }
 
 fn default_experience_enabled() -> bool {
@@ -254,7 +254,7 @@ impl ConfigFile {
             .gateway_url
             .clone()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("http://{}", self.gateway.listen))
+            .unwrap_or_else(|| crate::config::setup::client_gateway_http_url(&self.gateway.listen))
     }
 
     pub fn pid_file_path(&self) -> anyhow::Result<PathBuf> {
@@ -275,7 +275,7 @@ listen = "127.0.0.1:11080"
 route = "auto"                 # auto | edge | cloud | cascade
 routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
-ctx_edge_max_tokens = 65536
+ctx_edge_max_tokens = 100000
 # api_key = "token-local"        # optional: inbound auth when set
 # admin_token = "change-me"      # optional: protects POST /v1/admin/shutdown|restart
 # experience_enabled = true

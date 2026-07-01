@@ -71,6 +71,15 @@ pub fn map_policy_with_thresholds(
 
     let score = d.0;
 
+    if mode != RoutingMode::Split
+        && matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck)
+    {
+        if score < theta_cloud {
+            return RouteTier::Edge;
+        }
+        return RouteTier::Cloud;
+    }
+
     match mode {
         RoutingMode::Single => {
             if score < theta_edge {

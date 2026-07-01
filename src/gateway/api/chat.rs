@@ -4,20 +4,37 @@ use axum::{
     http::{HeaderMap, Response, StatusCode},
     response::IntoResponse,
 };
-use tracing::info;
-
+use crate::gateway::api::anthropic::{chat_json_to_anthropic, AnthropicSseTransform};
 use crate::gateway::api::auth::require_gateway_api_key;
-use crate::gateway::api::meta::{build_token_router_meta, token_router_meta_headers};
+use crate::gateway::api::meta::{build_token_router_meta, log_route_decision, token_router_meta_headers};
 use crate::gateway::api::openai::ChatCompletionRequest;
+use crate::gateway::api::responses::{chat_response_to_responses, ResponsesSseTransform};
 use crate::gateway::api::routes::AppState;
+use crate::gateway::api::sse_transform::wrap_sse_transform;
 use crate::gateway::experience::RequestOutcome;
 use crate::gateway::error::{AppError, AppResult};
+
+pub enum ChatOutputFormat {
+    OpenAi,
+    Responses,
+    Anthropic { model: String },
+}
 
 pub async fn chat_completions(
     state: AppState,
     headers: HeaderMap,
     agent_id: Option<String>,
     req: ChatCompletionRequest,
+) -> AppResult<impl IntoResponse> {
+    chat_completions_core(state, headers, agent_id, req, ChatOutputFormat::OpenAi).await
+}
+
+pub async fn chat_completions_core(
+    state: AppState,
+    headers: HeaderMap,
+    agent_id: Option<String>,
+    req: ChatCompletionRequest,
+    output: ChatOutputFormat,
 ) -> AppResult<impl IntoResponse> {
     let stream = req.stream;
     state.stats.record_request(stream);
@@ -52,27 +69,36 @@ pub async fn chat_completions(
     let conv_key = decision.conversation_key.clone();
     let assistant_failed = decision.assistant_failed_recent;
 
-    info!(
-        route = ?decision.route,
-        step = ?decision.step_kind,
-        difficulty = decision.difficulty,
-        stream = stream,
-        tok_in = decision.tokens_in_estimate,
-        reasons = ?decision.reason_codes,
-        "routing decision"
-    );
+    log_route_decision(&decision, stream, agent_id.as_deref());
 
     if stream {
-        match state.upstream.stream(&req, &decision, agent_id.as_deref()).await {
+        match state
+            .upstream
+            .stream(&req, &decision, agent_id.as_deref())
+            .await
+        {
             Ok((byte_stream, fallback)) => {
                 let outcome = RequestOutcome::success(&decision, fallback);
                 record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
+
+                let byte_stream = match &output {
+                    ChatOutputFormat::OpenAi => byte_stream,
+                    ChatOutputFormat::Responses => {
+                        wrap_sse_transform(byte_stream, ResponsesSseTransform::new())
+                    }
+                    ChatOutputFormat::Anthropic { model } => {
+                        wrap_sse_transform(byte_stream, AnthropicSseTransform::new(model.clone()))
+                    }
+                };
+
                 let mut resp = Response::builder()
                     .status(StatusCode::OK)
                     .body(Body::from_stream(byte_stream))
                     .map_err(|e| AppError::Internal(e.into()))?;
                 let headers = resp.headers_mut();
-                headers.extend(token_router_meta_headers(&decision, fallback));
+                if matches!(output, ChatOutputFormat::OpenAi) {
+                    headers.extend(token_router_meta_headers(&decision, fallback));
+                }
                 apply_sse_headers(headers);
                 Ok(resp.into_response())
             }
@@ -89,13 +115,33 @@ pub async fn chat_completions(
             }
         }
     } else {
-        match state.upstream.complete(&req, &decision, agent_id.as_deref()).await {
+        match state
+            .upstream
+            .complete(&req, &decision, agent_id.as_deref())
+            .await
+        {
             Ok(mut resp) => {
                 let fallback = resp.token_router_meta.as_ref().is_some_and(|m| m.fallback);
                 let outcome = RequestOutcome::success(&decision, fallback);
                 record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
-                resp.token_router_meta = Some(build_token_router_meta(&decision, fallback, &resp));
-                Ok(Json(resp).into_response())
+
+                match output {
+                    ChatOutputFormat::OpenAi => {
+                        resp.token_router_meta =
+                            Some(build_token_router_meta(&decision, fallback, &resp));
+                        Ok(Json(resp).into_response())
+                    }
+                    ChatOutputFormat::Responses => {
+                        let body = chat_response_to_responses(&resp);
+                        Ok(Json(body).into_response())
+                    }
+                    ChatOutputFormat::Anthropic { model } => {
+                        let oai_json = serde_json::to_vec(&resp)
+                            .map_err(|e| AppError::Internal(e.into()))?;
+                        let body = chat_json_to_anthropic(&oai_json, &model);
+                        Ok(Json(body).into_response())
+                    }
+                }
             }
             Err(e) => {
                 state.stats.record_error(&e);
@@ -145,6 +191,12 @@ fn apply_sse_headers(headers: &mut HeaderMap) {
         CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/event-stream; charset=utf-8"),
     );
-    headers.insert(CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
-    headers.insert(CONNECTION, axum::http::HeaderValue::from_static("keep-alive"));
+    headers.insert(
+        CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        CONNECTION,
+        axum::http::HeaderValue::from_static("keep-alive"),
+    );
 }

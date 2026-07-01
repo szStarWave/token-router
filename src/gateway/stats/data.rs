@@ -21,6 +21,8 @@ pub struct StatsData {
     pub requests_total: u64,
     pub requests_stream: u64,
     pub requests_non_stream: u64,
+    #[serde(default)]
+    pub requests_cancelled: u64,
     pub route_edge: u64,
     pub route_cloud: u64,
     pub route_cascade: u64,
@@ -81,6 +83,14 @@ pub struct StatsData {
     pub tps_sum_x1000: u64,
     #[serde(default)]
     pub tps_count: u64,
+    #[serde(default)]
+    pub edge_tps_sum_x1000: u64,
+    #[serde(default)]
+    pub edge_tps_count: u64,
+    #[serde(default)]
+    pub cloud_tps_sum_x1000: u64,
+    #[serde(default)]
+    pub cloud_tps_count: u64,
     #[serde(default)]
     pub edge_served_responses: u64,
     #[serde(default)]
@@ -173,6 +183,17 @@ impl StatsData {
                 (m.completion_tokens as u64 * 1000 * 1000).saturating_div(gen_ms);
             self.tps_sum_x1000 += tps_x1000;
             self.tps_count += 1;
+            match m.tier {
+                "edge" => {
+                    self.edge_tps_sum_x1000 += tps_x1000;
+                    self.edge_tps_count += 1;
+                }
+                "cloud" => {
+                    self.cloud_tps_sum_x1000 += tps_x1000;
+                    self.cloud_tps_count += 1;
+                }
+                _ => {}
+            }
         }
     }
 

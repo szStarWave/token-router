@@ -1,0 +1,1024 @@
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+
+const PIPE_NAME: &str = r"\\.\pipe\Herdsman-status";
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const MODEL_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const DISCOVER_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_INSTALL_URL: &str = "https://flowyaipc.cn/#ai-engine";
+
+static SERVICE_RUNNING: AtomicBool = AtomicBool::new(false);
+static RUNTIME_STATE: OnceLock<Arc<Mutex<HerdsmanRuntimeState>>> = OnceLock::new();
+
+#[derive(Clone, Debug, Default)]
+struct HerdsmanRuntimeState {
+    connected: bool,
+    endpoint: Option<String>,
+    openai_endpoint: Option<String>,
+    models: Vec<HerdsmanModelInfo>,
+    installed: bool,
+    launcher_path: Option<String>,
+}
+
+#[derive(Clone, Serialize, Default)]
+pub struct HerdsmanStatusSnapshot {
+    pub connected: bool,
+    pub endpoint: Option<String>,
+    pub openai_endpoint: Option<String>,
+    pub models: Vec<HerdsmanModelInfo>,
+    pub installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher_path: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct HerdsmanInstallDetected {
+    installed: bool,
+    launcher_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct HerdsmanStatus {
+    #[allow(dead_code)]
+    app_name: Option<String>,
+    #[allow(dead_code)]
+    host: Option<String>,
+    #[allow(dead_code)]
+    port: Option<u32>,
+    endpoint: String,
+    #[allow(dead_code)]
+    webui_url: Option<String>,
+    openai_endpoint: String,
+    #[allow(dead_code)]
+    timestamp: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RuntimeInfo {
+    context_size: Option<u64>,
+    #[allow(dead_code)]
+    port: Option<u32>,
+    #[allow(dead_code)]
+    inference_engine: Option<String>,
+    run_status: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RawHerdsmanModel {
+    id: Option<String>,
+    name: String,
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    runtime_info: Option<RuntimeInfo>,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct HerdsmanModelInfo {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub source: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+pub struct HerdsmanOpenResult {
+    pub opened: String,
+    pub target: String,
+}
+
+fn runtime_state() -> Arc<Mutex<HerdsmanRuntimeState>> {
+    RUNTIME_STATE
+        .get_or_init(|| Arc::new(Mutex::new(HerdsmanRuntimeState::default())))
+        .clone()
+}
+
+fn snapshot_from_state(state: &HerdsmanRuntimeState) -> HerdsmanStatusSnapshot {
+    HerdsmanStatusSnapshot {
+        connected: state.connected,
+        endpoint: state.endpoint.clone(),
+        openai_endpoint: state.openai_endpoint.clone(),
+        models: state.models.clone(),
+        installed: state.installed,
+        launcher_path: state.launcher_path.clone(),
+    }
+}
+
+fn update_runtime_state<F>(update: F)
+where
+    F: FnOnce(&mut HerdsmanRuntimeState),
+{
+    if let Ok(mut guard) = runtime_state().lock() {
+        update(&mut guard);
+    }
+}
+
+fn is_running_model(model: &RawHerdsmanModel) -> bool {
+    let model_type = model.r#type.as_deref().unwrap_or("");
+    let status = model.status.as_deref().unwrap_or("");
+    let run_status = model
+        .runtime_info
+        .as_ref()
+        .and_then(|r| r.run_status.as_deref())
+        .unwrap_or("");
+    (model_type == "multimodal" || model_type == "text-generation")
+        && status == "installed"
+        && run_status == "running"
+}
+
+fn map_models(raw: Vec<RawHerdsmanModel>, openai_endpoint: &str) -> Vec<HerdsmanModelInfo> {
+    raw.into_iter()
+        .filter(is_running_model)
+        .map(|model| HerdsmanModelInfo {
+            id: model.name.clone(),
+            name: model.name,
+            endpoint: openai_endpoint.to_string(),
+            context_window: model.runtime_info.and_then(|r| r.context_size),
+            icon: model.icon,
+            source: "herdsman",
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn pipe_name_wide() -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    OsStr::new(PIPE_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(windows)]
+type PipeHandle = windows::Win32::Foundation::HANDLE;
+
+#[cfg(not(windows))]
+type PipeHandle = ();
+
+#[cfg(windows)]
+fn connect_pipe() -> Option<PipeHandle> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, OPEN_EXISTING,
+    };
+
+    let wide = pipe_name_wide();
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+            Default::default(),
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    };
+
+    match handle {
+        Ok(h) if h != INVALID_HANDLE_VALUE => Some(h),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn connect_pipe() -> Option<PipeHandle> {
+    None
+}
+
+#[cfg(windows)]
+fn read_pipe_message(handle: PipeHandle) -> Option<String> {
+    use windows::Win32::Foundation::ERROR_MORE_DATA;
+    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
+
+    unsafe {
+        let mut mode = PIPE_READMODE_MESSAGE;
+        let _ = SetNamedPipeHandleState(handle, Some(&mut mode), None, None);
+    }
+
+    let mut written = 0u32;
+    unsafe {
+        WriteFile(handle, Some(b"/status"), Some(&mut written), None).ok()?;
+    }
+
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let mut read = 0u32;
+        match unsafe { ReadFile(handle, Some(&mut chunk), Some(&mut read), None) } {
+            Ok(()) => {
+                if read > 0 {
+                    buf.extend_from_slice(&chunk[..read as usize]);
+                }
+                break;
+            }
+            Err(e) if e.code().0 as u32 == ERROR_MORE_DATA.0 => {
+                if read > 0 {
+                    buf.extend_from_slice(&chunk[..read as usize]);
+                }
+                continue;
+            }
+            Err(_) => return None,
+        }
+    }
+
+    let response = String::from_utf8_lossy(&buf).trim().to_string();
+    if response.is_empty() {
+        None
+    } else {
+        Some(response)
+    }
+}
+
+#[cfg(windows)]
+struct SendPipeHandle(PipeHandle);
+
+#[cfg(windows)]
+unsafe impl Send for SendPipeHandle {}
+
+#[cfg(windows)]
+fn duplicate_pipe_handle(handle: PipeHandle) -> Option<PipeHandle> {
+    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let mut dup = HANDLE::default();
+    unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            handle,
+            GetCurrentProcess(),
+            &mut dup,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )
+        .ok()
+        .map(|_| dup)
+    }
+}
+
+#[cfg(windows)]
+fn watch_pipe_disconnect(watch: SendPipeHandle, alive: Arc<AtomicBool>) {
+    let handle = watch.0;
+    use windows::Win32::Foundation::{CloseHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
+    use windows::Win32::Storage::FileSystem::ReadFile;
+
+    let mut buf = [0u8; 256];
+    loop {
+        let mut read = 0u32;
+        let result = unsafe { ReadFile(handle, Some(&mut buf), Some(&mut read), None) };
+        match result {
+            Ok(()) if read == 0 => break,
+            Err(e) => {
+                let code = e.code().0 as u32;
+                if code == ERROR_BROKEN_PIPE.0 || code == ERROR_PIPE_NOT_CONNECTED.0 {
+                    break;
+                }
+                break;
+            }
+            Ok(()) => continue,
+        }
+    }
+    alive.store(false, Ordering::SeqCst);
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+}
+
+#[cfg(windows)]
+fn close_pipe(handle: PipeHandle) {
+    use windows::Win32::Foundation::CloseHandle;
+
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+}
+
+fn read_status_from_pipe() -> Option<HerdsmanStatus> {
+    #[cfg(windows)]
+    {
+        let handle = connect_pipe()?;
+        let response = read_pipe_message(handle)?;
+        close_pipe(handle);
+        return serde_json::from_str(&response).ok();
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn fetch_models(endpoint: &str, openai_endpoint: &str) -> Vec<HerdsmanModelInfo> {
+    let base = endpoint.trim_end_matches('/');
+    let url = format!("{base}/api/v1/models");
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let response = match client.get(&url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+
+    let raw: Vec<RawHerdsmanModel> = match response.json() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    map_models(raw, openai_endpoint)
+}
+
+fn emit_connected(app: &AppHandle, connected: bool) {
+    let _ = app.emit("herdsman-connected", connected);
+}
+
+fn emit_models(app: &AppHandle, models: &[HerdsmanModelInfo]) {
+    let _ = app.emit("herdsman-models", models.to_vec());
+}
+
+fn emit_install_detected(app: &AppHandle, installed: bool, launcher_path: Option<String>) {
+    let _ = app.emit(
+        "herdsman-install-detected",
+        HerdsmanInstallDetected {
+            installed,
+            launcher_path,
+        },
+    );
+}
+
+fn sleep_interruptible(duration: Duration) {
+    let until = std::time::Instant::now() + duration;
+    while SERVICE_RUNNING.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
+    let installed = launcher.is_some();
+    let mut changed = false;
+
+    update_runtime_state(|state| {
+        if state.launcher_path != launcher || state.installed != installed {
+            changed = true;
+        }
+        state.launcher_path = launcher.clone();
+        state.installed = installed;
+    });
+
+    if changed {
+        emit_install_detected(app, installed, launcher);
+    }
+}
+
+fn run_discovery(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let launcher = resolve_herdsman_launcher();
+        apply_launcher_discovery(app, launcher);
+    }
+}
+
+fn discovery_loop(app: AppHandle) {
+    run_discovery(&app);
+    while SERVICE_RUNNING.load(Ordering::SeqCst) {
+        sleep_interruptible(DISCOVER_INTERVAL);
+        if SERVICE_RUNNING.load(Ordering::SeqCst) {
+            run_discovery(&app);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn poll_models_during_session(
+    app: &AppHandle,
+    endpoint: &str,
+    openai_endpoint: &str,
+    pipe_alive: &Arc<AtomicBool>,
+) {
+    while SERVICE_RUNNING.load(Ordering::SeqCst) && pipe_alive.load(Ordering::SeqCst) {
+        sleep_interruptible(MODEL_POLL_INTERVAL);
+        if !SERVICE_RUNNING.load(Ordering::SeqCst) || !pipe_alive.load(Ordering::SeqCst) {
+            break;
+        }
+        let models = fetch_models(endpoint, openai_endpoint);
+        emit_models(app, &models);
+        update_runtime_state(|state| {
+            state.models = models;
+        });
+    }
+}
+
+#[cfg(windows)]
+fn run_connection_session(app: &AppHandle) -> bool {
+    let Some(handle) = connect_pipe() else {
+        return true;
+    };
+
+    // FlowyClaw: connected as soon as the status pipe is reachable.
+    emit_connected(app, true);
+    update_runtime_state(|state| {
+        state.connected = true;
+    });
+
+    let mut endpoint = None;
+    let mut openai_endpoint = None;
+
+    if let Some(response) = read_pipe_message(handle) {
+        if let Ok(status) = serde_json::from_str::<HerdsmanStatus>(&response) {
+            endpoint = Some(status.endpoint.clone());
+            openai_endpoint = Some(status.openai_endpoint.clone());
+
+            let models = fetch_models(&status.endpoint, &status.openai_endpoint);
+            emit_models(app, &models);
+            emit_connected(app, true);
+
+            update_runtime_state(|state| {
+                state.connected = true;
+                state.endpoint = Some(status.endpoint);
+                state.openai_endpoint = Some(status.openai_endpoint);
+                state.models = models;
+            });
+        }
+    }
+
+    let pipe_alive = Arc::new(AtomicBool::new(true));
+    if let Some(watch_handle) = duplicate_pipe_handle(handle) {
+        let alive = Arc::clone(&pipe_alive);
+        let watch = SendPipeHandle(watch_handle);
+        thread::spawn(move || watch_pipe_disconnect(watch, alive));
+    }
+
+    if let (Some(endpoint), Some(openai_endpoint)) = (endpoint.as_deref(), openai_endpoint.as_deref()) {
+        poll_models_during_session(app, endpoint, openai_endpoint, &pipe_alive);
+    } else {
+        while SERVICE_RUNNING.load(Ordering::SeqCst) && pipe_alive.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    close_pipe(handle);
+    pipe_alive.store(false, Ordering::SeqCst);
+
+    emit_connected(app, false);
+    emit_models(app, &[]);
+    update_runtime_state(|state| {
+        state.connected = false;
+        state.endpoint = None;
+        state.openai_endpoint = None;
+        state.models.clear();
+    });
+    true
+}
+
+#[cfg(not(windows))]
+fn run_connection_session(_app: &AppHandle) -> bool {
+    false
+}
+
+fn service_loop(app: AppHandle) {
+    while SERVICE_RUNNING.load(Ordering::SeqCst) {
+        #[cfg(windows)]
+        {
+            if !run_connection_session(&app) {
+                break;
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            emit_connected(&app, false);
+            emit_models(&app, &[]);
+            break;
+        }
+
+        if SERVICE_RUNNING.load(Ordering::SeqCst) {
+            sleep_interruptible(RECONNECT_DELAY);
+        }
+    }
+
+    emit_connected(&app, false);
+    emit_models(&app, &[]);
+    update_runtime_state(|state| {
+        state.connected = false;
+        state.endpoint = None;
+        state.openai_endpoint = None;
+        state.models.clear();
+    });
+}
+
+pub fn start_herdsman_service(app: AppHandle) {
+    if SERVICE_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let discover_app = app.clone();
+    thread::spawn(move || discovery_loop(discover_app));
+    thread::spawn(move || service_loop(app));
+}
+
+pub fn stop_herdsman_service() {
+    SERVICE_RUNNING.store(false, Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub fn herdsman_get_status() -> HerdsmanStatusSnapshot {
+    runtime_state()
+        .lock()
+        .map(|state| snapshot_from_state(&state))
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn is_valid_herdsman_exe(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+}
+
+#[cfg(windows)]
+fn resolve_from_callme_file() -> Option<String> {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let profile = env::var("USERPROFILE").ok()?;
+    let callme = PathBuf::from(profile).join(".herdsman").join("callme");
+    let content = fs::read_to_string(&callme).ok()?.trim().to_string();
+    if content.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(&content);
+    if is_valid_herdsman_exe(&path) {
+        Some(content)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn is_portable_herdsman_exe_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    if !lower.ends_with(".exe") || lower == "uninstall.exe" {
+        return false;
+    }
+    let rest = match lower.strip_prefix("herdsman-v") {
+        Some(r) => r,
+        None => return false,
+    };
+    let (version, _) = match rest.split_once('-') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    !version.is_empty()
+        && version
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+}
+
+#[cfg(windows)]
+fn find_exe_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::fs;
+
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path.file_name()?.to_string_lossy().to_lowercase();
+        if name.ends_with(".exe")
+            && name != "uninstall.exe"
+            && name.contains("herdsman")
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_exe_in_install_dir(dir: &std::path::Path) -> Option<String> {
+    if let Some(found) = find_exe_in_dir(dir) {
+        return Some(found.to_string_lossy().into_owned());
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(found) = find_exe_in_dir(&path) {
+            return Some(found.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn resolve_known_install_paths() -> Option<String> {
+    use std::env;
+    use std::path::PathBuf;
+
+    fn push_if_exists(candidates: &mut Vec<PathBuf>, path: Option<PathBuf>) {
+        if let Some(p) = path {
+            if p.exists() {
+                candidates.push(p);
+            }
+        }
+    }
+
+    let local_app_data = env::var("LOCALAPPDATA").ok();
+    let program_files = env::var("ProgramFiles").ok();
+    let program_files_x86 = env::var("ProgramFiles(x86)").ok();
+    let app_data = env::var("APPDATA").ok();
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(local) = &local_app_data {
+        push_if_exists(
+            &mut candidates,
+            Some(PathBuf::from(local).join("Programs").join("Herdsman").join("Herdsman.exe")),
+        );
+        push_if_exists(
+            &mut candidates,
+            Some(
+                PathBuf::from(local)
+                    .join("Programs")
+                    .join("starwave")
+                    .join("Herdsman")
+                    .join("herdsman.exe"),
+            ),
+        );
+        push_if_exists(
+            &mut candidates,
+            Some(PathBuf::from(local).join("Herdsman").join("Herdsman.exe")),
+        );
+    }
+    if let Some(pf) = &program_files {
+        push_if_exists(
+            &mut candidates,
+            Some(PathBuf::from(pf).join("Herdsman").join("Herdsman.exe")),
+        );
+        push_if_exists(
+            &mut candidates,
+            Some(
+                PathBuf::from(pf)
+                    .join("starwave")
+                    .join("Herdsman")
+                    .join("herdsman.exe"),
+            ),
+        );
+    }
+    if let Some(pf) = &program_files_x86 {
+        push_if_exists(
+            &mut candidates,
+            Some(PathBuf::from(pf).join("Herdsman").join("Herdsman.exe")),
+        );
+        push_if_exists(
+            &mut candidates,
+            Some(
+                PathBuf::from(pf)
+                    .join("starwave")
+                    .join("Herdsman")
+                    .join("herdsman.exe"),
+            ),
+        );
+    }
+    if let Some(ad) = &app_data {
+        let start_menu = PathBuf::from(ad)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs");
+        for name in ["Herdsman.lnk", "牧马人.lnk", "Flowy Herdsman.lnk"] {
+            push_if_exists(&mut candidates, Some(start_menu.join(name)));
+        }
+    }
+
+    if let Some(path) = candidates.into_iter().next() {
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    let scan_dirs: Vec<PathBuf> = [
+        program_files.as_ref().map(|p| {
+            PathBuf::from(p)
+                .join("starwave")
+                .join("Herdsman")
+        }),
+        program_files_x86.as_ref().map(|p| {
+            PathBuf::from(p)
+                .join("starwave")
+                .join("Herdsman")
+        }),
+        local_app_data.as_ref().map(|p| {
+            PathBuf::from(p)
+                .join("Programs")
+                .join("starwave")
+                .join("Herdsman")
+        }),
+        local_app_data.as_ref().map(|p| PathBuf::from(p).join("Programs").join("Herdsman")),
+        local_app_data.as_ref().map(|p| PathBuf::from(p).join("Herdsman")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for dir in scan_dirs {
+        if let Some(found) = find_exe_in_dir(&dir) {
+            return Some(found.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn resolve_from_registry() -> Option<String> {
+    use std::path::PathBuf;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    fn herdsman_display_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("herdsman") || lower.contains("牧马人")
+    }
+
+    fn scan_uninstall(hive: winreg::HKEY, subkey: &str) -> Option<String> {
+        let hk = RegKey::predef(hive);
+        let uninstall = hk.open_subkey(subkey).ok()?;
+        for subkey_name in uninstall.enum_keys().flatten() {
+            let sub = match uninstall.open_subkey(&subkey_name) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let display_name: String = sub.get_value("DisplayName").unwrap_or_default();
+            if !herdsman_display_name(&display_name) {
+                continue;
+            }
+            let install_location: String = sub.get_value("InstallLocation").unwrap_or_default();
+            let loc = install_location.trim();
+            if loc.is_empty() {
+                continue;
+            }
+            if let Some(exe) = find_exe_in_install_dir(PathBuf::from(loc).as_path()) {
+                return Some(exe);
+            }
+        }
+        None
+    }
+
+    let uninstall_paths = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ];
+
+    for (hive, path) in uninstall_paths {
+        if let Some(exe) = scan_uninstall(hive, path) {
+            return Some(exe);
+        }
+    }
+
+    let app_paths = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths")
+        .ok()?;
+    for name in ["herdsman.exe", "Herdsman.exe"] {
+        if let Ok(sub) = app_paths.open_subkey(name) {
+            let path: String = sub.get_value("").or_else(|_| sub.get_value("Path")).unwrap_or_default();
+            let path = path.trim().trim_matches('"').to_string();
+            if !path.is_empty() {
+                let candidate = if path.to_lowercase().ends_with(".exe") {
+                    PathBuf::from(&path)
+                } else {
+                    PathBuf::from(&path).join("herdsman.exe")
+                };
+                if is_valid_herdsman_exe(&candidate) {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn resolve_portable_exe_scan() -> Option<String> {
+    use ignore::WalkBuilder;
+    use std::env;
+    use std::path::PathBuf;
+
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(profile) = env::var("USERPROFILE") {
+        let root = PathBuf::from(&profile);
+        dirs.push(root.join("Downloads"));
+        dirs.push(root.join("Desktop"));
+    }
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local));
+    }
+    if let Ok(roaming) = env::var("APPDATA") {
+        dirs.push(PathBuf::from(roaming));
+    }
+
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+
+    for dir in dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let walker = WalkBuilder::new(&dir).max_depth(Some(3)).build();
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if !is_portable_herdsman_exe_name(name) {
+                continue;
+            }
+            let mtime = match path.metadata().and_then(|m| m.modified()) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let path_str = path.to_string_lossy().into_owned();
+            let replace = best
+                .as_ref()
+                .map(|(t, _)| mtime > *t)
+                .unwrap_or(true);
+            if replace {
+                best = Some((mtime, path_str));
+            }
+        }
+    }
+
+    best.map(|(_, path)| path)
+}
+
+#[cfg(windows)]
+fn resolve_herdsman_launcher() -> Option<String> {
+    resolve_from_callme_file()
+        .or_else(resolve_known_install_paths)
+        .or_else(resolve_from_registry)
+        .or_else(resolve_portable_exe_scan)
+}
+
+#[cfg(not(windows))]
+fn resolve_herdsman_launcher() -> Option<String> {
+    None
+}
+
+fn cached_launcher_or_discover() -> Option<String> {
+    if let Ok(guard) = runtime_state().lock() {
+        if let Some(ref path) = guard.launcher_path {
+            if std::path::Path::new(path).is_file() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    let discovered = resolve_herdsman_launcher();
+    if discovered.is_some() {
+        update_runtime_state(|state| {
+            state.launcher_path = discovered.clone();
+            state.installed = true;
+        });
+    }
+    discovered
+}
+
+fn spawn_herdsman(launcher: &str) -> Result<(), String> {
+    use std::path::Path;
+    use std::process::Command;
+
+    let path = Path::new(launcher);
+    if !path.is_file() {
+        update_runtime_state(|state| {
+            state.launcher_path = None;
+            state.installed = false;
+        });
+        return Err("Herdsman executable not found".into());
+    }
+
+    let work_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    Command::new(path)
+        .current_dir(work_dir)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn herdsman_start() -> Result<HerdsmanOpenResult, String> {
+    let launcher = cached_launcher_or_discover()
+        .ok_or_else(|| "Herdsman is not installed".to_string())?;
+    spawn_herdsman(&launcher)?;
+    Ok(HerdsmanOpenResult {
+        opened: "started".into(),
+        target: launcher,
+    })
+}
+
+#[tauri::command]
+pub async fn herdsman_open_or_install(app: tauri::AppHandle) -> Result<HerdsmanOpenResult, String> {
+    let connected = runtime_state()
+        .lock()
+        .map(|state| state.connected)
+        .unwrap_or(false);
+
+    #[cfg(windows)]
+    {
+        if let Some(launcher) = cached_launcher_or_discover() {
+            if connected {
+                tauri_plugin_opener::open_path(launcher.clone(), None::<&str>)
+                    .map_err(|e| e.to_string())?;
+                return Ok(HerdsmanOpenResult {
+                    opened: "app".into(),
+                    target: launcher,
+                });
+            }
+            spawn_herdsman(&launcher)?;
+            return Ok(HerdsmanOpenResult {
+                opened: "started".into(),
+                target: launcher,
+            });
+        }
+    }
+
+    tauri_plugin_opener::open_url(DEFAULT_INSTALL_URL, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let _ = app;
+    Ok(HerdsmanOpenResult {
+        opened: "install-page".into(),
+        target: DEFAULT_INSTALL_URL.into(),
+    })
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+
+    #[test]
+    fn map_models_reads_runtime_context_size() {
+        let raw = vec![RawHerdsmanModel {
+            id: None,
+            name: "demo-model".into(),
+            r#type: Some("text-generation".into()),
+            status: Some("installed".into()),
+            icon: None,
+            runtime_info: Some(RuntimeInfo {
+                context_size: Some(131_072),
+                port: None,
+                inference_engine: None,
+                run_status: Some("running".into()),
+            }),
+        }];
+        let models = map_models(raw, "http://127.0.0.1:8080/v1");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].context_window, Some(131_072));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn herdsman_status_detects_running_instance() {
+        let status = read_status_from_pipe().expect("Herdsman should be detectable when running");
+        assert!(
+            status.endpoint.contains("127.0.0.1"),
+            "unexpected endpoint: {}",
+            status.endpoint
+        );
+        assert!(!status.openai_endpoint.is_empty());
+    }
+}

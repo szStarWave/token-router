@@ -1,0 +1,24 @@
+[[permission]]
+identifier = "allow-ota-app-version"
+description = "Returns the desktop app version for OTA."
+commands.allow = ["ota_app_version"]
+
+[[permission]]
+identifier = "allow-ota-check-now"
+description = "Manually triggers an OTA update check."
+commands.allow = ["ota_check_now"]
+
+[[permission]]
+identifier = "allow-ota-download-update"
+description = "Downloads a pending OTA update package."
+commands.allow = ["ota_download_update"]
+
+[[permission]]
+identifier = "allow-ota-do-update"
+description = "Applies a downloaded OTA update and restarts."
+commands.allow = ["ota_do_update"]
+
+[[permission]]
+identifier = "allow-ota-get-post-restart-notice"
+description = "Reads and consumes the post-OTA restart notice."
+commands.allow = ["ota_get_post_restart_notice"]

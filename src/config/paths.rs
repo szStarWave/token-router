@@ -40,11 +40,32 @@ pub fn stats_file() -> anyhow::Result<PathBuf> {
     Ok(app_dir()?.join("stats.json"))
 }
 
+/// `{app_dir}/callme` — absolute path to the executable that can start Token Router.
+pub fn callme_file() -> anyhow::Result<PathBuf> {
+    Ok(app_dir()?.join("callme"))
+}
+
+/// Write `~/.token-router/callme` with the current executable path (best-effort).
+fn ensure_callme() {
+    let Ok(path) = std::env::current_exe() else {
+        return;
+    };
+    if !path.is_file() {
+        return;
+    }
+    let Ok(callme) = callme_file() else {
+        return;
+    };
+    let content = format!("{}\n", path.display());
+    let _ = std::fs::write(callme, content);
+}
+
 pub fn ensure_app_dirs() -> anyhow::Result<PathBuf> {
     let root = app_dir()?;
     std::fs::create_dir_all(&root)?;
     std::fs::create_dir_all(sessions_dir()?)?;
     std::fs::create_dir_all(logs_dir()?)?;
+    ensure_callme();
     Ok(root)
 }
 

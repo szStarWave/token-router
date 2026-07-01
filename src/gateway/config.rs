@@ -188,7 +188,7 @@ impl AppConfig {
     }
 
     pub fn gateway_base_url(&self) -> String {
-        format!("http://{}", self.listen_addr)
+        crate::config::setup::client_gateway_http_url(&self.listen_addr)
     }
 
     pub fn resolve_upstream(&self, agent_id: Option<&str>, tier: &str) -> ResolvedUpstream {

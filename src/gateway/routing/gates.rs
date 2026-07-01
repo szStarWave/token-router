@@ -18,6 +18,12 @@ pub fn check_hard_gates(
         });
     }
 
+    if signals.user_rejects_answer {
+        return Some(HardGate {
+            code: "GATE_USER_REJECT",
+        });
+    }
+
     if ctx_overflow_triggers(signals, step_kind, ctx_edge_max) {
         return Some(HardGate {
             code: "GATE_CTX_OVERFLOW",
@@ -96,6 +102,7 @@ mod tests {
             intent_plan: false,
             multimodal: false,
             consecutive_tool_error_streak: 0,
+            user_rejects_answer: false,
         }
     }
 

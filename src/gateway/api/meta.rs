@@ -79,6 +79,51 @@ pub fn tier_name(t: RouteTier) -> &'static str {
     }
 }
 
+/// Upstream that actually served the response (after cascade / quality fallback).
+pub fn served_tier_name(decision: &RouteDecision, fallback: bool) -> &'static str {
+    if fallback {
+        "cloud"
+    } else {
+        match decision.route {
+            RouteTier::Cloud => "cloud",
+            RouteTier::Edge | RouteTier::Cascade => "edge",
+        }
+    }
+}
+
+pub fn log_route_decision(decision: &RouteDecision, stream: bool, agent_id: Option<&str>) {
+    tracing::info!(
+        agent_id = agent_id.unwrap_or("default"),
+        route = tier_name(decision.route),
+        step_kind = step_kind_name(decision.step_kind),
+        profile = profile_name(decision.profile),
+        difficulty = decision.difficulty,
+        stream,
+        tok_in = decision.tokens_in_estimate,
+        casual_quality_fallback = decision.casual_quality_fallback,
+        reasons = %decision.reason_codes.join(","),
+        "route decision"
+    );
+}
+
+pub fn log_upstream_served(
+    decision: &RouteDecision,
+    served_tier: &str,
+    fallback: bool,
+    stream: bool,
+    agent_id: Option<&str>,
+) {
+    tracing::info!(
+        agent_id = agent_id.unwrap_or("default"),
+        route = tier_name(decision.route),
+        served = served_tier,
+        fallback,
+        stream,
+        step_kind = step_kind_name(decision.step_kind),
+        "upstream served"
+    );
+}
+
 pub fn step_kind_name(k: StepKind) -> &'static str {
     match k {
         StepKind::HeartbeatAck => "heartbeat_ack",
@@ -103,3 +148,51 @@ pub fn profile_name(p: Profile) -> &'static str {
         Profile::Privacy => "privacy",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::routing::{RouteDecision, RouteTier, StepKind, Profile, RoutingMode, WorkStrategy};
+    use crate::gateway::multimodal::MultimodalStrategy;
+
+    fn sample_decision(route: RouteTier) -> RouteDecision {
+        RouteDecision {
+            route,
+            profile: Profile::Balanced,
+            mode: RoutingMode::Cascade,
+            step_kind: StepKind::DirectChat,
+            difficulty: 0.2,
+            reason_codes: vec!["STEP_DIRECT_CHAT".into()],
+            tokens_in_estimate: 100,
+            tokens_out_estimate: 50,
+            cloud_input_saved_estimate: 100,
+            conversation_key: "conv:test".into(),
+            assistant_failed_recent: false,
+            multimodal_strategy: MultimodalStrategy::None,
+            work_strategy: WorkStrategy::None,
+            force_cloud_sticky: false,
+            edge_ok_probability: None,
+            classifier_features: None,
+            casual_quality_fallback: true,
+        }
+    }
+
+    #[test]
+    fn served_tier_edge_direct() {
+        let d = sample_decision(RouteTier::Edge);
+        assert_eq!(served_tier_name(&d, false), "edge");
+    }
+
+    #[test]
+    fn served_tier_cloud_on_fallback() {
+        let d = sample_decision(RouteTier::Edge);
+        assert_eq!(served_tier_name(&d, true), "cloud");
+    }
+
+    #[test]
+    fn served_tier_cloud_direct() {
+        let d = sample_decision(RouteTier::Cloud);
+        assert_eq!(served_tier_name(&d, false), "cloud");
+    }
+}
+

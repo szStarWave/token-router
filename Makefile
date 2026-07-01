@@ -78,7 +78,7 @@ help:
 	@echo "  stats-global     Global stats from stats.json"
 	@echo "  stats-zh         Session stats (Chinese)"
 	@echo ""
-	@echo "  ui-build         Build desktop web UI (Vite → desktop/dist)"
+	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
 	@echo "  tauri-build      Build Tauri desktop app (release)"
 	@echo ""
@@ -194,13 +194,16 @@ stats-zh:
 stats-global-zh:
 	$(ROUTER) $(CONFIG_FLAG) stats --global --lang zh
 
+# Desktop app (Tauri + frontend in desktop/frontend/)
+DESKTOP     := desktop
+PNPM        ?= pnpm
+
 ui-build:
-	npm --prefix desktop run build
+	$(PNPM) --dir $(DESKTOP)/frontend build
 
 tauri-dev:
-	npm --prefix desktop run tauri:dev
+	$(PNPM) --dir $(DESKTOP) run tauri:dev
 
 tauri-build:
-	npm --prefix desktop run build
-	npm --prefix desktop run icons:generate
-	npm --prefix desktop run tauri:build
+	$(PNPM) --dir $(DESKTOP) run icons:generate
+	$(PNPM) --dir $(DESKTOP) run tauri:build

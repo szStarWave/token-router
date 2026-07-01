@@ -18,6 +18,9 @@ pub struct GatewayStatus {
     pub status: &'static str,
     pub version: &'static str,
     pub listen: String,
+    pub listen_lan: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lan_base_url: Option<String>,
     pub pid: u32,
     pub uptime_secs: u64,
     pub edge_configured: bool,
@@ -79,6 +82,8 @@ pub async fn status(State(state): State<AppState>) -> Json<GatewayStatus> {
         status: "running",
         version: env!("CARGO_PKG_VERSION"),
         listen: config.listen_addr.clone(),
+        listen_lan: crate::config::setup::listen_lan_from_addr(&config.listen_addr),
+        lan_base_url: crate::config::setup::lan_client_http_url(&config.listen_addr),
         pid: std::process::id(),
         uptime_secs: state.runtime.started_at.elapsed().as_secs(),
         edge_configured: config.edge_base_url.is_some(),
@@ -114,6 +119,9 @@ pub struct LogsQuery {
     /// Byte offset for incremental reads. Omit on first load to tail recent lines.
     #[serde(default)]
     pub offset: Option<u64>,
+    /// Read a chunk ending at this byte offset (lazy-load older lines).
+    #[serde(default)]
+    pub before_offset: Option<u64>,
     /// Max bytes per response (default 64 KiB, cap 512 KiB).
     #[serde(default)]
     pub max_bytes: Option<u64>,
@@ -132,7 +140,11 @@ pub async fn logs(
     let config = state.config();
     let path = config.data_dir.join("logs").join("gateway.log");
 
-    match logging::read_log_tail(&path, query.offset, Some(max_bytes)) {
+    match if let Some(before) = query.before_offset {
+        logging::read_log_before(&path, before, Some(max_bytes))
+    } else {
+        logging::read_log_tail(&path, query.offset, Some(max_bytes))
+    } {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,

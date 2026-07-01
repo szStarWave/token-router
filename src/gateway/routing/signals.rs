@@ -33,6 +33,8 @@ pub struct RequestSignals {
     pub multimodal: bool,
     /// Trailing consecutive `role=tool` messages whose content matches error keywords.
     pub consecutive_tool_error_streak: u32,
+    /// Latest user message rejects the immediately preceding assistant reply.
+    pub user_rejects_answer: bool,
 }
 
 /// Short, tool-loop-free turn (daily chat). Tool definitions in the request are ignored.
@@ -212,6 +214,13 @@ impl SignalExtractor {
 
         let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
 
+        let user_rejects_answer = req.messages.len() >= 2
+            && req.messages[req.messages.len() - 1].role == Role::User
+            && req.messages[req.messages.len() - 2].role == Role::Assistant
+            && super::reject_intent::contains_reject_intent(&message_text(
+                &req.messages[req.messages.len() - 1],
+            ));
+
         let risky_tool_tier1 = prev_assistant
             .and_then(|m| m.tool_calls.as_ref())
             .is_some_and(|calls| {
@@ -252,6 +261,7 @@ impl SignalExtractor {
             intent_plan,
             multimodal,
             consecutive_tool_error_streak,
+            user_rejects_answer,
         }
     }
 }
@@ -531,6 +541,7 @@ mod tests {
             intent_plan: false,
             multimodal: false,
             consecutive_tool_error_streak: 0,
+            user_rejects_answer: false,
         };
         assert!(is_casual_chat(&signals));
     }
@@ -566,6 +577,7 @@ mod tests {
             intent_plan: false,
             multimodal: false,
             consecutive_tool_error_streak: 0,
+            user_rejects_answer: false,
         };
         assert!(!is_casual_chat(&signals));
     }
@@ -601,6 +613,7 @@ mod tests {
             intent_plan: false,
             multimodal: false,
             consecutive_tool_error_streak: 0,
+            user_rejects_answer: false,
         };
         assert!(is_casual_chat(&signals));
         signals.intent_easy = false;

@@ -345,16 +345,34 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Returns the desktop app version for feedback.",
+          "type": "string",
+          "const": "allow-feedback-app-version",
+          "markdownDescription": "Returns the desktop app version for feedback."
+        },
+        {
+          "description": "Submits user feedback to WeChat Work webhook.",
+          "type": "string",
+          "const": "allow-feedback-submit",
+          "markdownDescription": "Submits user feedback to WeChat Work webhook."
+        },
+        {
           "description": "Enables the gateway_is_running command without any pre-configured scope.",
           "type": "string",
           "const": "allow-gateway-is-running",
           "markdownDescription": "Enables the gateway_is_running command without any pre-configured scope."
         },
         {
-          "description": "Enables the gateway_read_logs command without any pre-configured scope.",
+          "description": "Enables the gateway_open_logs_dir command.",
+          "type": "string",
+          "const": "allow-gateway-open-logs-dir",
+          "markdownDescription": "Enables the gateway_open_logs_dir command."
+        },
+        {
+          "description": "Enables the gateway_read_logs command.",
           "type": "string",
           "const": "allow-gateway-read-logs",
-          "markdownDescription": "Enables the gateway_read_logs command without any pre-configured scope."
+          "markdownDescription": "Enables the gateway_read_logs command."
         },
         {
           "description": "Enables the gateway_restart command.",
@@ -387,16 +405,94 @@
           "markdownDescription": "Enables the gateway_url command without any pre-configured scope."
         },
         {
+          "description": "Enables the herdsman_get_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-herdsman-get-status",
+          "markdownDescription": "Enables the herdsman_get_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the herdsman_open_or_install command.",
+          "type": "string",
+          "const": "allow-herdsman-open",
+          "markdownDescription": "Enables the herdsman_open_or_install command."
+        },
+        {
+          "description": "Enables the herdsman_open_or_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-herdsman-open-or-install",
+          "markdownDescription": "Enables the herdsman_open_or_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the herdsman_start command.",
+          "type": "string",
+          "const": "allow-herdsman-start",
+          "markdownDescription": "Enables the herdsman_start command."
+        },
+        {
+          "description": "Enables the herdsman_get_status command.",
+          "type": "string",
+          "const": "allow-herdsman-status",
+          "markdownDescription": "Enables the herdsman_get_status command."
+        },
+        {
+          "description": "Returns the desktop app version for OTA.",
+          "type": "string",
+          "const": "allow-ota-app-version",
+          "markdownDescription": "Returns the desktop app version for OTA."
+        },
+        {
+          "description": "Manually triggers an OTA update check.",
+          "type": "string",
+          "const": "allow-ota-check-now",
+          "markdownDescription": "Manually triggers an OTA update check."
+        },
+        {
+          "description": "Applies a downloaded OTA update and restarts.",
+          "type": "string",
+          "const": "allow-ota-do-update",
+          "markdownDescription": "Applies a downloaded OTA update and restarts."
+        },
+        {
+          "description": "Downloads a pending OTA update package.",
+          "type": "string",
+          "const": "allow-ota-download-update",
+          "markdownDescription": "Downloads a pending OTA update package."
+        },
+        {
+          "description": "Reads and consumes the post-OTA restart notice.",
+          "type": "string",
+          "const": "allow-ota-get-post-restart-notice",
+          "markdownDescription": "Reads and consumes the post-OTA restart notice."
+        },
+        {
           "description": "Enables the show_main_window command.",
           "type": "string",
           "const": "allow-show-main-window",
           "markdownDescription": "Enables the show_main_window command."
         },
         {
+          "description": "Denies the feedback_app_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-app-version",
+          "markdownDescription": "Denies the feedback_app_version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback_submit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-submit",
+          "markdownDescription": "Denies the feedback_submit command without any pre-configured scope."
+        },
+        {
           "description": "Denies the gateway_is_running command without any pre-configured scope.",
           "type": "string",
           "const": "deny-gateway-is-running",
           "markdownDescription": "Denies the gateway_is_running command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gateway_open_logs_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-open-logs-dir",
+          "markdownDescription": "Denies the gateway_open_logs_dir command without any pre-configured scope."
         },
         {
           "description": "Denies the gateway_read_logs command without any pre-configured scope.",
@@ -433,6 +529,54 @@
           "type": "string",
           "const": "deny-gateway-url",
           "markdownDescription": "Denies the gateway_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the herdsman_get_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-herdsman-get-status",
+          "markdownDescription": "Denies the herdsman_get_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the herdsman_open_or_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-herdsman-open-or-install",
+          "markdownDescription": "Denies the herdsman_open_or_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the herdsman_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-herdsman-start",
+          "markdownDescription": "Denies the herdsman_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ota_app_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ota-app-version",
+          "markdownDescription": "Denies the ota_app_version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ota_check_now command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ota-check-now",
+          "markdownDescription": "Denies the ota_check_now command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ota_do_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ota-do-update",
+          "markdownDescription": "Denies the ota_do_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ota_download_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ota-download-update",
+          "markdownDescription": "Denies the ota_download_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ota_get_post_restart_notice command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ota-get-post-restart-notice",
+          "markdownDescription": "Denies the ota_get_post_restart_notice command without any pre-configured scope."
         },
         {
           "description": "Denies the show_main_window command without any pre-configured scope.",

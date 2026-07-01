@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-feedback-app-version"
+description = "Returns the desktop app version for feedback."
+commands.allow = ["feedback_app_version"]
+
+[[permission]]
+identifier = "allow-feedback-submit"
+description = "Submits user feedback to WeChat Work webhook."
+commands.allow = ["feedback_submit"]

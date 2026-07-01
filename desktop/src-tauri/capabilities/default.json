@@ -22,6 +22,18 @@
     "allow-gateway-stop",
     "allow-gateway-restart",
     "allow-gateway-status",
-    "allow-show-main-window"
+    "allow-gateway-read-logs",
+    "allow-gateway-open-logs-dir",
+    "allow-show-main-window",
+    "allow-herdsman-open",
+    "allow-herdsman-status",
+    "allow-herdsman-start",
+    "allow-feedback-app-version",
+    "allow-feedback-submit",
+    "allow-ota-app-version",
+    "allow-ota-check-now",
+    "allow-ota-download-update",
+    "allow-ota-do-update",
+    "allow-ota-get-post-restart-notice"
   ]
 }

@@ -19,6 +19,31 @@ description = "Enables gateway status query commands."
 commands.allow = ["gateway_is_running", "gateway_url", "gateway_status"]
 
 [[permission]]
+identifier = "allow-gateway-read-logs"
+description = "Enables the gateway_read_logs command."
+commands.allow = ["gateway_read_logs"]
+
+[[permission]]
+identifier = "allow-gateway-open-logs-dir"
+description = "Enables the gateway_open_logs_dir command."
+commands.allow = ["gateway_open_logs_dir"]
+
+[[permission]]
 identifier = "allow-show-main-window"
 description = "Enables the show_main_window command."
 commands.allow = ["show_main_window"]
+
+[[permission]]
+identifier = "allow-herdsman-open"
+description = "Enables the herdsman_open_or_install command."
+commands.allow = ["herdsman_open_or_install"]
+
+[[permission]]
+identifier = "allow-herdsman-status"
+description = "Enables the herdsman_get_status command."
+commands.allow = ["herdsman_get_status"]
+
+[[permission]]
+identifier = "allow-herdsman-start"
+description = "Enables the herdsman_start command."
+commands.allow = ["herdsman_start"]

@@ -9,7 +9,9 @@ use serde::Serialize;
 
 use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::api::admin;
+use crate::gateway::api::anthropic::anthropic_messages_handler;
 use crate::gateway::api::chat::chat_completions;
+use crate::gateway::api::responses::responses_handler;
 use crate::gateway::api::setup;
 use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::config_manager::ConfigManager;
@@ -64,6 +66,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/shutdown", post(admin::shutdown))
         .route("/v1/admin/restart", post(admin::restart))
         .route("/v1/chat/completions", post(chat_completions_handler))
+        .route("/v1/responses", post(responses_handler))
+        .route("/anthropic/v1/messages", post(anthropic_messages_handler))
+        .route("/v1/messages", post(anthropic_messages_handler))
         .with_state(state)
 }
 
@@ -85,15 +90,19 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+pub fn extract_agent_id(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("x-agent-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 async fn chat_completions_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<crate::gateway::api::openai::ChatCompletionRequest>,
 ) -> crate::gateway::error::AppResult<impl axum::response::IntoResponse> {
-    let agent_id = headers
-        .get("x-agent-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let agent_id = extract_agent_id(&headers);
     chat_completions(state, headers, agent_id, req).await
 }

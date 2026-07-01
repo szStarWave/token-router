@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-herdsman-get-status"
+description = "Enables the herdsman_get_status command without any pre-configured scope."
+commands.allow = ["herdsman_get_status"]
+
+[[permission]]
+identifier = "deny-herdsman-get-status"
+description = "Denies the herdsman_get_status command without any pre-configured scope."
+commands.deny = ["herdsman_get_status"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gateway-open-logs-dir"
+description = "Enables the gateway_open_logs_dir command without any pre-configured scope."
+commands.allow = ["gateway_open_logs_dir"]
+
+[[permission]]
+identifier = "deny-gateway-open-logs-dir"
+description = "Denies the gateway_open_logs_dir command without any pre-configured scope."
+commands.deny = ["gateway_open_logs_dir"]

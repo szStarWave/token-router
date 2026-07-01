@@ -76,6 +76,9 @@ pub struct RouteDecision {
     /// Features captured at decision time for classifier learning.
     #[serde(skip)]
     pub classifier_features: Option<FeatureVector>,
+    /// DirectChat/HeartbeatAck: try edge first, cloud on quality gate failure.
+    #[serde(skip)]
+    pub casual_quality_fallback: bool,
 }
 
 pub fn decide(
@@ -116,6 +119,7 @@ pub fn decide(
             edge_load,
             &mut reason_codes,
         );
+        let route = apply_casual_no_cascade(route, step_kind, &mut reason_codes);
         let route = finalize_route(route, config, &mut reason_codes);
         sessions.record_tokens(&conv_key, signals.tok_total_in);
         return finish(
@@ -133,6 +137,7 @@ pub fn decide(
             work,
             None,
             Some(features),
+            config,
         );
     }
 
@@ -162,6 +167,7 @@ pub fn decide(
             WorkStrategy::None,
             None,
             Some(features),
+            config,
         );
     }
 
@@ -234,6 +240,7 @@ pub fn decide(
         multimodal,
         &mut reason_codes,
     );
+    let route = apply_casual_no_cascade(route, step_kind, &mut reason_codes);
     let (route, work_strategy, multimodal_strategy) = apply_edge_busy_fallback(
         route,
         work_strategy,
@@ -261,7 +268,23 @@ pub fn decide(
         work_strategy,
         edge_ok_probability,
         Some(features),
+        config,
     )
+}
+
+fn apply_casual_no_cascade(
+    route: RouteTier,
+    step_kind: StepKind,
+    reason_codes: &mut Vec<String>,
+) -> RouteTier {
+    if !matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck) {
+        return route;
+    }
+    if route != RouteTier::Cascade {
+        return route;
+    }
+    reason_codes.push("CASUAL_PREFER_EDGE".to_string());
+    RouteTier::Edge
 }
 
 fn apply_classifier(
@@ -345,8 +368,8 @@ fn apply_multimodal_route(
             RouteTier::Edge
         }
         MultimodalStrategy::Probe => {
-            reason_codes.push("MULTIMODAL_PROBE".to_string());
-            RouteTier::Cascade
+            reason_codes.push("MULTIMODAL_PROBE_EDGE".to_string());
+            RouteTier::Edge
         }
     };
 
@@ -384,7 +407,7 @@ fn finish(
     mode: RoutingMode,
     step_kind: StepKind,
     signals: &super::signals::RequestSignals,
-    reason_codes: Vec<String>,
+    mut reason_codes: Vec<String>,
     cloud_input_saved: u32,
     difficulty: f32,
     conversation_key: String,
@@ -393,10 +416,18 @@ fn finish(
     work_strategy: WorkStrategy,
     edge_ok_probability: Option<f32>,
     classifier_features: Option<FeatureVector>,
+    config: &AppConfig,
 ) -> RouteDecision {
     let force_cloud_sticky = reason_codes
         .iter()
         .any(|c| c == "GATE_TOOL_ERROR_STREAK");
+    let casual_quality_fallback = matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck)
+        && route == RouteTier::Edge
+        && edge_configured(config)
+        && cloud_configured(config);
+    if casual_quality_fallback {
+        reason_codes.push("CASUAL_EDGE_FALLBACK".to_string());
+    }
     RouteDecision {
         route,
         profile,
@@ -414,6 +445,7 @@ fn finish(
         force_cloud_sticky,
         edge_ok_probability,
         classifier_features,
+        casual_quality_fallback,
     }
 }
 

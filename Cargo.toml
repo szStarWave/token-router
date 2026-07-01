@@ -22,6 +22,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 futures = "0.3"
+local-ip-address = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

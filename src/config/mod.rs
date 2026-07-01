@@ -12,6 +12,6 @@ pub use setup::{
     view_from_config, CLOUD_MODEL_AUTO,
 };
 pub use paths::{
-    app_dir, config_file, display_app_dir, display_home, ensure_app_dirs, gateway_log_file,
-    logs_dir, pid_file, sessions_dir, stats_file, user_home,
+    app_dir, callme_file, config_file, display_app_dir, display_home, ensure_app_dirs,
+    gateway_log_file, logs_dir, pid_file, sessions_dir, stats_file, user_home,
 };

@@ -1,10 +1,13 @@
 pub mod data;
 pub mod metrics;
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+const MAX_LATENCY_SAMPLES: usize = 2048;
 
 use serde::Serialize;
 
@@ -44,6 +47,7 @@ impl StatsScope {
 pub struct GatewayStats {
     global: Mutex<StatsData>,
     session: Mutex<StatsData>,
+    latency_samples: Mutex<VecDeque<u64>>,
     path: PathBuf,
     dirty: AtomicBool,
     session_started: Instant,
@@ -56,6 +60,7 @@ impl GatewayStats {
         Ok(std::sync::Arc::new(Self {
             global: Mutex::new(data),
             session: Mutex::new(StatsData::default()),
+            latency_samples: Mutex::new(VecDeque::new()),
             path,
             dirty: AtomicBool::new(false),
             session_started: Instant::now(),
@@ -67,6 +72,7 @@ impl GatewayStats {
         std::sync::Arc::new(Self {
             global: Mutex::new(StatsData::default()),
             session: Mutex::new(StatsData::default()),
+            latency_samples: Mutex::new(VecDeque::new()),
             path: PathBuf::from("/tmp/flowy-test-stats.json"),
             dirty: AtomicBool::new(false),
             session_started: Instant::now(),
@@ -91,6 +97,16 @@ impl GatewayStats {
 
     pub fn record_upstream_metrics(&self, metrics: &UpstreamCallMetrics) {
         self.with_mut(|d| d.record_upstream_metrics(metrics));
+        if metrics.latency_ms > 0 {
+            let mut samples = self
+                .latency_samples
+                .lock()
+                .expect("stats latency_samples mutex");
+            if samples.len() >= MAX_LATENCY_SAMPLES {
+                samples.pop_front();
+            }
+            samples.push_back(metrics.latency_ms);
+        }
     }
 
     pub fn record_final_response(&self, metrics: &FinalResponseMetrics) {
@@ -149,7 +165,7 @@ impl GatewayStats {
             StatsScope::Session => self.session.lock().expect("stats session mutex").clone(),
             StatsScope::Global => self.global.lock().expect("stats global mutex").clone(),
         };
-        build_snapshot(
+        let mut snap = build_snapshot(
             &data,
             scope,
             self.path.display().to_string(),
@@ -158,7 +174,15 @@ impl GatewayStats {
             classifier,
             effective_routing,
             agent_budgets,
-        )
+        );
+        let samples = self
+            .latency_samples
+            .lock()
+            .expect("stats latency_samples mutex");
+        let (p95_ms, p99_ms) = latency_percentiles(&samples);
+        snap.latency.p95_ms = p95_ms;
+        snap.latency.p99_ms = p99_ms;
+        snap
     }
 
     pub fn session_uptime_secs(&self) -> u64 {
@@ -270,6 +294,7 @@ pub fn build_snapshot(
         requests_total: requests,
         requests_stream: data.requests_stream,
         requests_non_stream: data.requests_non_stream,
+        requests_cancelled: data.requests_cancelled,
         requests_per_minute,
         routing: RouteCounts {
             edge: route_edge,
@@ -313,11 +338,11 @@ pub fn build_snapshot(
         latency: LatencyStats {
             avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
             avg_ttft_ms: avg(data.ttft_sum_ms, data.ttft_count),
-            avg_tps: if data.tps_count > 0 {
-                (data.tps_sum_x1000 as f64) / 1000.0 / data.tps_count as f64
-            } else {
-                0.0
-            },
+            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+            p95_ms: 0.0,
+            p99_ms: 0.0,
             upstream_samples: data.latency_count,
             ttft_samples: data.ttft_count,
             tps_samples: data.tps_count,
@@ -376,6 +401,31 @@ fn avg(sum: u64, count: u64) -> f64 {
     }
 }
 
+fn avg_tps(sum_x1000: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        (sum_x1000 as f64) / 1000.0 / count as f64
+    }
+}
+
+fn latency_percentiles(samples: &VecDeque<u64>) -> (f64, f64) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sorted: Vec<u64> = samples.iter().copied().collect();
+    sorted.sort_unstable();
+    (percentile(&sorted, 95.0), percentile(&sorted, 99.0))
+}
+
+fn percentile(sorted: &[u64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p / 100.0).round() as usize;
+    sorted[idx.min(sorted.len() - 1)] as f64
+}
+
 fn tier_token_stats(input: u64, output: u64, cached: u64) -> TierTokenStats {
     TierTokenStats {
         input,
@@ -413,6 +463,7 @@ pub struct StatsSnapshot {
     pub requests_total: u64,
     pub requests_stream: u64,
     pub requests_non_stream: u64,
+    pub requests_cancelled: u64,
     pub requests_per_minute: f64,
     pub routing: RouteCounts,
     pub upstream: UpstreamCounts,
@@ -540,6 +591,10 @@ pub struct LatencyStats {
     pub avg_request_ms: f64,
     pub avg_ttft_ms: f64,
     pub avg_tps: f64,
+    pub edge_tps: f64,
+    pub cloud_tps: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
     pub upstream_samples: u64,
     pub ttft_samples: u64,
     pub tps_samples: u64,
@@ -595,6 +650,7 @@ mod tests {
             force_cloud_sticky: false,
             edge_ok_probability: None,
             classifier_features: None,
+            casual_quality_fallback: false,
         }
     }
 
@@ -631,6 +687,10 @@ mod tests {
         assert_eq!(snap.cache.hit_requests, 1);
         assert_eq!(snap.cache.cached_tokens, 80);
         assert!(snap.latency.avg_ttft_ms > 0.0);
+        assert!(snap.latency.edge_tps > 0.0);
+        assert!(snap.latency.cloud_tps > 0.0);
+        assert!(snap.latency.p95_ms >= 200.0);
+        assert!(snap.latency.p99_ms >= snap.latency.p95_ms);
         assert_eq!(snap.served.edge, 1);
     }
 

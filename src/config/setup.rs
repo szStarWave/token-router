@@ -29,6 +29,9 @@ pub struct GatewayConfigView {
     pub classifier_prior_from_heuristic: bool,
     pub listen_port: u16,
     pub listen_lan: bool,
+    pub api_key_set: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,6 +59,7 @@ pub struct GatewayConfigPatch {
     pub classifier_prior_from_heuristic: Option<bool>,
     pub listen_port: Option<u16>,
     pub listen_lan: Option<bool>,
+    pub api_key: Option<String>,
 }
 
 impl GatewayConfigPatch {
@@ -83,6 +87,7 @@ impl GatewayConfigPatch {
             && self.classifier_prior_from_heuristic.is_none()
             && self.listen_port.is_none()
             && self.listen_lan.is_none()
+            && self.api_key.is_none()
     }
 }
 
@@ -161,6 +166,40 @@ pub fn build_listen_addr(port: u16, lan: bool) -> String {
     format!("{host}:{port}")
 }
 
+/// Best-effort primary LAN IPv4 for display when gateway binds on `0.0.0.0`.
+pub fn primary_lan_ipv4() -> Option<String> {
+    use std::net::IpAddr;
+    match local_ip_address::local_ip().ok()? {
+        IpAddr::V4(ip) if !ip.is_loopback() => Some(ip.to_string()),
+        _ => None,
+    }
+}
+
+/// HTTP base URL reachable from other devices on the LAN (`None` when LAN bind is off).
+pub fn lan_client_http_url(listen: &str) -> Option<String> {
+    if !listen_lan_from_addr(listen) {
+        return None;
+    }
+    let ip = primary_lan_ipv4()?;
+    Some(format!("http://{}:{}", ip, listen_port_from_addr(listen)))
+}
+
+/// HTTP base URL for local clients (desktop UI, CLI) to reach `gateway.listen`.
+/// Wildcard bind addresses like `0.0.0.0` are mapped to loopback.
+pub fn client_gateway_http_url(listen: &str) -> String {
+    let port = listen_port_from_addr(listen);
+    let host = listen
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim())
+        .unwrap_or(listen.trim());
+    let client_host = if listen_lan_from_addr(listen) {
+        "127.0.0.1"
+    } else {
+        host
+    };
+    format!("http://{client_host}:{port}")
+}
+
 pub fn normalize_listen_port(port: u16) -> Result<u16, String> {
     if (LISTEN_PORT_MIN..=LISTEN_PORT_MAX).contains(&port) {
         Ok(port)
@@ -196,6 +235,14 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         classifier_prior_from_heuristic: g.classifier_prior_from_heuristic,
         listen_port: listen_port_from_addr(&g.listen),
         listen_lan: listen_lan_from_addr(&g.listen),
+        api_key_set: g
+            .api_key
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty()),
+        api_key_preview: g
+            .api_key
+            .as_deref()
+            .and_then(mask_gateway_api_key),
     }
 }
 
@@ -414,12 +461,57 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     if patch.listen_port.is_some() || patch.listen_lan.is_some() {
         g.listen = build_listen_addr(listen_port, listen_lan);
     }
+    if let Some(key) = &patch.api_key {
+        let k = key.trim();
+        g.api_key = if k.is_empty() {
+            None
+        } else {
+            Some(normalize_gateway_api_key(k)?)
+        };
+    }
     if g.adaptive_verify_rate_floor > g.adaptive_verify_rate_ceiling {
         return Err(
             "adaptive_verify_rate_floor must be <= adaptive_verify_rate_ceiling".into(),
         );
     }
     Ok(())
+}
+
+fn normalize_gateway_api_key(key: &str) -> Result<String, String> {
+    let k = key.trim();
+    if k.is_empty() {
+        return Err("gateway.api_key cannot be empty".into());
+    }
+    if !k.starts_with("token-") {
+        return Err("gateway.api_key must start with `token-`".into());
+    }
+    let suffix = &k[6..];
+    if suffix.len() < 32 {
+        return Err("gateway.api_key suffix must be at least 32 characters".into());
+    }
+    if !suffix.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("gateway.api_key suffix must be alphanumeric".into());
+    }
+    Ok(k.to_string())
+}
+
+/// Masked preview for UI: `token-abc` + `x` * (len - 6) + last 3 suffix chars.
+fn mask_gateway_api_key(key: &str) -> Option<String> {
+    let k = key.trim();
+    if k.is_empty() || !k.starts_with("token-") {
+        return None;
+    }
+    let suffix = &k[6..];
+    if suffix.is_empty() {
+        return None;
+    }
+    if suffix.len() <= 6 {
+        return Some(format!("token-{}", "x".repeat(suffix.len())));
+    }
+    let head = &suffix[..3];
+    let tail = &suffix[suffix.len() - 3..];
+    let masked_len = suffix.len().saturating_sub(6);
+    Some(format!("token-{head}{}{tail}", "x".repeat(masked_len)))
 }
 
 fn validate_route(s: &str) -> Result<(), String> {
@@ -570,6 +662,59 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn client_gateway_http_url_maps_wildcard_bind_to_loopback() {
+        assert_eq!(
+            client_gateway_http_url("0.0.0.0:11080"),
+            "http://127.0.0.1:11080"
+        );
+        assert_eq!(
+            client_gateway_http_url("127.0.0.1:11080"),
+            "http://127.0.0.1:11080"
+        );
+    }
+
+    #[test]
+    fn patch_gateway_api_key() {
+        let mut file = ConfigFile::default();
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                gateway: Some(GatewayConfigPatch {
+                    api_key: Some("token-abcdefghijklmnopqrstuvwxyz012345".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            file.gateway.api_key.as_deref(),
+            Some("token-abcdefghijklmnopqrstuvwxyz012345")
+        );
+        let view = view_from_config(&file);
+        assert!(view.gateway.api_key_set);
+        assert_eq!(
+            view.gateway.api_key_preview.as_deref(),
+            Some("token-abcxxxxxxxxxxxxxxxxxxxxxxxxxx345")
+        );
+    }
+
+    #[test]
+    fn mask_gateway_api_key_preview() {
+        assert_eq!(
+            mask_gateway_api_key("token-abcdefghijklmnopqrstuvwxyz012345"),
+            Some("token-abcxxxxxxxxxxxxxxxxxxxxxxxxxx345".into())
+        );
+        assert_eq!(mask_gateway_api_key("token-short"), Some("token-xxxxx".into()));
+        assert_eq!(mask_gateway_api_key(""), None);
+    }
+
+    #[test]
+    fn lan_client_http_url_none_when_loopback_only() {
+        assert!(lan_client_http_url("127.0.0.1:11080").is_none());
     }
 
     #[test]

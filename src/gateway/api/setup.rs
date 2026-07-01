@@ -162,7 +162,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       <option value="privacy">privacy</option>
     </select>
     <label for="ctx_edge_max">ctx_edge_max_tokens（4096–2000000）</label>
-    <input id="ctx_edge_max" type="number" min="4096" max="2000000" step="1024" placeholder="65536" />
+    <input id="ctx_edge_max" type="number" min="4096" max="2000000" step="1024" placeholder="100000" />
     <p class="hint">超过约 80% 触发 GATE_CTX_OVERFLOW 升云。</p>
   </fieldset>
 

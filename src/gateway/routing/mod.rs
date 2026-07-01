@@ -6,6 +6,7 @@ mod decision;
 mod difficulty;
 mod gates;
 mod policy;
+mod reject_intent;
 mod signals;
 mod step_kind;
 mod upstream_availability;

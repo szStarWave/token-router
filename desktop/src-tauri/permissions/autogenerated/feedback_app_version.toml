@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-feedback-app-version"
+description = "Enables the feedback_app_version command without any pre-configured scope."
+commands.allow = ["feedback_app_version"]
+
+[[permission]]
+identifier = "deny-feedback-app-version"
+description = "Denies the feedback_app_version command without any pre-configured scope."
+commands.deny = ["feedback_app_version"]

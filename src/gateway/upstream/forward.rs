@@ -18,6 +18,7 @@ use crate::gateway::stats::metrics::{
 use crate::gateway::stats::GatewayStats;
 use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseStream};
 use crate::gateway::upstream::verify::cloud_verifies_edge;
+use crate::gateway::api::meta::log_upstream_served;
 
 struct UpstreamTarget {
     base_url: Option<String>,
@@ -103,6 +104,10 @@ impl UpstreamClient {
         }
 
         match decision.route {
+            RouteTier::Edge if decision.casual_quality_fallback => {
+                self.complete_edge_with_quality_fallback(req, decision, agent_id)
+                    .await
+            }
             RouteTier::Edge => {
                 let resp = self
                     .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate)
@@ -137,27 +142,37 @@ impl UpstreamClient {
                 }
             }
             RouteTier::Cascade => {
-                let edge = self.target_edge(agent_id);
-                let edge_tried = edge.base_url.is_some();
-                if edge_tried {
-                    if let Ok(resp) = self
-                        .call_target(req, edge, decision.tokens_in_estimate)
-                        .await
-                    {
-                        if cascade_gate_pass(&resp) {
-                            self.stats.record_cascade_edge_ok();
-                            return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
-                        }
-                    }
-                    self.stats.record_cascade_fallback();
-                }
-                let cloud = self.target_cloud(agent_id);
-                let resp = self
-                    .call_target(req, cloud, decision.tokens_in_estimate)
-                    .await?;
-                Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id))
+                self.complete_edge_with_quality_fallback(req, decision, agent_id)
+                    .await
             }
         }
+    }
+
+    async fn complete_edge_with_quality_fallback(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+    ) -> AppResult<ChatCompletionResponse> {
+        let edge = self.target_edge(agent_id);
+        let edge_tried = edge.base_url.is_some();
+        if edge_tried {
+            if let Ok(resp) = self
+                .call_target(req, edge, decision.tokens_in_estimate)
+                .await
+            {
+                if cascade_gate_pass(&resp) {
+                    self.stats.record_cascade_edge_ok();
+                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id));
+                }
+            }
+            self.stats.record_cascade_fallback();
+        }
+        let cloud = self.target_cloud(agent_id);
+        let resp = self
+            .call_target(req, cloud, decision.tokens_in_estimate)
+            .await?;
+        Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id))
     }
 
     pub async fn stream(
@@ -183,6 +198,9 @@ impl UpstreamClient {
         }
 
         match decision.route {
+            RouteTier::Edge if decision.casual_quality_fallback => {
+                self.stream_cascade(req, decision, agent_id).await
+            }
             RouteTier::Edge => self
                 .stream_target(req, self.target_edge(agent_id), decision, agent_id)
                 .await
@@ -553,7 +571,7 @@ impl UpstreamClient {
             }
         };
         let stream_agent_id = stream_agent_usage.as_ref().and(stream_agent_id);
-        Ok(instrument_stream(
+        let stream = instrument_stream(
             raw,
             StreamRecordContext {
                 stats: self.stats.clone(),
@@ -565,7 +583,11 @@ impl UpstreamClient {
                 agent_usage: stream_agent_usage,
                 agent_id: stream_agent_id,
             },
-        ))
+        );
+        let fallback = tier_static == "cloud"
+            && matches!(decision.route, RouteTier::Edge | RouteTier::Cascade);
+        log_upstream_served(decision, tier_static, fallback, true, agent_id);
+        Ok(stream)
     }
 
     fn edge_guard_for_tier(&self, tier: &str) -> Option<EdgeInferenceGuard> {
@@ -598,6 +620,7 @@ impl UpstreamClient {
         if served_tier == "cloud" {
             self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
         }
+        log_upstream_served(decision, served_tier, fallback, false, agent_id);
         attach_meta(resp, decision, fallback)
     }
 

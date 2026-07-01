@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ota-get-post-restart-notice"
+description = "Enables the ota_get_post_restart_notice command without any pre-configured scope."
+commands.allow = ["ota_get_post_restart_notice"]
+
+[[permission]]
+identifier = "deny-ota-get-post-restart-notice"
+description = "Denies the ota_get_post_restart_notice command without any pre-configured scope."
+commands.deny = ["ota_get_post_restart_notice"]

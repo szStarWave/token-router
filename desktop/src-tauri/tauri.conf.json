@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.tokenrouter.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm --dir frontend dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "pnpm --dir frontend build",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "withGlobalTauri": true,

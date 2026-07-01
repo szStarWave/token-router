@@ -190,6 +190,7 @@ mod tests {
             intent_plan: false,
             multimodal: false,
             consecutive_tool_error_streak: 0,
+            user_rejects_answer: false,
         }
     }
 

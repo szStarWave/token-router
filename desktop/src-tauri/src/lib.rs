@@ -7,15 +7,12 @@ use tauri::{
 
 use token_router::embedded;
 
-mod wechat_interceptor;
 mod devtools_gate;
-
-fn flowy_test_server_enabled() -> bool {
-    match option_env!("FLOWY_TEST_SERVER_ENABLED") {
-        Some("true") => true,
-        _ => false,
-    }
-}
+mod feedback;
+mod flowy_test_server;
+mod herdsman;
+pub mod ota;
+mod wechat_interceptor;
 
 #[derive(Clone, serde::Serialize)]
 struct GatewayStatus {
@@ -68,10 +65,26 @@ fn gateway_status() -> GatewayStatus {
 }
 
 #[tauri::command]
-fn gateway_read_logs(offset: Option<u64>) -> Result<token_router::gateway::logging::LogsTail, String> {
+fn gateway_read_logs(
+    offset: Option<u64>,
+    before_offset: Option<u64>,
+) -> Result<token_router::gateway::logging::LogsTail, String> {
     let config = token_router::gateway::AppConfig::load().map_err(|e| e.to_string())?;
     let path = config.data_dir.join("logs").join("gateway.log");
-    token_router::gateway::logging::read_log_tail(&path, offset, None).map_err(|e| e.to_string())
+    if let Some(before) = before_offset {
+        token_router::gateway::logging::read_log_before(&path, before, None)
+            .map_err(|e| e.to_string())
+    } else {
+        token_router::gateway::logging::read_log_tail(&path, offset, None).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn gateway_open_logs_dir() -> Result<(), String> {
+    let config = token_router::gateway::AppConfig::load().map_err(|e| e.to_string())?;
+    let logs_dir = config.data_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+    tauri_plugin_opener::open_path(logs_dir, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -181,15 +194,29 @@ pub fn run() {
             gateway_url,
             gateway_status,
             gateway_read_logs,
+            gateway_open_logs_dir,
             show_main_window,
+            herdsman::herdsman_open_or_install,
+            herdsman::herdsman_get_status,
+            herdsman::herdsman_start,
+            feedback::feedback_app_version,
+            feedback::feedback_submit,
+            ota::service::ota_app_version,
+            ota::service::ota_check_now,
+            ota::service::ota_download_update,
+            ota::service::ota_do_update,
+            ota::service::ota_get_post_restart_notice,
         ])
+        .manage(ota::service::manage_state())
         .setup(|app| {
             setup_tray(app)?;
+            herdsman::start_herdsman_service(app.handle().clone());
+            ota::start_background_checks(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_icon(load_app_icon(app));
                 let app_handle = app.handle().clone();
                 let label = window.label().to_string();
-                let dev_access = flowy_test_server_enabled();
+                let dev_access = flowy_test_server::flowy_test_server_enabled();
                 let _ = window.with_webview(move |platform| {
                     devtools_gate::apply_dev_access(&platform, dev_access);
                     wechat_interceptor::register_wechat_iframe_interceptor(
@@ -212,6 +239,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             if let RunEvent::Exit = event {
+                ota::stop_background_checks();
+                herdsman::stop_herdsman_service();
                 if embedded::is_running() {
                     let _ = embedded::stop();
                 }

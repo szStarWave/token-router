@@ -1,0 +1,24 @@
+{
+  "versions": {
+    "0.1.0": {
+      "zh-CN": [
+        "Token Router 桌面版首次发布",
+        "支持 Flowy 账号登录与 Gateway 管理"
+      ],
+      "en-US": [
+        "Initial Token Router desktop release",
+        "Flowy account login and Gateway management"
+      ]
+    },
+    "v0.1.0": {
+      "zh-CN": [
+        "Token Router 桌面版首次发布",
+        "支持 Flowy 账号登录与 Gateway 管理"
+      ],
+      "en-US": [
+        "Initial Token Router desktop release",
+        "Flowy account login and Gateway management"
+      ]
+    }
+  }
+}

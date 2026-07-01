@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-herdsman-start"
+description = "Enables the herdsman_start command without any pre-configured scope."
+commands.allow = ["herdsman_start"]
+
+[[permission]]
+identifier = "deny-herdsman-start"
+description = "Denies the herdsman_start command without any pre-configured scope."
+commands.deny = ["herdsman_start"]

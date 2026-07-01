@@ -230,8 +230,8 @@ mod tests {
         }
     }
 
-    fn casual_routes_edge_or_cascade_not_cloud(route: RouteTier) -> bool {
-        matches!(route, RouteTier::Edge | RouteTier::Cascade)
+    fn casual_routes_edge(route: RouteTier) -> bool {
+        matches!(route, RouteTier::Edge)
     }
 
     #[test]
@@ -247,9 +247,18 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "casual should not force cloud: {:?}",
             decision
+        );
+        assert!(decision.casual_quality_fallback);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CASUAL_EDGE_FALLBACK"),
+            "{:?}",
+            decision.reason_codes
         );
     }
 
@@ -266,7 +275,7 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "casual greeting: {:?} {:?}",
             decision.route,
             decision.reason_codes
@@ -286,7 +295,7 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::HeartbeatAck, "{:?}", decision);
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "heartbeat casual: {:?} {:?}",
             decision.route,
             decision.reason_codes
@@ -452,7 +461,7 @@ mod tests {
             decision
         );
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "large prompt casual: {:?}",
             decision
         );
@@ -538,7 +547,7 @@ mod tests {
             decision
         );
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "casual time question: {:?}",
             decision
         );
@@ -1055,6 +1064,7 @@ mod tests {
             force_cloud_sticky: false,
             edge_ok_probability: None,
             classifier_features: None,
+            casual_quality_fallback: false,
         };
         sessions.apply_outcome(
             conv_key,
@@ -1078,7 +1088,7 @@ mod tests {
         seed_cloud_sticky(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "DirectChat should bypass sticky: {:?}",
             decision
         );
@@ -1160,6 +1170,7 @@ mod tests {
             force_cloud_sticky: false,
             edge_ok_probability: None,
             classifier_features: None,
+            casual_quality_fallback: false,
         };
         sessions.apply_outcome(
             key,
@@ -1188,8 +1199,8 @@ mod tests {
             None,
         );
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
-            "heartbeat casual may be edge or cascade, not cloud when edge busy: {:?}",
+            casual_routes_edge(decision.route),
+            "heartbeat casual should stay edge when edge busy: {:?}",
             decision
         );
         assert!(
@@ -1288,7 +1299,7 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
         assert!(
-            casual_routes_edge_or_cascade_not_cloud(decision.route),
+            casual_routes_edge(decision.route),
             "{:?}",
             decision
         );
@@ -1330,5 +1341,111 @@ mod tests {
             decision.reason_codes
         );
         assert!(decision.edge_ok_probability.is_some());
+    }
+
+    fn user_reject_request(text: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("你好".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("这是端侧的回答。".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some(text.into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn user_reject_zh_forces_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &user_reject_request("不对，重新说"),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "GATE_USER_REJECT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn user_reject_en_forces_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &user_reject_request("that's wrong, try again"),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(decision.reason_codes.iter().any(|c| c == "GATE_USER_REJECT"));
+    }
+
+    #[test]
+    fn user_reject_without_prior_assistant_does_not_gate() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            !decision.reason_codes.iter().any(|c| c == "GATE_USER_REJECT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn casual_mid_difficulty_is_edge_not_cascade() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &casual_chat_with_tool_schema_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert_eq!(decision.route, RouteTier::Edge);
+        assert!(
+            !decision.reason_codes.iter().any(|c| c.contains("CASCADE")),
+            "{:?}",
+            decision.reason_codes
+        );
     }
 }

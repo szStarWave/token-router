@@ -285,6 +285,7 @@ mod tests {
                     force_cloud_sticky: false,
                     edge_ok_probability: None,
                     classifier_features: None,
+                    casual_quality_fallback: false,
                 },
                 true
             ),
