@@ -166,6 +166,24 @@
     }
     .setting-desc { font-size: 11px; color: var(--default-400); margin-top: 6px; }
 
+    .about-version-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .about-version-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--foreground);
+    }
+    .about-version-code {
+      font-size: 13px;
+    }
+    .about-version-row .btn {
+      margin-left: auto;
+    }
+
     .card-grid {
       flex: 1; overflow-y: auto; overflow-x: clip;
       padding: 8px; display: grid;

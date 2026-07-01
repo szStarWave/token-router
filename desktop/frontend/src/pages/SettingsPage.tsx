@@ -276,17 +276,20 @@ function AboutPanel() {
   return (
     <div className="panel">
       <div className="panel-title">{t('settings.about')}</div>
-      <div className="setting-row">
-        <div className="setting-label">{t('settings.appVersion')}</div>
-        <code>{version}</code>
-      </div>
-      {isWindowsTauri() && (
-        <div className="upstream-actions">
+      <div className="about-version-row">
+        <span className="about-version-label">{t('settings.appVersion')}</span>
+        <code className="about-version-code">{formatAppVersion(version)}</code>
+        {isWindowsTauri() && (
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => void checkUpdate()}>
             {t('settings.checkUpdate')}
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
+}
+
+function formatAppVersion(version: string) {
+  if (!version || version === '—') return version
+  return version.startsWith('v') ? version : `v${version}`
 }
