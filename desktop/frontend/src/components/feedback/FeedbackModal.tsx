@@ -26,16 +26,16 @@ export function FeedbackModal({ open, onClose }: FeedbackModalProps) {
   const submit = useCallback(async () => {
     const body = text.trim()
     if (!body) {
-      showToast(t('titlebar.feedbackEmpty'), false)
+      showToast('titlebar.feedbackEmpty', false)
       return
     }
     setSubmitting(true)
     try {
       await feedbackSubmit(body)
-      showToast(t('titlebar.feedbackSuccess'), true)
+      showToast('titlebar.feedbackSuccess', true)
       onClose()
     } catch (err) {
-      showToast(`${t('titlebar.feedbackFailed')}: ${invokeErrorMessage(err)}`, false)
+      showToast('toast.feedbackFailed', false, { msg: invokeErrorMessage(err) })
     } finally {
       setSubmitting(false)
     }

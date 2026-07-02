@@ -1040,6 +1040,8 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 | `route` / `routing_mode` / `default_profile` | 见上 | **可热更新** |
 | `experience_*` / `work_verify_sample_rate` / `adaptive_*` | 见示例 | **可热更新**（`POST /v1/admin/setup` 的 `gateway` 对象） |
 | `session_persist_enabled` | `true` | 会话写入 `sessions/`；**改后需重启 Gateway** |
+| `session_retention_days` | `7` | 过期 session 保留天数（`cloud_sticky` 失效且超期后删除）；`0` = 不删过期项；**改后需重启** |
+| `session_cleanup_interval_secs` | `3600` | `sessions/` 扫描间隔（秒）；**改后需重启 Gateway** |
 | `api_key` | — | 选填；入站鉴权 |
 | `admin_token` | — | 选填；保护 shutdown、restart 与 setup 写操作 |
 | `experience_enabled` | `true` | 按 `step_kind` 隐式学习 |

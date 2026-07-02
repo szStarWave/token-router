@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri::State;
 
 use super::apply::spawn_ota_apply_detached;
+use super::log::{ota_error, ota_info, ota_warn};
 use super::startup_notice::{self, PostOtaRestartNotice, write_post_ota_restart_notice};
 use super::updater::{Updater, VersionInfo};
 use super::{current_version_string, ota_enabled, ota_temp_dir};
@@ -72,8 +73,13 @@ fn clone_version(v: &VersionInfo) -> VersionInfo {
 
 pub fn start_background_checks(app: AppHandle) {
     if !ota_enabled() {
+        ota_info("background check skipped: OTA disabled (non-Windows release build)");
         return;
     }
+    ota_info(format!(
+        "background check scheduler started ({})",
+        super::ota_config_summary()
+    ));
     OTA_STOP.store(false, Ordering::SeqCst);
     thread::spawn(move || {
         run_check_once(&app);
@@ -94,13 +100,16 @@ pub fn start_background_checks(app: AppHandle) {
 
 pub fn stop_background_checks() {
     OTA_STOP.store(true, Ordering::SeqCst);
+    ota_info("background check scheduler stopped");
 }
 
 fn run_check_once(app: &AppHandle) {
+    ota_info("background check started");
     let state = app.state::<OtaState>();
     let updater = match Updater::new() {
         Ok(u) => u,
         Err(e) => {
+            ota_error(format!("background check init failed: {e}"));
             emit(app, "ota.checkFailed", Some(serde_json::json!({ "error": e })));
             return;
         }
@@ -111,6 +120,7 @@ fn run_check_once(app: &AppHandle) {
     let version_info = match updater.check_for_update() {
         Ok(v) => v,
         Err(e) => {
+            ota_error(format!("background check fetch failed: {e}"));
             emit(app, "ota.checkFailed", Some(serde_json::json!({ "error": e })));
             return;
         }
@@ -119,6 +129,7 @@ fn run_check_once(app: &AppHandle) {
     let is_newer = match updater.is_newer(&version_info.version) {
         Ok(v) => v,
         Err(e) => {
+            ota_error(format!("background check compare failed: {e}"));
             emit(
                 app,
                 "ota.compareFailed",
@@ -133,6 +144,10 @@ fn run_check_once(app: &AppHandle) {
         if let Ok(mut inner) = state.inner.lock() {
             inner.pending = None;
         }
+        ota_info(format!(
+            "background check up-to-date: current={current} remote={}",
+            version_info.version
+        ));
         emit(
             app,
             "ota.upToDate",
@@ -148,6 +163,10 @@ fn run_check_once(app: &AppHandle) {
         inner.pending = Some(clone_version(&version_info));
     }
 
+    ota_info(format!(
+        "background check found update: current={current} remote={} file={}",
+        version_info.version, version_info.file
+    ));
     emit(
         app,
         "ota.newVersion",
@@ -169,6 +188,7 @@ pub fn ota_check_now(app: AppHandle) -> Result<(), String> {
     if !ota_enabled() {
         return Err("OTA is only available on Windows release builds".into());
     }
+    ota_info("manual check requested");
     run_check_once(&app);
     Ok(())
 }
@@ -182,41 +202,98 @@ pub fn ota_download_update(app: AppHandle, state: State<'_, OtaState>) -> Result
     let pending = {
         let mut inner = state.inner.lock().map_err(|e| e.to_string())?;
         if inner.downloading {
+            ota_warn("download rejected: already in progress");
             return Err("download already in progress".into());
         }
-        let pending = inner.pending.clone().ok_or("no pending update to download")?;
+        let pending = inner.pending.clone().ok_or_else(|| {
+            ota_warn("download rejected: no pending update");
+            "no pending update to download".to_string()
+        })?;
         inner.downloading = true;
         pending
     };
 
     struct DownloadGuard<'a> {
         state: &'a OtaState,
+        version: String,
+        completed: bool,
     }
     impl Drop for DownloadGuard<'_> {
         fn drop(&mut self) {
             if let Ok(mut inner) = self.state.inner.lock() {
                 inner.downloading = false;
             }
+            if !self.completed {
+                ota_warn(format!(
+                    "download session ended without success: version={}",
+                    self.version
+                ));
+            }
         }
     }
-    let _guard = DownloadGuard { state: &state };
+    let mut guard = DownloadGuard {
+        state: &state,
+        version: pending.version.clone(),
+        completed: false,
+    };
 
-    emit(
-        &app,
-        "ota.downloadStarted",
-        Some(serde_json::json!({ "version": pending.version })),
-    );
+    ota_info(format!(
+        "user download requested: current={} target={} file={}",
+        current_version_string(),
+        pending.version,
+        pending.file
+    ));
 
-    let updater = Updater::new()?;
+    let updater = match Updater::new() {
+        Ok(u) => u,
+        Err(e) => {
+            ota_error(format!("download init failed: {e}"));
+            emit(
+                &app,
+                "ota.downloadFailed",
+                Some(serde_json::json!({ "error": e, "version": pending.version })),
+            );
+            return Err(e);
+        }
+    };
     let app_handle = app.clone();
+    let app_started = app.clone();
     let version = pending.version.clone();
-    let file_path = updater.download_update(&pending, |percent| {
-        emit(
-            &app_handle,
-            "ota.downloadProgress",
-            Some(serde_json::json!({ "progress": percent })),
-        );
-    })?;
+    let file_path = match updater.download_update(
+        &pending,
+        |total| {
+            emit(
+                &app_started,
+                "ota.downloadStarted",
+                Some(serde_json::json!({ "version": version, "total": total })),
+            );
+        },
+        |progress| {
+            emit(
+                &app_handle,
+                "ota.downloadProgress",
+                Some(serde_json::json!({
+                    "progress": progress.progress,
+                    "downloaded": progress.downloaded,
+                    "total": progress.total,
+                    "speed_bps": progress.speed_bps,
+                })),
+            );
+        },
+    ) {
+        Ok(path) => path,
+        Err(e) => {
+            ota_error(format!("download failed: version={version} reason={e}"));
+            emit(
+                &app,
+                "ota.downloadFailed",
+                Some(serde_json::json!({ "error": e, "version": version })),
+            );
+            return Err(e);
+        }
+    };
+
+    guard.completed = true;
 
     emit(
         &app,
@@ -245,7 +322,10 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
         let dl = inner
             .downloaded_path
             .clone()
-            .ok_or("no downloaded update; call ota_download_update first")?;
+            .ok_or_else(|| {
+                ota_warn("apply rejected: no downloaded package");
+                "no downloaded update; call ota_download_update first".to_string()
+            })?;
         (
             dl,
             inner.downloaded_version.clone(),
@@ -253,17 +333,30 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
         )
     };
 
+    let version_label = downloaded_version
+        .as_ref()
+        .map(|v| v.version.as_str())
+        .unwrap_or("unknown");
+
     if !std::path::Path::new(&dl).is_file() {
-        return Err("downloaded file not found".into());
+        let msg = "downloaded file not found".to_string();
+        ota_error(format!("apply failed: version={version_label} reason={msg} path={dl}"));
+        return Err(msg);
     }
     if replace_exe.is_empty() {
-        return Err("replaceExe is not configured".into());
+        let msg = "replaceExe is not configured".to_string();
+        ota_error(format!("apply failed: version={version_label} reason={msg}"));
+        return Err(msg);
     }
+
+    ota_info(format!(
+        "apply started: version={version_label} package={dl} target={replace_exe}"
+    ));
 
     emit(
         &app,
         "ota.updateApplyStarted",
-        Some(serde_json::json!({ "target": replace_exe })),
+        Some(serde_json::json!({ "target": replace_exe, "version": version_label })),
     );
 
     if let Some(v) = downloaded_version.as_ref() {
@@ -273,7 +366,12 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
             version: v.version.clone(),
             release_notes: v.release_notes.clone(),
         };
-        let _ = write_post_ota_restart_notice(&data_dir, &notice);
+        if let Err(e) = write_post_ota_restart_notice(&data_dir, &notice) {
+            ota_warn(format!(
+                "apply post-restart notice write failed: version={} reason={e}",
+                v.version
+            ));
+        }
     }
 
     let self_exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -285,10 +383,13 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
         &dl,
         &temp_dir.to_string_lossy(),
     ) {
+        ota_error(format!(
+            "apply failed: version={version_label} target={replace_exe} reason={e}"
+        ));
         emit(
             &app,
             "ota.updateApplyFailed",
-            Some(serde_json::json!({ "error": e })),
+            Some(serde_json::json!({ "error": e, "version": version_label })),
         );
         return Err(e);
     }
@@ -298,10 +399,13 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
         inner.downloaded_version = None;
     }
 
+    ota_info(format!(
+        "apply spawned successfully: version={version_label} target={replace_exe}; exiting app"
+    ));
     emit(
         &app,
         "ota.updateApplyComplete",
-        Some(serde_json::json!({ "target": replace_exe })),
+        Some(serde_json::json!({ "target": replace_exe, "version": version_label })),
     );
 
     app.exit(0);

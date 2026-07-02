@@ -7,6 +7,7 @@ import {
   invokeErrorMessage,
   type OtaEventPayload,
 } from '../../lib/tauri'
+import { formatBytes, formatSpeed } from '../../lib/format-bytes'
 import { useI18n } from '../../hooks/useI18n'
 
 interface OtaStatus {
@@ -25,6 +26,13 @@ function numField(data: Record<string, unknown> | undefined, key: string): numbe
   return typeof v === 'number' && !Number.isNaN(v) ? v : undefined
 }
 
+function resetDownloadProgress() {
+  return {
+    downloadProgress: 0,
+    totalBytes: 0,
+  }
+}
+
 export function OtaModal() {
   const { t } = useI18n()
   const [visible, setVisible] = useState(false)
@@ -32,9 +40,40 @@ export function OtaModal() {
   const [isDownloading, setIsDownloading] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
-  const [progressText, setProgressText] = useState('')
+  const [totalBytes, setTotalBytes] = useState(0)
+  const [progressDetail, setProgressDetail] = useState('')
+  const [progressSpeed, setProgressSpeed] = useState('')
   const [updateStatus, setUpdateStatus] = useState<OtaStatus | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
+
+  const updateDownloadProgressUi = useCallback(
+    (downloaded: number, total: number, pct: number, speed: number) => {
+      setDownloadProgress(pct >= 0 ? pct : 0)
+      setTotalBytes(total)
+
+      const downloadedLabel = formatBytes(downloaded)
+      const speedLabel = formatSpeed(speed)
+      setProgressSpeed(speedLabel)
+
+      if (total > 0) {
+        setProgressDetail(
+          t('ota.downloadProgressDetail', {
+            downloaded: downloadedLabel,
+            total: formatBytes(total),
+            percent: pct >= 0 ? pct : 0,
+          }),
+        )
+      } else {
+        setProgressDetail(
+          t('ota.downloadProgressUnknownTotal', {
+            downloaded: downloadedLabel,
+            speed: speedLabel,
+          }),
+        )
+      }
+    },
+    [t],
+  )
 
   const applyOtaEvent = useCallback(
     (ev: OtaEventPayload) => {
@@ -75,21 +114,28 @@ export function OtaModal() {
           )
           setUpdateStatus(null)
           break
-        case 'ota.downloadStarted':
+        case 'ota.downloadStarted': {
+          const total = numField(data, 'total') ?? 0
           setIsDownloading(true)
+          setIsApplying(false)
           setDownloadProgress(0)
-          setProgressText(t('ota.downloading'))
+          setTotalBytes(total)
+          setProgressDetail(t('ota.downloading'))
+          setProgressSpeed('')
           break
+        }
         case 'ota.downloadProgress': {
           const pct = numField(data, 'progress') ?? 0
-          setDownloadProgress(pct)
-          setProgressText(t('ota.downloadProgress', { percent: pct }))
+          const downloaded = numField(data, 'downloaded') ?? 0
+          const total = numField(data, 'total') ?? 0
+          const speed = numField(data, 'speed_bps') ?? 0
+          updateDownloadProgressUi(downloaded, total, pct, speed)
           break
         }
         case 'ota.downloadComplete':
           setIsDownloading(false)
           setDownloadProgress(100)
-          setProgressText(t('ota.downloadComplete'))
+          setProgressDetail(t('ota.downloadComplete'))
           break
         case 'ota.downloadFailed':
           setIsDownloading(false)
@@ -97,8 +143,10 @@ export function OtaModal() {
           setErrorMessage(strField(data, 'error') ?? t('ota.downloadFailed'))
           break
         case 'ota.updateApplyStarted':
+          setIsDownloading(false)
           setIsApplying(true)
-          setProgressText(t('ota.installing'))
+          setProgressDetail(t('ota.installing'))
+          setProgressSpeed('')
           break
         case 'ota.updateApplyFailed':
           setIsApplying(false)
@@ -108,7 +156,7 @@ export function OtaModal() {
           break
       }
     },
-    [t],
+    [t, updateDownloadProgressUi],
   )
 
   useEffect(() => {
@@ -126,10 +174,17 @@ export function OtaModal() {
   const downloadUpdate = async () => {
     setErrorMessage('')
     setIsDownloading(true)
+    setIsApplying(false)
+    const reset = resetDownloadProgress()
+    setDownloadProgress(reset.downloadProgress)
+    setTotalBytes(reset.totalBytes)
+    setProgressDetail(t('ota.downloading'))
+    setProgressSpeed('')
     try {
       await otaDownloadUpdate()
       setIsApplying(true)
-      setProgressText(t('ota.installing'))
+      setProgressDetail(t('ota.installing'))
+      setProgressSpeed('')
       await otaDoUpdate()
     } catch (err) {
       setIsDownloading(false)
@@ -138,59 +193,77 @@ export function OtaModal() {
     }
   }
 
+  const showIndeterminateProgress = isApplying || (isDownloading && totalBytes === 0)
+
   if (!visible) return null
+
+  const showUpdateActions =
+    !isChecking &&
+    !errorMessage &&
+    updateStatus &&
+    !updateStatus.isUpToDate &&
+    !isDownloading &&
+    !isApplying
 
   return (
     <div className="security-dialog open ota-dialog" id="ota-dialog">
       <div className="security-panel ota-panel">
         <h3>{t('ota.modalTitle')}</h3>
-        <div className="ota-modal-body">
-          {isChecking && (
-            <div className="ota-loading">
-              <span className="ota-spinner" aria-hidden="true" />
-              <span>{t('ota.checking')}</span>
-            </div>
-          )}
-          {!isChecking && errorMessage && (
-            <div className="ota-error">
-              <p>{errorMessage}</p>
-            </div>
-          )}
-          {!isChecking && !errorMessage && updateStatus && (
-            <div className="ota-status">
-              <div className="ota-version-info">
-                <div className="ota-version-item">
-                  <span className="ota-version-label">{t('ota.currentVersion')}</span>
-                  <span className="ota-version-value">{updateStatus.currentVersion}</span>
-                </div>
-                {!updateStatus.isUpToDate && (
-                  <div className="ota-version-item highlight">
-                    <span className="ota-version-label">{t('ota.newVersion')}</span>
-                    <span className="ota-version-value new">{updateStatus.latestVersion}</span>
-                  </div>
-                )}
+
+        {isChecking && (
+          <div className="ota-loading">
+            <span className="ota-spinner" aria-hidden="true" />
+            <span>{t('ota.checking')}</span>
+          </div>
+        )}
+
+        {!isChecking && errorMessage && (
+          <div className="ota-error">
+            <p>{errorMessage}</p>
+          </div>
+        )}
+
+        {!isChecking && !errorMessage && updateStatus && (
+          <>
+            <div className="ota-version-info">
+              <div className="ota-version-item">
+                <span className="ota-version-label">{t('ota.currentVersion')}</span>
+                <span className="ota-version-value">{updateStatus.currentVersion}</span>
               </div>
               {!updateStatus.isUpToDate && (
-                <div className="ota-actions">
-                  {!isDownloading && !isApplying && (
-                    <button type="button" className="btn btn-primary" onClick={() => void downloadUpdate()}>
-                      {t('ota.install')}
-                    </button>
-                  )}
-                  {(isDownloading || isApplying) && (
-                    <div className="ota-progress-container">
-                      <div className="ota-progress-bar">
-                        <div className="ota-progress-fill" style={{ width: `${downloadProgress}%` }} />
-                      </div>
-                      <span className="ota-progress-text">{progressText}</span>
-                    </div>
-                  )}
+                <div className="ota-version-item highlight">
+                  <span className="ota-version-label">{t('ota.newVersion')}</span>
+                  <span className="ota-version-value new">{updateStatus.latestVersion}</span>
                 </div>
               )}
-              {updateStatus.isUpToDate && <p className="ota-up-to-date">{t('ota.upToDate')}</p>}
             </div>
-          )}
-        </div>
+
+            {(isDownloading || isApplying) && (
+              <div className="ota-progress-container">
+                <div className="ota-progress-bar">
+                  <div
+                    className={`ota-progress-fill${showIndeterminateProgress ? ' indeterminate' : ''}`}
+                    style={showIndeterminateProgress ? undefined : { width: `${downloadProgress}%` }}
+                  />
+                </div>
+                <span className="ota-progress-detail">{progressDetail}</span>
+                {!isApplying && totalBytes > 0 && progressSpeed !== '—' && (
+                  <span className="ota-progress-speed">{progressSpeed}</span>
+                )}
+              </div>
+            )}
+
+            {updateStatus.isUpToDate && <p className="ota-up-to-date">{t('ota.upToDate')}</p>}
+          </>
+        )}
+
+        {showUpdateActions && (
+          <div className="security-actions">
+            <button type="button" className="btn btn-primary" onClick={() => void downloadUpdate()}>
+              {t('ota.install')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

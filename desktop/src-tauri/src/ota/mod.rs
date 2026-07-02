@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod log;
 pub mod service;
 pub mod startup_notice;
 mod updater;
@@ -17,6 +18,12 @@ const OTA_WITH_ACCOUNT: &str = env!("OTA_WITH_ACCOUNT");
 
 pub fn ota_enabled() -> bool {
     cfg!(windows) && !cfg!(debug_assertions)
+}
+
+pub fn ota_config_summary() -> String {
+    format!(
+        "base={OTA_BASE_URL} region={OTA_REGION_SCOPE} channel={OTA_CHANNEL} with_account={OTA_WITH_ACCOUNT}"
+    )
 }
 
 pub fn build_ota_manifest_url() -> String {

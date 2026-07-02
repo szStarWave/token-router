@@ -36,6 +36,12 @@ pub struct GatewaySection {
     /// Inbound API key for `/v1/chat/completions` (Bearer or `x-api-key`). Omit to disable auth.
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Named inbound API keys (preferred over legacy `api_key`).
+    #[serde(default)]
+    pub api_keys: Vec<GatewayApiKeyEntry>,
+    /// When true, inbound `/v1/chat/completions` requires a configured API key.
+    #[serde(default)]
+    pub auth_enabled: bool,
     #[serde(default)]
     pub admin_token: Option<String>,
     #[serde(default = "default_experience_enabled")]
@@ -50,6 +56,10 @@ pub struct GatewaySection {
     pub cloud_sticky_ttl_secs: u64,
     #[serde(default = "default_session_persist_enabled")]
     pub session_persist_enabled: bool,
+    #[serde(default = "default_session_retention_days")]
+    pub session_retention_days: u64,
+    #[serde(default = "default_session_cleanup_interval_secs")]
+    pub session_cleanup_interval_secs: u64,
     /// Fraction of work-step requests that run edge + cloud verification (0.0–1.0).
     #[serde(default = "default_work_verify_sample_rate")]
     pub work_verify_sample_rate: f32,
@@ -74,6 +84,12 @@ pub struct GatewaySection {
     pub classifier_decay_half_life_hours: f64,
     #[serde(default = "default_classifier_prior_from_heuristic")]
     pub classifier_prior_from_heuristic: bool,
+    /// Max size of `gateway.log` before rotation (MiB). 0 = no size limit / no rotation.
+    #[serde(default = "default_log_max_size_mb")]
+    pub log_max_size_mb: u64,
+    /// Total log files to keep (active + archived). Minimum 2 to enable rotation.
+    #[serde(default = "default_log_max_files")]
+    pub log_max_files: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -93,6 +109,14 @@ pub struct UpstreamEndpoint {
     /// Upstream model id; `auto` keeps the client request model for Flowy routing.
     #[serde(default)]
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayApiKeyEntry {
+    pub id: String,
+    pub name: String,
+    pub key: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,6 +186,14 @@ fn default_session_persist_enabled() -> bool {
     true
 }
 
+fn default_session_retention_days() -> u64 {
+    7
+}
+
+fn default_session_cleanup_interval_secs() -> u64 {
+    3600
+}
+
 fn default_work_verify_sample_rate() -> f32 {
     0.1
 }
@@ -206,6 +238,14 @@ fn default_classifier_prior_from_heuristic() -> bool {
     true
 }
 
+fn default_log_max_size_mb() -> u64 {
+    10
+}
+
+fn default_log_max_files() -> usize {
+    5
+}
+
 impl Default for GatewaySection {
     fn default() -> Self {
         Self {
@@ -215,6 +255,8 @@ impl Default for GatewaySection {
             default_profile: default_profile(),
             ctx_edge_max_tokens: default_ctx_edge_max(),
             api_key: None,
+            api_keys: Vec::new(),
+            auth_enabled: false,
             admin_token: None,
             experience_enabled: default_experience_enabled(),
             experience_learning_rate: default_experience_learning_rate(),
@@ -222,6 +264,8 @@ impl Default for GatewaySection {
             experience_target_fallback: default_experience_target_fallback(),
             cloud_sticky_ttl_secs: default_cloud_sticky_ttl_secs(),
             session_persist_enabled: default_session_persist_enabled(),
+            session_retention_days: default_session_retention_days(),
+            session_cleanup_interval_secs: default_session_cleanup_interval_secs(),
             work_verify_sample_rate: default_work_verify_sample_rate(),
             adaptive_routing_enabled: default_adaptive_routing_enabled(),
             adaptive_min_verified_samples: default_adaptive_min_verified_samples(),
@@ -233,6 +277,8 @@ impl Default for GatewaySection {
             classifier_prior_alpha: default_classifier_prior_alpha(),
             classifier_decay_half_life_hours: default_classifier_decay_half_life_hours(),
             classifier_prior_from_heuristic: default_classifier_prior_from_heuristic(),
+            log_max_size_mb: default_log_max_size_mb(),
+            log_max_files: default_log_max_files(),
         }
     }
 }
@@ -267,8 +313,9 @@ impl ConfigFile {
 }
 
 pub fn default_config_template() -> String {
-    r#"# Token Router configuration
-# Path: ~/.token-router/config.toml (Linux/macOS) or %USERPROFILE%\.token-router\config.toml (Windows)
+    format!(
+        r#"# Token Router configuration
+# Path: ~/{app_dir}/config.toml (Linux/macOS) or %USERPROFILE%\{app_dir}\config.toml (Windows)
 
 [gateway]
 listen = "127.0.0.1:11080"
@@ -282,6 +329,8 @@ ctx_edge_max_tokens = 100000
 # experience_learning_rate = 0.08
 # experience_max_bias = 0.12
 # session_persist_enabled = true
+# session_retention_days = 7          # 过期 session 保留天数；0 = 不删过期项（仍清理损坏/tmp）
+# session_cleanup_interval_secs = 3600 # sessions/ 扫描间隔（秒）
 # work_verify_sample_rate = 0.1   # work 步态云端校验抽样比例 (0.0–1.0)
 # adaptive_routing_enabled = true # 根据 experience/stats 运行时微调抽样率与难度阈值
 # adaptive_min_verified_samples = 20
@@ -293,6 +342,8 @@ ctx_edge_max_tokens = 100000
 # classifier_prior_alpha = 1.0
 # classifier_decay_half_life_hours = 168
 # classifier_prior_from_heuristic = true
+# log_max_size_mb = 10              # gateway.log size before rotate (MiB); 0 = disable
+# log_max_files = 5                 # active + archived files; min 2 to rotate
 
 # [upstream.cloud]
 # base_url = "https://api.deepseek.com/v1"
@@ -305,8 +356,9 @@ ctx_edge_max_tokens = 100000
 
 [cli]
 # gateway_url = "http://127.0.0.1:11080"
-"#
-    .to_string()
+"#,
+        app_dir = paths::APP_DIR_NAME,
+    )
 }
 
 /// Load config from `~/.token-router/config.toml` (file must already exist).
@@ -343,9 +395,15 @@ pub fn load_from_path(path: &Path) -> anyhow::Result<(ConfigFile, PathBuf)> {
     }
 
     let raw = fs::read_to_string(path)?;
-    let cfg: ConfigFile = toml::from_str(&raw).map_err(|e| {
+    let mut cfg: ConfigFile = toml::from_str(&raw).map_err(|e| {
         anyhow::anyhow!("invalid TOML in {}: {e}", path.display())
     })?;
+    crate::config::auth_keys::migrate_legacy_gateway_api_key(&mut cfg);
+    if !raw.contains("auth_enabled")
+        && !crate::config::auth_keys::collect_inbound_api_keys(&cfg.gateway).is_empty()
+    {
+        cfg.gateway.auth_enabled = true;
+    }
     Ok((cfg, path.to_path_buf()))
 }
 

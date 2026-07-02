@@ -48,7 +48,7 @@ npm run tauri:build
 
 | 能力 | 说明 |
 |------|------|
-| Gateway | 启动时自动 `embedded::start()`，无需单独 CLI 守护进程 |
+| Gateway | 启动时自动 `embedded::start()`，无需单独 CLI 守护进程；数据目录 `~/.token-router-desktop/`（Windows：`%USERPROFILE%\.token-router-desktop\`） |
 | UI | `index.html`（Tauri）；`demo.html`（纯浏览器演示） |
 | 托盘 | 右键菜单：Show / 显示、Quit / 退出；左键显示窗口 |
 | 关闭窗口 | 隐藏到托盘，不退出进程（托盘 Quit 退出） |
@@ -73,18 +73,18 @@ npm run tauri:build
 
 ```powershell
 $env:MODELSCOPE_TOKEN = "<your-token>"
-uv run --with modelscope python desktop/cmd/publish_ota/init_dataset.py
+uv run --with modelscope python scripts/publish_ota/init_dataset.py
 ```
 
-2. 构建 release 并复制为版本化 exe 名称，例如 `Token-Router-v0.1.0-flowy-CN-with_account.exe`。
+2. 构建 release 并复制为版本化 exe 名称，例如 `Token-Router-v0.6.0-flowy-CN-with_account.exe`。
 
 3. 上传 exe 与 `latest.json`：
 
 ```powershell
-uv run --with modelscope python desktop/cmd/publish_ota/publish.py `
-  --channel flowy --region-scope CN --version v0.1.0 `
+uv run --with modelscope python scripts/publish_ota/publish.py `
+  --channel flowy --region-scope CN --version v0.6.0 `
   --enable-account-system true `
-  --exe-path "path\to\Token-Router-v0.1.0-flowy-CN-with_account.exe"
+  --exe-path "path\to\Token-Router-v0.6.0-flowy-CN-with_account.exe"
 ```
 
 更新说明维护在仓库根目录 [`docs/ota-release-notes.json`](../docs/ota-release-notes.json)。

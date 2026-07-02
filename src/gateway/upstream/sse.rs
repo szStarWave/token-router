@@ -10,7 +10,7 @@ use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::stats::metrics::{
     estimate_tokens, inspect_sse_chunk, sse_has_content, FinalResponseMetrics, UpstreamCallMetrics,
 };
-use crate::gateway::stats::GatewayStats;
+use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 
 pub type SseStream = Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
@@ -23,6 +23,7 @@ pub struct StreamRecordContext {
     pub edge_guard: Option<crate::gateway::edge_load::EdgeInferenceGuard>,
     pub agent_usage: Option<Arc<AgentCloudUsageStore>>,
     pub agent_id: Option<String>,
+    pub auth_key: Option<AuthKeyContext>,
 }
 
 pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStream {
@@ -53,25 +54,32 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
             prompt = ctx.prompt_fallback;
         }
 
-        ctx.stats.record_upstream_metrics(&UpstreamCallMetrics {
-            tier: ctx.tier,
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            cached_tokens: cached,
-            latency_ms,
-            ttft_ms,
-            stream: true,
-        });
-        ctx.stats.record_completion_tokens(completion);
-        ctx.stats.record_final_response(&FinalResponseMetrics {
-            served_tier: ctx.tier,
-            cloud_input_saved: if ctx.record_cloud_saved {
-                ctx.cloud_input_saved
-            } else {
-                0
+        ctx.stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: ctx.tier,
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                cached_tokens: cached,
+                latency_ms,
+                ttft_ms,
+                stream: true,
             },
-            completion_tokens: completion,
-        });
+            ctx.auth_key.as_ref(),
+        );
+        ctx.stats
+            .record_completion_tokens(completion, ctx.auth_key.as_ref());
+        ctx.stats.record_final_response(
+            &FinalResponseMetrics {
+                served_tier: ctx.tier,
+                cloud_input_saved: if ctx.record_cloud_saved {
+                    ctx.cloud_input_saved
+                } else {
+                    0
+                },
+                completion_tokens: completion,
+            },
+            ctx.auth_key.as_ref(),
+        );
 
         if ctx.tier == "cloud" {
             if let (Some(usage), Some(ref agent_id)) = (ctx.agent_usage.as_ref(), ctx.agent_id.as_ref()) {
@@ -198,11 +206,20 @@ mod tests {
                 edge_guard: None,
                 agent_usage: None,
                 agent_id: None,
+                auth_key: None,
             },
         );
         while stream.next().await.is_some() {}
 
-        let snap = stats.snapshot(crate::gateway::stats::StatsScope::Session, 1, None, None, None, None);
+        let snap = stats.snapshot(
+            crate::gateway::stats::StatsScope::Session,
+            1,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        );
         assert_eq!(snap.token_breakdown.edge.input, 10);
         assert_eq!(snap.token_breakdown.edge.output, 5);
         assert_eq!(snap.cache.cached_tokens, 3);

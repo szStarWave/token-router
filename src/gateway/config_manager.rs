@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use crate::config::auth_keys::{
+    create_gateway_auth_key, delete_gateway_auth_key, list_gateway_auth_keys,
+    update_gateway_auth_key_name, CreateGatewayAuthKeyResponse, GatewayAuthKeyView,
+};
 use crate::config::setup::{UpstreamSetupUpdate, UpstreamSetupView, view_from_config, view_from_config_for_agent};
 use crate::config::{load_from_path, save, ConfigFile};
 use crate::gateway::config::AppConfig;
@@ -70,6 +74,42 @@ impl ConfigManager {
         save(&self.path, &file)?;
         self.reload_from_file(&file)?;
         Ok(view_from_config(&file))
+    }
+
+    pub fn list_auth_keys(&self) -> anyhow::Result<Vec<GatewayAuthKeyView>> {
+        let (file, _) = load_from_path(&self.path)?;
+        Ok(list_gateway_auth_keys(&file))
+    }
+
+    pub fn create_auth_key(&self, name: &str) -> anyhow::Result<(CreateGatewayAuthKeyResponse, AppConfig)> {
+        let (mut file, _) = load_from_path(&self.path)?;
+        let (view, full_key) = create_gateway_auth_key(&mut file, name)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        save(&self.path, &file)?;
+        let config = self.reload_from_file(&file)?;
+        Ok((
+            CreateGatewayAuthKeyResponse {
+                key: view,
+                full_key,
+            },
+            config,
+        ))
+    }
+
+    pub fn update_auth_key_name(&self, id: &str, name: &str) -> anyhow::Result<(GatewayAuthKeyView, AppConfig)> {
+        let (mut file, _) = load_from_path(&self.path)?;
+        let view = update_gateway_auth_key_name(&mut file, id, name)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        save(&self.path, &file)?;
+        let config = self.reload_from_file(&file)?;
+        Ok((view, config))
+    }
+
+    pub fn delete_auth_key(&self, id: &str) -> anyhow::Result<AppConfig> {
+        let (mut file, _) = load_from_path(&self.path)?;
+        delete_gateway_auth_key(&mut file, id).map_err(|e| anyhow::anyhow!(e))?;
+        save(&self.path, &file)?;
+        self.reload_from_file(&file)
     }
 
     fn reload_from_file(&self, file: &ConfigFile) -> anyhow::Result<AppConfig> {

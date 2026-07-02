@@ -47,6 +47,8 @@ ctx_edge_max_tokens = 65536
 # experience_target_fallback = 0.15    # 级联回退目标比例（自适应路由参考）
 # cloud_sticky_ttl_secs = 600        # 升云后会话粘性 TTL；日常/心跳不受粘性门控；Work 执行走 Cascade 重试；端侧成功清除
 # session_persist_enabled = true
+# session_retention_days = 7           # 过期 session 保留天数；0 = 不删过期项（仍清理损坏/tmp）
+# session_cleanup_interval_secs = 3600   # sessions/ 扫描间隔（秒）；改后需重启 Gateway
 
 # --- Work 步态云端校验（ToolSelect 等）---
 # work_verify_sample_rate = 0.1        # 0=不校验，1=每步校验；默认 0.1
@@ -64,6 +66,10 @@ ctx_edge_max_tokens = 65536
 # classifier_prior_alpha = 1.0        # Laplace 平滑
 # classifier_decay_half_life_hours = 168
 # classifier_prior_from_heuristic = true
+
+# --- 日志轮转（~/.token-router/logs/gateway.log）---
+# log_max_size_mb = 10               # 单文件超过此大小（MiB）时轮转；0 = 禁用
+# log_max_files = 5                  # 保留文件总数（当前 + 归档）；至少 2 才启用轮转
 
 # ---------------------------------------------------------------------------
 # 上游（OpenAI 兼容 Chat Completions）

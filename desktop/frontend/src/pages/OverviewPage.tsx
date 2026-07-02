@@ -3,6 +3,8 @@ import { useSetupStore } from '../stores/setupStore'
 import { useI18n } from '../hooks/useI18n'
 import { useLiveUptime } from '../hooks/useLiveUptime'
 import { formatUptime } from '../lib/stats-utils'
+import { AgentQuickSetupCard } from '../components/overview/AgentQuickSetupCard'
+import { CcSwitchExportCard } from '../components/overview/CcSwitchExportCard'
 
 interface EndpointRowProps {
   label: string
@@ -54,9 +56,9 @@ export function OverviewPage() {
   const copyUrl = async (url: string) => {
     try {
       await navigator.clipboard.writeText(url)
-      showToast(t('toast.copied'))
+      showToast('toast.copied')
     } catch {
-      showToast(t('toast.fail', { msg: 'copy' }), false)
+      showToast('toast.copyFail', false)
     }
   }
 
@@ -68,6 +70,9 @@ export function OverviewPage() {
 
   return (
     <section className="page active" id="page-overview">
+      <AgentQuickSetupCard />
+      <CcSwitchExportCard />
+
       <div className="panel">
         <div className="panel-title">{t('overview.endpoint')}</div>
         <p className="endpoint-hint">{t('overview.endpointHint')}</p>

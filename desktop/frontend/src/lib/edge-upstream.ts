@@ -63,6 +63,35 @@ export type EdgeReconcileCompleteCallback = (result: EdgeReconcileResult) => voi
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 export const HERDSMAN_INSTALL_URL = 'https://flowyaipc.cn/#ai-engine'
 const EDGE_USER_CONFIGURED_KEY = 'tr-edge-user-configured'
+const EDGE_MANUAL_ENTRIES_KEY = 'tr-edge-manual-entries'
+
+function loadManualEntriesFromStorage(): ManualEdgeEntry[] {
+  try {
+    const raw = localStorage.getItem(EDGE_MANUAL_ENTRIES_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (entry): entry is ManualEdgeEntry =>
+        !!entry
+        && typeof entry === 'object'
+        && typeof (entry as ManualEdgeEntry).id === 'string'
+        && typeof (entry as ManualEdgeEntry).name === 'string'
+        && typeof (entry as ManualEdgeEntry).base_url === 'string'
+        && typeof (entry as ManualEdgeEntry).model === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+function persistManualEntries(entries: ManualEdgeEntry[]): void {
+  try {
+    localStorage.setItem(EDGE_MANUAL_ENTRIES_KEY, JSON.stringify(entries))
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 let listenersInstalled = false
 let unlistenFns: UnlistenFn[] = []
@@ -150,6 +179,20 @@ export function isAllowedHerdsmanEndpoint(endpoint: string | null | undefined): 
   }
 }
 
+/** Map wildcard bind hosts to loopback for local HTTP clients. */
+export function normalizeHerdsmanEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint)
+    if (url.hostname === '0.0.0.0' || url.hostname === '::') {
+      url.hostname = '127.0.0.1'
+      return url.toString().replace(/\/+$/, '')
+    }
+  } catch {
+    // ignore
+  }
+  return endpoint
+}
+
 function isHerdsmanEdgeSetup(edge: SetupEdge | null | undefined): boolean {
   const url = edge?.base_url?.trim()
   const model = edge?.model?.trim()
@@ -172,15 +215,6 @@ function shouldClearHerdsmanEdgeOnDisconnect(): boolean {
   return false
 }
 
-function clearHerdsmanEdgeLocally(): void {
-  clearEdgeUserConfigured()
-  const state = getEdgeStoreState()
-  state.setPendingSetupSelection(null)
-  state.setSelectedKey(null)
-  notifyModelChange()
-  notifyUiChange()
-}
-
 function patchLocalSetupEdgeCleared(): void {
   const setup = useSetupStore.getState().setup
   if (!setup) return
@@ -199,10 +233,17 @@ function patchLocalSetupEdgeCleared(): void {
   }
 }
 
-async function clearHerdsmanEdgeConfiguration(): Promise<EdgeReconcileResult> {
-  const hadEdgeOnServer = !!useSetupStore.getState().setup?.edge?.configured
-  clearHerdsmanEdgeLocally()
+async function clearEdgeUpstreamConfiguration(clearUserFlag?: boolean): Promise<EdgeReconcileResult> {
+  const state = getEdgeStoreState()
+  const hadEdgeOnServer = !!useSetupStore.getState().setup?.edge?.base_url?.trim()
+  state.setPendingSetupSelection(null)
+  state.setSelectedKey(null)
+  if (clearUserFlag ?? (!state.manualEntries.length && !state.herdsmanConnected)) {
+    clearEdgeUserConfigured()
+  }
   patchLocalSetupEdgeCleared()
+  notifyModelChange()
+  notifyUiChange()
 
   const connected = useAppStore.getState().connected
   if (!connected || !hadEdgeOnServer) {
@@ -228,10 +269,14 @@ async function clearHerdsmanEdgeConfiguration(): Promise<EdgeReconcileResult> {
     notifyReconcileComplete({ cleared: true, response: res })
     return { cleared: true, response: res }
   } catch (error) {
-    console.warn('[edge-upstream] clear herdsman edge failed', error)
+    console.warn('[edge-upstream] clear edge failed', error)
     notifyUiChange()
     return { cleared: false, error }
   }
+}
+
+async function clearHerdsmanEdgeConfiguration(): Promise<EdgeReconcileResult> {
+  return clearEdgeUpstreamConfiguration(true)
 }
 
 function handleHerdsmanDisconnected(): void {
@@ -257,13 +302,18 @@ function normalizeUrl(url: string | null | undefined): string {
 
 function filterHerdsmanModels(models: unknown): HerdsmanModel[] {
   if (!Array.isArray(models)) return []
-  return models.filter(
-    (model): model is HerdsmanModel =>
-      !!model
-      && typeof model === 'object'
-      && typeof (model as HerdsmanModel).id === 'string'
-      && isAllowedHerdsmanEndpoint((model as HerdsmanModel).endpoint),
-  )
+  return models
+    .filter(
+      (model): model is HerdsmanModel =>
+        !!model
+        && typeof model === 'object'
+        && typeof (model as HerdsmanModel).id === 'string',
+    )
+    .map((model) => ({
+      ...model,
+      endpoint: normalizeHerdsmanEndpoint(model.endpoint),
+    }))
+    .filter((model) => isAllowedHerdsmanEndpoint(model.endpoint))
 }
 
 function herdsmanModelSignature(baseUrl: string, modelId: string): string {
@@ -298,6 +348,7 @@ function pruneHerdsmanManualDuplicates(): void {
     }
   }
   state.setManualEntries(manualEntries)
+  persistManualEntries(manualEntries)
   if (selectedKey !== state.selectedKey) {
     state.setSelectedKey(selectedKey)
   }
@@ -355,17 +406,19 @@ function applyPendingSetupSelection(): void {
   ensureSelectedKey(pendingSetupSelection.model, pendingSetupSelection.url)
 }
 
-export function isEdgeModelUiConfigured(setupEdge: SetupEdge | null | undefined): boolean {
-  if (!isEdgeUserConfigured()) return false
+function selectedItemHasEndpoint(item: EdgeDisplayItem): boolean {
+  const url = item.base_url?.trim()
+  const model = (item.type === 'manual' ? item.model : item.id)?.trim()
+  return !!(url && model)
+}
 
-  const item = getSelectedItem()
-  if (!item) return false
-  if (item.type === 'herdsman' && !getEdgeStoreState().herdsmanConnected) return false
-
+function edgeSelectionMatchesSetup(
+  item: EdgeDisplayItem,
+  setupEdge: SetupEdge | null | undefined,
+): boolean {
   const model = setupEdge?.model?.trim()
   const url = setupEdge?.base_url?.trim()
   if (!model || !url) return false
-
   const itemModel = item.type === 'manual' ? item.model : item.id
   return (
     normalizeUrl(item.base_url) === normalizeUrl(url)
@@ -373,15 +426,28 @@ export function isEdgeModelUiConfigured(setupEdge: SetupEdge | null | undefined)
   )
 }
 
+function setupEdgeMatchesDisplayItems(setupEdge: SetupEdge | null | undefined): boolean {
+  const url = setupEdge?.base_url?.trim()
+  const model = setupEdge?.model?.trim()
+  if (!url || !model) return false
+  if (isAllowedHerdsmanEndpoint(url) && !getEdgeStoreState().herdsmanConnected) return false
+  return buildDisplayItems().some((item) => edgeSelectionMatchesSetup(item, setupEdge))
+}
+
+export function isEdgeModelUiConfigured(setupEdge: SetupEdge | null | undefined): boolean {
+  const item = getSelectedItem()
+  if (item) {
+    if (item.type === 'herdsman' && !getEdgeStoreState().herdsmanConnected) return false
+    return selectedItemHasEndpoint(item)
+  }
+
+  return setupEdgeMatchesDisplayItems(setupEdge)
+}
+
 /** Whether edge upstream should show as configured in sidebar / upstream pages. */
 export function isEdgeUpstreamConfigured(
   setupEdge: (SetupEdge & { configured?: boolean }) | null | undefined,
 ): boolean {
-  const url = setupEdge?.base_url?.trim()
-  const model = setupEdge?.model?.trim()
-  if (setupEdge && 'configured' in setupEdge && setupEdge.configured === false) return false
-  if (!url || !model) return false
-  if (isAllowedHerdsmanEndpoint(url) && !getEdgeStoreState().herdsmanConnected) return false
   return isEdgeModelUiConfigured(setupEdge)
 }
 
@@ -391,17 +457,21 @@ export function getEdgeModelValue(): string {
   return item.type === 'manual' ? (item.model || '') : (item.id || '')
 }
 
-export function getEdgeModelDisplayName(): string {
+export function getEdgeModelDisplayName(setupEdge?: SetupEdge | null): string {
   const item = getSelectedItem()
   if (item) return item.name || item.model || item.id || ''
-  return ''
+  const edge = setupEdge ?? useSetupStore.getState().setup?.edge
+  if (!setupEdgeMatchesDisplayItems(edge)) return ''
+  const matched = buildDisplayItems().find((entry) => edgeSelectionMatchesSetup(entry, edge))
+  return matched?.name || matched?.model || edge?.model?.trim() || ''
 }
 
 export function resolveEdgeModelLabel(setupEdge: SetupEdge | null | undefined): string {
-  if (!isEdgeModelUiConfigured(setupEdge)) return ''
   const item = getSelectedItem()
   if (item) return item.name || item.model || item.id || ''
-  return setupEdge?.model?.trim() || ''
+  if (!setupEdgeMatchesDisplayItems(setupEdge)) return ''
+  const matched = buildDisplayItems().find((entry) => edgeSelectionMatchesSetup(entry, setupEdge))
+  return matched?.name || matched?.model || setupEdge?.model?.trim() || ''
 }
 
 export function resolveEdgeModelSourceType(
@@ -500,6 +570,7 @@ export function upsertManualEntry(entry: ManualEdgeEntry): void {
   if (idx >= 0) manualEntries[idx] = normalized
   else manualEntries.push(normalized)
   state.setManualEntries(manualEntries)
+  persistManualEntries(manualEntries)
   markEdgeUserConfigured()
   ensureSelectedKey(normalized.model, normalized.base_url)
   notifyModelChange()
@@ -508,6 +579,22 @@ export function upsertManualEntry(entry: ManualEdgeEntry): void {
 
 export function deleteManualEntry(id: string): void {
   const state = getEdgeStoreState()
+  const deleted = state.manualEntries.find((entry) => entry.id === id)
+  const setupEdge = useSetupStore.getState().setup?.edge
+  const deletedActiveSetup = deleted && setupEdge
+    ? edgeSelectionMatchesSetup(
+        {
+          key: entryKey('manual', deleted.id),
+          type: 'manual',
+          id: deleted.id,
+          name: deleted.name,
+          base_url: deleted.base_url,
+          model: deleted.model,
+        },
+        setupEdge,
+      )
+    : false
+
   const manualEntries = state.manualEntries.filter((entry) => entry.id !== id)
   let selectedKey = state.selectedKey
   if (selectedKey === entryKey('manual', id)) selectedKey = null
@@ -515,7 +602,11 @@ export function deleteManualEntry(id: string): void {
     clearEdgeUserConfigured()
   }
   state.setManualEntries(manualEntries)
+  persistManualEntries(manualEntries)
   state.setSelectedKey(selectedKey)
+  if (deletedActiveSetup || !setupEdgeMatchesDisplayItems(setupEdge)) {
+    patchLocalSetupEdgeCleared()
+  }
   notifyModelChange()
   notifyUiChange()
 }
@@ -562,17 +653,50 @@ export function syncEdgeFromSetup(edge: SetupEdge | null | undefined): void {
       api_key: edge.api_key || undefined,
       fromSetupRestore: true,
     }
-    state.setManualEntries([...state.manualEntries, entry])
+    const manualEntries = [...state.manualEntries, entry]
+    state.setManualEntries(manualEntries)
+    persistManualEntries(manualEntries)
   } else if (edge.api_key) {
-    state.setManualEntries(
-      state.manualEntries.map((e) =>
-        e.id === entry!.id ? { ...e, api_key: edge.api_key || undefined } : e,
-      ),
+    const manualEntries = state.manualEntries.map((e) =>
+      e.id === entry!.id ? { ...e, api_key: edge.api_key || undefined } : e,
     )
+    state.setManualEntries(manualEntries)
+    persistManualEntries(manualEntries)
   }
 
   ensureSelectedKey(model, url)
   notifyUiChange()
+}
+
+export async function persistEdgeSelection(
+  saveSetup?: (body: import('../types/gateway').UpstreamSetupUpdate) => void,
+): Promise<void> {
+  const built = buildEdgeSavePayload()
+  if (!built?.edge?.base_url || !built?.edge?.model) {
+    if (saveSetup && useAppStore.getState().connected) {
+      saveSetup({ edge: { clear: true } })
+    } else {
+      await clearEdgeUpstreamConfiguration(false)
+    }
+    return
+  }
+
+  if (saveSetup && useAppStore.getState().connected) {
+    saveSetup({ edge: built.edge, gateway: built.gateway })
+    return
+  }
+
+  if (useAppStore.getState().connected) {
+    try {
+      const res = await apiFetch<{ upstream?: UpstreamSetupView }>('/v1/admin/setup', {
+        method: 'POST',
+        body: JSON.stringify({ edge: built.edge, gateway: built.gateway }),
+      })
+      if (res?.upstream) useSetupStore.getState().setSetup(res.upstream)
+    } catch (error) {
+      console.warn('[edge-upstream] persist edge selection failed', error)
+    }
+  }
 }
 
 export function populateEdgeModelSelect(models: unknown, selectedId?: string | null): void {
@@ -609,7 +733,7 @@ export function buildEdgeSavePayload(modelId?: string | null): EdgeSavePayload {
   }
 
   const payload: EdgeSavePayload['edge'] = {
-    base_url: item.base_url,
+    base_url: normalizeHerdsmanEndpoint(item.base_url),
     model: item.type === 'manual' ? (item.model ?? null) : item.id,
   }
 
@@ -865,6 +989,16 @@ export async function bootstrapHerdsmanStatus(): Promise<void> {
   }
 }
 
+export async function refreshHerdsmanStatus(): Promise<void> {
+  if (!isTauri()) return
+  try {
+    const snapshot = await invoke<HerdsmanStatusSnapshot>('herdsman_refresh_status')
+    applyHerdsmanSnapshot(snapshot)
+  } catch (error) {
+    console.warn('[edge-upstream] herdsman_refresh_status failed', error)
+  }
+}
+
 export async function startHerdsman(): Promise<void> {
   if (!isTauri()) return
   return invoke('herdsman_start')
@@ -879,8 +1013,13 @@ export async function openHerdsmanOrInstall(): Promise<void> {
 }
 
 export async function initEdgeUpstream(): Promise<void> {
+  const storedManualEntries = loadManualEntriesFromStorage()
+  if (storedManualEntries.length) {
+    getEdgeStoreState().setManualEntries(storedManualEntries)
+  }
   await listenHerdsmanEvents()
   await bootstrapHerdsmanStatus()
+  syncEdgeFromSetup(useSetupStore.getState().setup?.edge)
   initEdgeModelSelect()
 }
 

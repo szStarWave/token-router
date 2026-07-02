@@ -21,12 +21,40 @@ pub struct SessionData {
     pub last_fallback: Option<bool>,
     #[serde(default)]
     pub last_step_kind: Option<String>,
+    #[serde(default)]
+    pub last_updated_unix: u64,
 }
 
 impl SessionData {
     pub fn cloud_sticky_active(&self) -> bool {
+        self.cloud_sticky_active_at(now_unix())
+    }
+
+    pub fn cloud_sticky_active_at(&self, now: u64) -> bool {
         self.cloud_sticky_until_unix
-            .is_some_and(|until| now_unix() < until)
+            .is_some_and(|until| now < until)
+    }
+
+    pub fn last_activity_unix(&self, fallback_mtime: Option<u64>) -> u64 {
+        if self.last_updated_unix > 0 {
+            self.last_updated_unix
+        } else {
+            fallback_mtime.unwrap_or(0)
+        }
+    }
+
+    pub fn is_expired(&self, retention_days: u64, fallback_mtime: Option<u64>, now: u64) -> bool {
+        if retention_days == 0 {
+            return false;
+        }
+        if self.cloud_sticky_active_at(now) {
+            return false;
+        }
+        let activity = self.last_activity_unix(fallback_mtime);
+        if activity == 0 {
+            return false;
+        }
+        activity.saturating_add(retention_days.saturating_mul(86_400)) < now
     }
 }
 

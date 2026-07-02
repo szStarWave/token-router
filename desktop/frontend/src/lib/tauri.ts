@@ -79,6 +79,66 @@ export async function feedbackSubmit(content: string, category?: string) {
   return tauriInvoke<void>('feedback_submit', { content, category: category ?? null })
 }
 
+export interface AgentSetupResultPayload {
+  path: string
+  model: string
+  baseUrl: string
+  agent: string
+}
+
+export interface AgentInitStatusPayload {
+  initialized: boolean
+  configPath: string
+  agent: string
+}
+
+export type AgentKind =
+  | 'openclaw'
+  | 'hermes'
+  | 'hermes-flash'
+  | 'claude-code'
+  | 'codex'
+
+export async function checkAgentInitialized(agent: AgentKind) {
+  return tauriInvoke<AgentInitStatusPayload>('check_agent_initialized', { agent })
+}
+
+export async function configureOpenClawAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_openclaw_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureHermesAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_hermes_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureHermesFlashAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_hermes_flash_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureClaudeCodeAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_claude_code_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureCodexAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_codex_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function readInboundAuthKey(preferredName?: string | null) {
+  return tauriInvoke<string | null>('read_inbound_auth_key_cmd', {
+    preferredName: preferredName ?? null,
+  })
+}
+
 export interface OtaEventPayload {
   message: string
   data?: Record<string, unknown> | null

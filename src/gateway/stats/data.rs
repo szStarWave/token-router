@@ -10,7 +10,7 @@ use crate::gateway::stats::metrics::{FinalResponseMetrics, UpstreamCallMetrics};
 
 pub const STATS_VERSION: u32 = 2;
 
-/// Cumulative counters persisted to `stats.json`.
+/// Cumulative counters; legacy JSON load/save used for migration only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StatsData {
     pub version: u32,

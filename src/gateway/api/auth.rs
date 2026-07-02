@@ -2,14 +2,15 @@ use axum::http::HeaderMap;
 
 use crate::gateway::error::{AppError, AppResult};
 
-/// Validate client API key when `gateway.api_key` is set (optional in config).
-pub fn require_gateway_api_key(headers: &HeaderMap, expected: &Option<String>) -> AppResult<()> {
-    let Some(expected) = expected.as_ref().filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
+/// Validate client API key when inbound keys are configured.
+/// Returns `Ok(None)` when auth is disabled; `Ok(Some(key))` when matched.
+pub fn require_gateway_api_key(headers: &HeaderMap, expected: &[String]) -> AppResult<Option<String>> {
+    if expected.is_empty() {
+        return Ok(None);
+    }
 
     match extract_api_key(headers) {
-        Some(provided) if provided == *expected => Ok(()),
+        Some(provided) if expected.iter().any(|key| key == &provided) => Ok(Some(provided)),
         _ => Err(AppError::Unauthorized(
             "invalid or missing API key (use Authorization: Bearer <key>)".into(),
         )),
@@ -45,7 +46,7 @@ mod tests {
     #[test]
     fn skips_auth_when_not_configured() {
         let headers = HeaderMap::new();
-        assert!(require_gateway_api_key(&headers, &None).is_ok());
+        assert!(require_gateway_api_key(&headers, &[]).unwrap().is_none());
     }
 
     #[test]
@@ -55,8 +56,11 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer flowy-local"),
         );
-        let key = Some("flowy-local".to_string());
-        assert!(require_gateway_api_key(&headers, &key).is_ok());
+        let keys = vec!["flowy-local".to_string()];
+        assert_eq!(
+            require_gateway_api_key(&headers, &keys).unwrap(),
+            Some("flowy-local".to_string())
+        );
     }
 
     #[test]
@@ -66,9 +70,9 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer wrong"),
         );
-        let key = Some("flowy-local".to_string());
+        let keys = vec!["flowy-local".to_string()];
         assert!(matches!(
-            require_gateway_api_key(&headers, &key),
+            require_gateway_api_key(&headers, &keys),
             Err(AppError::Unauthorized(_))
         ));
     }

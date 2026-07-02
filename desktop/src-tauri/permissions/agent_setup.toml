@@ -1,0 +1,34 @@
+[[permission]]
+identifier = "allow-configure-openclaw-agent"
+description = "Writes Token Router provider config into OpenClaw openclaw.json."
+commands.allow = ["configure_openclaw_agent"]
+
+[[permission]]
+identifier = "allow-configure-hermes-agent"
+description = "Writes Token Router provider config into Hermes config.yaml."
+commands.allow = ["configure_hermes_agent"]
+
+[[permission]]
+identifier = "allow-configure-hermes-flash-agent"
+description = "Writes Token Router provider config into Hermes Flash config.yaml."
+commands.allow = ["configure_hermes_flash_agent"]
+
+[[permission]]
+identifier = "allow-configure-claude-code-agent"
+description = "Writes Token Router gateway settings into Claude Code settings.json."
+commands.allow = ["configure_claude_code_agent"]
+
+[[permission]]
+identifier = "allow-configure-codex-agent"
+description = "Writes Token Router provider config into Codex config.toml."
+commands.allow = ["configure_codex_agent"]
+
+[[permission]]
+identifier = "allow-read-inbound-auth-key"
+description = "Reads inbound gateway auth keys from config.toml for agent setup."
+commands.allow = ["read_inbound_auth_key_cmd"]
+
+[[permission]]
+identifier = "allow-check-agent-initialized"
+description = "Checks whether OpenClaw or Hermes config has been initialized."
+commands.allow = ["check_agent_initialized"]

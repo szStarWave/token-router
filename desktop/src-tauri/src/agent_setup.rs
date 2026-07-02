@@ -1,0 +1,621 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use serde_json::{json, Value};
+use token_router::config::auth_keys::collect_inbound_api_keys;
+use token_router::config::{ensure_initialized, load_from_path};
+use token_router::gateway::AppConfig;
+
+const OPENCLAW_PROVIDER: &str = "flowy";
+const OPENCLAW_MODEL_DISPLAY: &str = "Token Router Auto Route";
+const CODEX_PROVIDER: &str = "token_router";
+const CODEX_PROVIDER_NAME: &str = "Token Router";
+const DEFAULT_MODEL: &str = "auto";
+pub const ERR_AGENT_NOT_INITIALIZED: &str = "agent_not_initialized";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInitStatus {
+    pub initialized: bool,
+    pub config_path: String,
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetupResult {
+    pub path: String,
+    pub model: String,
+    pub base_url: String,
+    pub agent: String,
+}
+
+fn home_dir() -> Result<PathBuf, String> {
+    dirs::home_dir().ok_or_else(|| "home directory not found".to_string())
+}
+
+fn agent_config_path(agent: &str) -> Result<PathBuf, String> {
+    match agent {
+        "openclaw" => openclaw_config_path(),
+        "hermes" => hermes_config_path(),
+        "hermes-flash" => hermes_flash_config_path(),
+        "claude-code" => claude_code_settings_path(),
+        "codex" => codex_config_path(),
+        _ => Err(format!("unknown agent: {agent}")),
+    }
+}
+
+fn agent_init_state(agent: &str) -> Result<(bool, PathBuf), String> {
+    match agent {
+        "claude-code" => {
+            let settings = claude_code_settings_path()?;
+            let legacy = home_dir()?.join(".claude.json");
+            Ok((settings.is_file() || legacy.is_file(), settings))
+        }
+        _ => {
+            let path = agent_config_path(agent)?;
+            Ok((path.is_file(), path))
+        }
+    }
+}
+
+fn agent_init_status(agent: &str) -> Result<AgentInitStatus, String> {
+    let (initialized, path) = agent_init_state(agent)?;
+    Ok(AgentInitStatus {
+        initialized,
+        config_path: path.display().to_string(),
+        agent: agent.to_string(),
+    })
+}
+
+fn openclaw_home_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".openclaw"))
+}
+
+fn hermes_home_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".hermes"))
+}
+
+fn hermes_flash_home_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".hermes-flash"))
+}
+
+fn openclaw_config_path() -> Result<PathBuf, String> {
+    Ok(openclaw_home_dir()?.join("openclaw.json"))
+}
+
+fn hermes_config_path() -> Result<PathBuf, String> {
+    Ok(hermes_home_dir()?.join("config.yaml"))
+}
+
+fn hermes_flash_config_path() -> Result<PathBuf, String> {
+    Ok(hermes_flash_home_dir()?.join("config.yaml"))
+}
+
+fn claude_code_home_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".claude"))
+}
+
+fn claude_code_settings_path() -> Result<PathBuf, String> {
+    Ok(claude_code_home_dir()?.join("settings.json"))
+}
+
+fn codex_home_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".codex"))
+}
+
+fn codex_config_path() -> Result<PathBuf, String> {
+    Ok(codex_home_dir()?.join("config.toml"))
+}
+
+fn ensure_agent_initialized(agent: &str) -> Result<PathBuf, String> {
+    let (initialized, path) = agent_init_state(agent)?;
+    if initialized {
+        return Ok(path);
+    }
+    Err(format!(
+        "{ERR_AGENT_NOT_INITIALIZED}:{agent}:{}",
+        path.display()
+    ))
+}
+
+fn load_app_config() -> Result<AppConfig, String> {
+    AppConfig::load().map_err(|e| e.to_string())
+}
+
+fn gateway_agent_base_url(config: &AppConfig) -> String {
+    format!(
+        "{}/v1",
+        token_router::config::setup::client_gateway_http_url(&config.listen_addr)
+    )
+}
+
+fn gateway_anthropic_base_url(config: &AppConfig) -> String {
+    format!(
+        "{}/anthropic",
+        token_router::config::setup::client_gateway_http_url(&config.listen_addr)
+    )
+}
+
+fn resolved_model(config: &AppConfig) -> String {
+    config
+        .cloud_model
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+fn generate_placeholder_key() -> String {
+    format!("placeholder-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn resolve_api_key(auth_enabled: bool, override_key: Option<String>, inbound_keys: &[String]) -> String {
+    if let Some(key) = override_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
+        return key;
+    }
+    if auth_enabled {
+        if let Some(key) = inbound_keys.first() {
+            return key.clone();
+        }
+    }
+    generate_placeholder_key()
+}
+
+pub fn read_inbound_auth_key(preferred_name: Option<String>) -> Result<Option<String>, String> {
+    let (path, _) = ensure_initialized(None).map_err(|e| e.to_string())?;
+    let (file, _) = load_from_path(&path).map_err(|e| e.to_string())?;
+
+    if !file.gateway.auth_enabled {
+        return Ok(None);
+    }
+
+    if let Some(name) = preferred_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        if let Some(entry) = file
+            .gateway
+            .api_keys
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+        {
+            return Ok(Some(entry.key.clone()));
+        }
+    }
+
+    let keys = collect_inbound_api_keys(&file.gateway);
+    Ok(keys.into_iter().next())
+}
+
+fn backup_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
+    let backup = path.with_file_name(format!("{file_name}.bak-{ts}"));
+    fs::copy(path, &backup).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_json_file(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&raw).map_err(|e| format!("invalid JSON at {}: {e}", path.display()))
+}
+
+fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
+    backup_file(path)?;
+    let pretty = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    fs::write(path, pretty + "\n").map_err(|e| e.to_string())
+}
+
+fn upsert_model_entry(models: &mut Value, model_id: &str, display_name: &str) {
+    if !models.is_array() {
+        *models = json!([]);
+    }
+    let arr = models.as_array_mut().unwrap();
+
+    if let Some(entry) = arr.iter_mut().find(|item| {
+        item.get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == model_id)
+    }) {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("id".to_string(), json!(model_id));
+            obj.insert("name".to_string(), json!(display_name));
+        }
+        return;
+    }
+
+    arr.push(json!({
+        "id": model_id,
+        "name": display_name,
+    }));
+}
+
+fn merge_openclaw_config(existing: &mut Value, base_url: &str, model_id: &str, api_key: &str) {
+    if !existing.is_object() {
+        *existing = json!({});
+    }
+    let root = existing.as_object_mut().unwrap();
+
+    let models = root.entry("models").or_insert_with(|| json!({}));
+    if !models.is_object() {
+        *models = json!({});
+    }
+    let providers = models
+        .as_object_mut()
+        .unwrap()
+        .entry("providers")
+        .or_insert_with(|| json!({}));
+    if !providers.is_object() {
+        *providers = json!({});
+    }
+
+    let flowy = providers
+        .as_object_mut()
+        .unwrap()
+        .entry(OPENCLAW_PROVIDER)
+        .or_insert_with(|| json!({}));
+    if !flowy.is_object() {
+        *flowy = json!({});
+    }
+    let flowy_obj = flowy.as_object_mut().unwrap();
+    flowy_obj.insert("baseUrl".to_string(), json!(base_url));
+    flowy_obj.insert("apiKey".to_string(), json!(api_key));
+
+    let model_list = flowy_obj
+        .entry("models")
+        .or_insert_with(|| json!([]));
+    upsert_model_entry(model_list, model_id, OPENCLAW_MODEL_DISPLAY);
+
+    let agents = root.entry("agents").or_insert_with(|| json!({}));
+    if !agents.is_object() {
+        *agents = json!({});
+    }
+    let defaults = agents
+        .as_object_mut()
+        .unwrap()
+        .entry("defaults")
+        .or_insert_with(|| json!({}));
+    if !defaults.is_object() {
+        *defaults = json!({});
+    }
+    let model = defaults
+        .as_object_mut()
+        .unwrap()
+        .entry("model")
+        .or_insert_with(|| json!({}));
+    if !model.is_object() {
+        *model = json!({});
+    }
+    model
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "primary".to_string(),
+            json!(format!("{OPENCLAW_PROVIDER}/{model_id}")),
+        );
+}
+
+fn read_yaml_file(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_yaml::from_str(&raw).map_err(|e| format!("invalid YAML at {}: {e}", path.display()))
+}
+
+fn write_yaml_file(path: &Path, value: &Value) -> Result<(), String> {
+    backup_file(path)?;
+    let content = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn merge_hermes_config(existing: &mut Value, base_url: &str, model_id: &str, api_key: &str) {
+    if !existing.is_object() {
+        *existing = json!({});
+    }
+    let root = existing.as_object_mut().unwrap();
+
+    let model = root.entry("model").or_insert_with(|| json!({}));
+    if !model.is_object() {
+        *model = json!({});
+    }
+    let model_obj = model.as_object_mut().unwrap();
+    model_obj.insert("default".to_string(), json!(model_id));
+    model_obj.insert("provider".to_string(), json!("custom"));
+    model_obj.insert("base_url".to_string(), json!(base_url));
+    model_obj.insert("api_key".to_string(), json!(api_key));
+}
+
+fn merge_claude_code_settings(existing: &mut Value, base_url: &str, api_key: &str) {
+    if !existing.is_object() {
+        *existing = json!({});
+    }
+    let root = existing.as_object_mut().unwrap();
+    let env = root.entry("env").or_insert_with(|| json!({}));
+    if !env.is_object() {
+        *env = json!({});
+    }
+    let env_obj = env.as_object_mut().unwrap();
+    env_obj.insert("ANTHROPIC_BASE_URL".to_string(), json!(base_url));
+    env_obj.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(api_key));
+}
+
+fn read_toml_file(path: &Path) -> Result<toml::Value, String> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    toml::from_str(&raw).map_err(|e| format!("invalid TOML at {}: {e}", path.display()))
+}
+
+fn write_toml_file(path: &Path, value: &toml::Value) -> Result<(), String> {
+    backup_file(path)?;
+    let content = toml::to_string_pretty(value).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn merge_codex_config(existing: &mut toml::Value, base_url: &str, model_id: &str, api_key: &str) {
+    if !existing.is_table() {
+        *existing = toml::Value::Table(toml::map::Map::new());
+    }
+    let root = existing.as_table_mut().unwrap();
+    root.insert("model".into(), toml::Value::String(model_id.to_string()));
+    root.insert(
+        "model_provider".into(),
+        toml::Value::String(CODEX_PROVIDER.to_string()),
+    );
+
+    let mut provider = toml::map::Map::new();
+    provider.insert(
+        "name".into(),
+        toml::Value::String(CODEX_PROVIDER_NAME.to_string()),
+    );
+    provider.insert(
+        "base_url".into(),
+        toml::Value::String(base_url.to_string()),
+    );
+    provider.insert(
+        "experimental_bearer_token".into(),
+        toml::Value::String(api_key.to_string()),
+    );
+    provider.insert(
+        "wire_api".into(),
+        toml::Value::String("responses".to_string()),
+    );
+
+    let providers = root
+        .entry("model_providers")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !providers.is_table() {
+        *providers = toml::Value::Table(toml::map::Map::new());
+    }
+    providers
+        .as_table_mut()
+        .unwrap()
+        .insert(CODEX_PROVIDER.to_string(), toml::Value::Table(provider));
+}
+
+fn load_gateway_auth_state() -> Result<(bool, Vec<String>), String> {
+    let (path, _) = ensure_initialized(None).map_err(|e| e.to_string())?;
+    let (file, _) = load_from_path(&path).map_err(|e| e.to_string())?;
+    let keys = collect_inbound_api_keys(&file.gateway);
+    Ok((file.gateway.auth_enabled, keys))
+}
+
+fn configure_hermes_for(agent: &str, api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized(agent)?;
+    let base_url = gateway_agent_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+
+    let mut doc = read_yaml_file(&path)?;
+    merge_hermes_config(&mut doc, &base_url, &model, &key);
+    write_yaml_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url,
+        agent: agent.to_string(),
+    })
+}
+
+fn configure_openclaw(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized("openclaw")?;
+    let base_url = gateway_agent_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+
+    let mut doc = read_json_file(&path)?;
+    merge_openclaw_config(&mut doc, &base_url, &model, &key);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url,
+        agent: "openclaw".to_string(),
+    })
+}
+
+fn configure_hermes(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_hermes_for("hermes", api_key)
+}
+
+fn configure_hermes_flash(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_hermes_for("hermes-flash", api_key)
+}
+
+fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized("claude-code")?;
+    let base_url = gateway_anthropic_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+
+    let mut doc = if path.is_file() {
+        read_json_file(&path)?
+    } else {
+        json!({})
+    };
+    merge_claude_code_settings(&mut doc, &base_url, &key);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url,
+        agent: "claude-code".to_string(),
+    })
+}
+
+fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized("codex")?;
+    let base_url = gateway_agent_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+
+    let mut doc = read_toml_file(&path)?;
+    merge_codex_config(&mut doc, &base_url, &model, &key);
+    write_toml_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url,
+        agent: "codex".to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn check_agent_initialized(agent: String) -> Result<AgentInitStatus, String> {
+    agent_init_status(agent.trim())
+}
+
+#[tauri::command]
+pub fn configure_openclaw_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_openclaw(api_key)
+}
+
+#[tauri::command]
+pub fn configure_hermes_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_hermes(api_key)
+}
+
+#[tauri::command]
+pub fn configure_hermes_flash_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_hermes_flash(api_key)
+}
+
+#[tauri::command]
+pub fn configure_claude_code_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_claude_code(api_key)
+}
+
+#[tauri::command]
+pub fn configure_codex_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_codex(api_key)
+}
+
+#[tauri::command]
+pub fn read_inbound_auth_key_cmd(preferred_name: Option<String>) -> Result<Option<String>, String> {
+    read_inbound_auth_key(preferred_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_openclaw_preserves_other_providers() {
+        let mut doc = json!({
+            "models": {
+                "providers": {
+                    "anthropic": { "baseUrl": "https://api.anthropic.com" }
+                }
+            }
+        });
+        merge_openclaw_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        let providers = &doc["models"]["providers"];
+        assert!(providers.get("anthropic").is_some());
+        assert_eq!(providers["flowy"]["baseUrl"], "http://127.0.0.1:11080/v1");
+        assert_eq!(doc["agents"]["defaults"]["model"]["primary"], "flowy/auto");
+    }
+
+    #[test]
+    fn merge_hermes_preserves_other_sections() {
+        let mut doc = json!({
+            "tools": { "web_search": true }
+        });
+        merge_hermes_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        assert_eq!(doc["tools"]["web_search"], true);
+        assert_eq!(doc["model"]["provider"], "custom");
+        assert_eq!(doc["model"]["default"], "auto");
+    }
+
+    #[test]
+    fn hermes_flash_config_path_uses_home_dir() {
+        let path = hermes_flash_config_path().unwrap();
+        assert!(path.to_string_lossy().contains(".hermes-flash"));
+        assert!(path.to_string_lossy().ends_with("config.yaml"));
+    }
+
+    #[test]
+    fn merge_claude_code_settings_updates_env() {
+        let mut doc = json!({ "permissions": { "allow": [] } });
+        merge_claude_code_settings(
+            &mut doc,
+            "http://127.0.0.1:11080/anthropic",
+            "test-key",
+        );
+        assert_eq!(doc["permissions"]["allow"], json!([]));
+        assert_eq!(
+            doc["env"]["ANTHROPIC_BASE_URL"],
+            "http://127.0.0.1:11080/anthropic"
+        );
+        assert_eq!(doc["env"]["ANTHROPIC_AUTH_TOKEN"], "test-key");
+    }
+
+    #[test]
+    fn merge_codex_config_sets_token_router_provider() {
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        merge_codex_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        assert_eq!(doc["model"], toml::Value::String("auto".into()));
+        assert_eq!(doc["model_provider"], toml::Value::String("token_router".into()));
+        assert_eq!(
+            doc["model_providers"]["token_router"]["wire_api"],
+            toml::Value::String("responses".into())
+        );
+    }
+}

@@ -13,6 +13,7 @@ use crate::gateway::api::routes::AppState;
 use crate::gateway::api::sse_transform::wrap_sse_transform;
 use crate::gateway::experience::RequestOutcome;
 use crate::gateway::error::{AppError, AppResult};
+use crate::gateway::stats::AuthKeyContext;
 
 pub enum ChatOutputFormat {
     OpenAi,
@@ -39,13 +40,30 @@ pub async fn chat_completions_core(
     let stream = req.stream;
     state.stats.record_request(stream);
 
-    if let Err(e) = require_gateway_api_key(&headers, &state.config().api_key) {
-        state.stats.record_error(&e);
-        return Err(e);
+    let auth_ctx = match require_gateway_api_key(&headers, &state.config().inbound_api_keys) {
+        Ok(matched) => matched.and_then(|key_value| {
+            state.config().auth_key_by_value.get(&key_value).map(|resolved| AuthKeyContext {
+                id: resolved.id.clone(),
+                name: resolved.name.clone(),
+                key_preview: resolved.key_preview.clone(),
+            })
+        }),
+        Err(e) => {
+            state.stats.record_error(&e);
+            return Err(e);
+        }
+    };
+
+    if let Some(ref ctx) = auth_ctx {
+        state.stats.touch_auth_key_last_used(ctx);
+        state.stats.record_request_for_auth_key(ctx, stream);
     }
 
     if let Err(e) = crate::gateway::routing::require_any_upstream(&state.config()) {
         state.stats.record_error(&e);
+        if let Some(ref ctx) = auth_ctx {
+            state.stats.record_error_for_auth_key(ctx, &e);
+        }
         return Err(e);
     }
 
@@ -65,6 +83,10 @@ pub async fn chat_completions_core(
         Some(state.classifier.as_ref()),
     );
     state.stats.record_decision(&decision);
+    let auth_key_ref = auth_ctx.as_ref();
+    if let Some(ctx) = auth_key_ref {
+        state.stats.record_decision_for_auth_key(ctx, &decision);
+    }
 
     let conv_key = decision.conversation_key.clone();
     let assistant_failed = decision.assistant_failed_recent;
@@ -74,7 +96,7 @@ pub async fn chat_completions_core(
     if stream {
         match state
             .upstream
-            .stream(&req, &decision, agent_id.as_deref())
+            .stream(&req, &decision, agent_id.as_deref(), auth_key_ref)
             .await
         {
             Ok((byte_stream, fallback)) => {
@@ -104,6 +126,9 @@ pub async fn chat_completions_core(
             }
             Err(e) => {
                 state.stats.record_error(&e);
+                if let Some(ctx) = auth_key_ref {
+                    state.stats.record_error_for_auth_key(ctx, &e);
+                }
                 record_learning(
                     &state,
                     &decision,
@@ -117,7 +142,7 @@ pub async fn chat_completions_core(
     } else {
         match state
             .upstream
-            .complete(&req, &decision, agent_id.as_deref())
+            .complete(&req, &decision, agent_id.as_deref(), auth_key_ref)
             .await
         {
             Ok(mut resp) => {
@@ -145,6 +170,9 @@ pub async fn chat_completions_core(
             }
             Err(e) => {
                 state.stats.record_error(&e);
+                if let Some(ctx) = auth_key_ref {
+                    state.stats.record_error_for_auth_key(ctx, &e);
+                }
                 record_learning(
                     &state,
                     &decision,

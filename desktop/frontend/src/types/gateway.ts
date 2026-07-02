@@ -42,6 +42,7 @@ export interface GatewayConfigView {
   classifier_prior_from_heuristic?: boolean
   listen_port?: number
   listen_lan?: boolean
+  auth_enabled?: boolean
   api_key_set?: boolean
   api_key_preview?: string | null
 }
@@ -106,6 +107,47 @@ export interface LatencyStats {
   p99_ms?: number
 }
 
+export interface StatsTimelinePoint {
+  bucket_ts: number
+  edge_in: number
+  edge_out: number
+  cloud_in: number
+  cloud_out: number
+  requests_total: number
+}
+
+export interface StatsTimelineResponse {
+  scope: string
+  range: string
+  granularity: string
+  points: StatsTimelinePoint[]
+}
+
+export interface AuthKeyTokenStats {
+  input: number
+  output: number
+  total: number
+}
+
+export interface AuthKeyLatencyStats {
+  avg_request_ms: number
+  avg_tps: number
+  edge_tps: number
+  cloud_tps: number
+}
+
+export interface AuthKeyStatsSnapshot {
+  id: string
+  name: string
+  key_preview: string
+  deleted: boolean
+  last_used_at_unix?: number | null
+  requests_total: number
+  tokens: AuthKeyTokenStats
+  latency: AuthKeyLatencyStats
+  routing: RouteCounts
+}
+
 export interface StatsSnapshot {
   scope: StatsScope | string
   requests_total: number
@@ -121,6 +163,7 @@ export interface StatsSnapshot {
   effective_routing?: Record<string, unknown> | null
   classifier?: Record<string, unknown> | null
   agent_budgets?: Array<{ agent_id: string; budget_limit: number | null; tokens_used: number }>
+  auth_key_stats?: AuthKeyStatsSnapshot[] | null
 }
 
 export interface SetupPostResponse {

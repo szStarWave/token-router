@@ -4,8 +4,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use token_router::config::normalize_client_http_url;
+use token_router::gateway::logging;
+use token_router::gateway::AppConfig;
 
 const PIPE_NAME: &str = r"\\.\pipe\Herdsman-status";
+const LOG_TARGET: &str = "token_router::herdsman";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const MODEL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DISCOVER_INTERVAL: Duration = Duration::from_secs(30);
@@ -99,6 +103,20 @@ pub struct HerdsmanOpenResult {
     pub target: String,
 }
 
+fn herdsman_log(level: &str, message: impl AsRef<str>) {
+    if let Ok(config) = AppConfig::load() {
+        let _ = logging::append_message(&config.data_dir, level, LOG_TARGET, message.as_ref());
+    }
+}
+
+fn herdsman_info(message: impl AsRef<str>) {
+    herdsman_log("INFO", message);
+}
+
+fn herdsman_warn(message: impl AsRef<str>) {
+    herdsman_log("WARN", message);
+}
+
 fn runtime_state() -> Arc<Mutex<HerdsmanRuntimeState>> {
     RUNTIME_STATE
         .get_or_init(|| Arc::new(Mutex::new(HerdsmanRuntimeState::default())))
@@ -150,6 +168,42 @@ fn map_models(raw: Vec<RawHerdsmanModel>, openai_endpoint: &str) -> Vec<Herdsman
             source: "herdsman",
         })
         .collect()
+}
+
+fn models_signature(models: &[HerdsmanModelInfo]) -> String {
+    models
+        .iter()
+        .map(|m| {
+            if let Some(ctx) = m.context_window {
+                format!("{}@{}", m.name, ctx)
+            } else {
+                m.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn log_running_models(models: &[HerdsmanModelInfo]) {
+    if models.is_empty() {
+        herdsman_info("running models: none");
+        return;
+    }
+    let details: Vec<String> = models
+        .iter()
+        .map(|m| {
+            if let Some(ctx) = m.context_window {
+                format!("{} (context={ctx})", m.name)
+            } else {
+                m.name.clone()
+            }
+        })
+        .collect();
+    herdsman_info(format!(
+        "running models ({}): {}",
+        models.len(),
+        details.join(", ")
+    ));
 }
 
 #[cfg(windows)]
@@ -325,7 +379,8 @@ fn read_status_from_pipe() -> Option<HerdsmanStatus> {
 }
 
 fn fetch_models(endpoint: &str, openai_endpoint: &str) -> Vec<HerdsmanModelInfo> {
-    let base = endpoint.trim_end_matches('/');
+    let base = normalize_client_http_url(endpoint).trim_end_matches('/').to_string();
+    let client_openai_endpoint = normalize_client_http_url(openai_endpoint);
     let url = format!("{base}/api/v1/models");
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -345,7 +400,7 @@ fn fetch_models(endpoint: &str, openai_endpoint: &str) -> Vec<HerdsmanModelInfo>
         Err(_) => return Vec::new(),
     };
 
-    map_models(raw, openai_endpoint)
+    map_models(raw, &client_openai_endpoint)
 }
 
 fn emit_connected(app: &AppHandle, connected: bool) {
@@ -386,6 +441,14 @@ fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
     });
 
     if changed {
+        if installed {
+            herdsman_info(format!(
+                "installation state changed: installed at {}",
+                launcher.as_deref().unwrap_or("?")
+            ));
+        } else {
+            herdsman_info("installation state changed: not installed");
+        }
         emit_install_detected(app, installed, launcher);
     }
 }
@@ -393,6 +456,7 @@ fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
 fn run_discovery(app: &AppHandle) {
     #[cfg(windows)]
     {
+        herdsman_info("running installation discovery");
         let launcher = resolve_herdsman_launcher();
         apply_launcher_discovery(app, launcher);
     }
@@ -421,6 +485,14 @@ fn poll_models_during_session(
             break;
         }
         let models = fetch_models(endpoint, openai_endpoint);
+        let previous = runtime_state()
+            .lock()
+            .map(|state| models_signature(&state.models))
+            .unwrap_or_default();
+        let current = models_signature(&models);
+        if current != previous {
+            log_running_models(&models);
+        }
         emit_models(app, &models);
         update_runtime_state(|state| {
             state.models = models;
@@ -435,6 +507,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
     };
 
     // FlowyClaw: connected as soon as the status pipe is reachable.
+    herdsman_info("connected to status pipe");
     emit_connected(app, true);
     update_runtime_state(|state| {
         state.connected = true;
@@ -445,20 +518,34 @@ fn run_connection_session(app: &AppHandle) -> bool {
 
     if let Some(response) = read_pipe_message(handle) {
         if let Ok(status) = serde_json::from_str::<HerdsmanStatus>(&response) {
-            endpoint = Some(status.endpoint.clone());
-            openai_endpoint = Some(status.openai_endpoint.clone());
+            let client_endpoint = normalize_client_http_url(&status.endpoint);
+            let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
+            endpoint = Some(client_endpoint.clone());
+            openai_endpoint = Some(client_openai_endpoint.clone());
 
             let models = fetch_models(&status.endpoint, &status.openai_endpoint);
+            herdsman_info(format!(
+                "status received: endpoint={}, openai_endpoint={} (client: {}, {})",
+                status.endpoint,
+                status.openai_endpoint,
+                client_endpoint,
+                client_openai_endpoint,
+            ));
+            log_running_models(&models);
             emit_models(app, &models);
             emit_connected(app, true);
 
             update_runtime_state(|state| {
                 state.connected = true;
-                state.endpoint = Some(status.endpoint);
-                state.openai_endpoint = Some(status.openai_endpoint);
+                state.endpoint = Some(client_endpoint);
+                state.openai_endpoint = Some(client_openai_endpoint);
                 state.models = models;
             });
+        } else {
+            herdsman_warn("failed to parse status pipe response");
         }
+    } else {
+        herdsman_warn("empty status pipe response");
     }
 
     let pipe_alive = Arc::new(AtomicBool::new(true));
@@ -479,6 +566,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
     close_pipe(handle);
     pipe_alive.store(false, Ordering::SeqCst);
 
+    herdsman_info("disconnected from status pipe");
     emit_connected(app, false);
     emit_models(app, &[]);
     update_runtime_state(|state| {
@@ -530,6 +618,7 @@ pub fn start_herdsman_service(app: AppHandle) {
         return;
     }
 
+    herdsman_info("herdsman service started");
     let discover_app = app.clone();
     thread::spawn(move || discovery_loop(discover_app));
     thread::spawn(move || service_loop(app));
@@ -545,6 +634,13 @@ pub fn herdsman_get_status() -> HerdsmanStatusSnapshot {
         .lock()
         .map(|state| snapshot_from_state(&state))
         .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn herdsman_refresh_status(app: tauri::AppHandle) -> HerdsmanStatusSnapshot {
+    #[cfg(windows)]
+    run_discovery(&app);
+    herdsman_get_status()
 }
 
 #[cfg(windows)]
@@ -885,10 +981,25 @@ fn resolve_portable_exe_scan() -> Option<String> {
 
 #[cfg(windows)]
 fn resolve_herdsman_launcher() -> Option<String> {
-    resolve_from_callme_file()
-        .or_else(resolve_known_install_paths)
-        .or_else(resolve_from_registry)
-        .or_else(resolve_portable_exe_scan)
+    let strategies: [(&str, fn() -> Option<String>); 4] = [
+        ("callme file", resolve_from_callme_file),
+        ("known install paths", resolve_known_install_paths),
+        ("registry", resolve_from_registry),
+        ("portable exe scan", resolve_portable_exe_scan),
+    ];
+
+    for (name, resolver) in strategies {
+        match resolver() {
+            Some(path) => {
+                herdsman_info(format!("detected via {name}: {path}"));
+                return Some(path);
+            }
+            None => herdsman_info(format!("{name}: not found")),
+        }
+    }
+
+    herdsman_info("installation not detected by any strategy");
+    None
 }
 
 #[cfg(not(windows))]
@@ -921,6 +1032,7 @@ fn spawn_herdsman(launcher: &str) -> Result<(), String> {
 
     let path = Path::new(launcher);
     if !path.is_file() {
+        herdsman_warn(format!("launcher path no longer exists: {launcher}"));
         update_runtime_state(|state| {
             state.launcher_path = None;
             state.installed = false;
@@ -929,6 +1041,7 @@ fn spawn_herdsman(launcher: &str) -> Result<(), String> {
     }
 
     let work_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    herdsman_info(format!("spawning Herdsman: {launcher}"));
     Command::new(path)
         .current_dir(work_dir)
         .spawn()

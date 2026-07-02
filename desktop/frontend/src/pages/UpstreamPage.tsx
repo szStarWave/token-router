@@ -21,10 +21,10 @@ import {
 } from '../lib/cloud-upstream'
 import {
   buildDisplayItems,
-  buildEdgeSavePayload,
   deleteManualEntry,
   getEdgeModelDisplayName,
   isEdgeUpstreamConfigured,
+  persistEdgeSelection,
   selectEdgeModel,
   upsertManualEntry,
   type ManualEdgeEntry,
@@ -93,10 +93,7 @@ export function UpstreamPage() {
   }
 
   const saveEdge = () => {
-    if (!connected) return
-    const built = buildEdgeSavePayload()
-    if (!built?.edge?.base_url || !built?.edge?.model) return
-    saveSetup.mutate({ edge: built.edge, gateway: built.gateway })
+    void persistEdgeSelection((body) => saveSetup.mutate(body))
   }
 
   const openDialog = (entry?: ManualEdgeEntry) => {
@@ -124,6 +121,7 @@ export function UpstreamPage() {
   }
 
   const budgetValue = budgetFromSlider(budgetSlider)
+  const edgeModelLabel = getEdgeModelDisplayName(setup?.edge)
 
   return (
     <section className="page active" id="page-upstream">
@@ -150,10 +148,10 @@ export function UpstreamPage() {
 
         <div className="upstream-selected-model edge">
           <span className="upstream-selected-model-label">{t('upstream.currentModel')}</span>
-          {getEdgeModelDisplayName() && (
-            <span className="tag bordered upstream-selected-model-tag" id="upstream-edge-selected-model-tag">{getEdgeModelDisplayName()}</span>
+          {edgeModelLabel && (
+            <span className="tag bordered upstream-selected-model-tag" id="upstream-edge-selected-model-tag">{edgeModelLabel}</span>
           )}
-          <span className="upstream-selected-model-value" id="upstream-edge-selected-model">{getEdgeModelDisplayName()}</span>
+          <span className="upstream-selected-model-value" id="upstream-edge-selected-model">{edgeModelLabel || '—'}</span>
         </div>
 
         <div className="upstream-stats">
@@ -207,7 +205,7 @@ export function UpstreamPage() {
                     key={item.key}
                     item={item}
                     selected={selectedKey === item.key}
-                    typeLabel={t('edgeModel.manual')}
+                    typeLabel={t('edgeModel.custom')}
                     selectLabel={item.name}
                     editLabel={t('action.edit')}
                     deleteLabel={t('action.delete')}

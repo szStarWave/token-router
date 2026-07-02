@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::ConfigFile;
+use crate::config::auth_keys::ResolvedAuthKey;
 use crate::config::{ensure_initialized, load_from_path, setup::endpoint_configured};
 
 use crate::gateway::classifier::ClassifierSettings;
@@ -52,17 +53,25 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     pub pid_file: PathBuf,
     /// Client → Gateway (`/v1/chat/completions`). None = no auth.
+    pub inbound_api_keys: Vec<String>,
+    /// key value → resolved auth key metadata (when auth enabled).
+    pub auth_key_by_value: HashMap<String, ResolvedAuthKey>,
+    /// First inbound key for legacy callers.
     pub api_key: Option<String>,
     pub admin_token: Option<String>,
     pub config_path: PathBuf,
     pub experience: ExperienceSettings,
     pub session_persist_enabled: bool,
+    pub session_retention_days: u64,
+    pub session_cleanup_interval_secs: u64,
     pub cloud_sticky_ttl_secs: u64,
     /// Work-step cloud verification sample rate in `[0.0, 1.0]` (config baseline).
     pub work_verify_sample_rate: f32,
     pub adaptive_routing: AdaptiveRoutingSettings,
     pub classifier: ClassifierSettings,
     pub agents: HashMap<String, AgentUpstreamConfig>,
+    pub log_max_size_mb: u64,
+    pub log_max_files: usize,
 }
 
 impl AppConfig {
@@ -94,6 +103,17 @@ impl AppConfig {
             .routing_mode
             .parse()
             .map_err(|()| anyhow::anyhow!("invalid gateway.routing_mode"))?;
+        let inbound_api_keys = if file.gateway.auth_enabled {
+            crate::config::auth_keys::collect_inbound_api_keys(&file.gateway)
+        } else {
+            Vec::new()
+        };
+        let auth_key_by_value = if file.gateway.auth_enabled {
+            crate::config::auth_keys::build_auth_key_by_value(&file.gateway)
+        } else {
+            HashMap::new()
+        };
+        let api_key = inbound_api_keys.first().cloned();
 
         Ok(Self {
             listen_addr: file.gateway.listen,
@@ -129,7 +149,9 @@ impl AppConfig {
             ctx_edge_max_tokens: file.gateway.ctx_edge_max_tokens,
             data_dir,
             pid_file,
-            api_key: file.gateway.api_key.filter(|s| !s.is_empty()),
+            inbound_api_keys,
+            auth_key_by_value,
+            api_key,
             admin_token: file.gateway.admin_token.filter(|s| !s.is_empty()),
             config_path,
             experience: ExperienceSettings {
@@ -139,6 +161,8 @@ impl AppConfig {
                 target_fallback: file.gateway.experience_target_fallback,
             },
             session_persist_enabled: file.gateway.session_persist_enabled,
+            session_retention_days: file.gateway.session_retention_days,
+            session_cleanup_interval_secs: file.gateway.session_cleanup_interval_secs.max(60),
             cloud_sticky_ttl_secs: file.gateway.cloud_sticky_ttl_secs,
             work_verify_sample_rate: file.gateway.work_verify_sample_rate.clamp(0.0, 1.0),
             adaptive_routing: AdaptiveRoutingSettings {
@@ -184,6 +208,8 @@ impl AppConfig {
                     )
                 })
                 .collect(),
+            log_max_size_mb: file.gateway.log_max_size_mb,
+            log_max_files: file.gateway.log_max_files.max(1),
         })
     }
 

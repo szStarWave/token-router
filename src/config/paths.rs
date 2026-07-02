@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 /// Application data directory name under user home (e.g. `~/{APP_DIR_NAME}/`).
+#[cfg(feature = "desktop")]
+pub const APP_DIR_NAME: &str = ".token-router-desktop";
+#[cfg(not(feature = "desktop"))]
 pub const APP_DIR_NAME: &str = ".token-router";
 
 /// User home directory (cross-platform).
@@ -40,12 +43,16 @@ pub fn stats_file() -> anyhow::Result<PathBuf> {
     Ok(app_dir()?.join("stats.json"))
 }
 
+pub fn stats_db() -> anyhow::Result<PathBuf> {
+    Ok(app_dir()?.join("stats.db"))
+}
+
 /// `{app_dir}/callme` — absolute path to the executable that can start Token Router.
 pub fn callme_file() -> anyhow::Result<PathBuf> {
     Ok(app_dir()?.join("callme"))
 }
 
-/// Write `~/.token-router/callme` with the current executable path (best-effort).
+/// Write `{app_dir}/callme` with the current executable path (best-effort).
 fn ensure_callme() {
     let Ok(path) = std::env::current_exe() else {
         return;

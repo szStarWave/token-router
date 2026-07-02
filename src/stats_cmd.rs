@@ -153,7 +153,7 @@ fn labels(lang: StatsLang) -> StatsLabels {
             first_record: "First record (unix)",
             last_saved: "Last saved (unix)",
             session_uptime: "Session uptime",
-            global_note: "(counters include all gateway runs; written to stats.json)",
+            global_note: "(counters include all gateway runs; persisted in stats.db)",
             section_requests: "Requests",
             total: "total",
             stream: "stream",
@@ -266,7 +266,7 @@ fn labels(lang: StatsLang) -> StatsLabels {
             first_record: "首次记录 (unix)",
             last_saved: "最后保存 (unix)",
             session_uptime: "会话运行时长",
-            global_note: "（计数包含所有网关运行记录，写入 stats.json）",
+            global_note: "（计数包含所有网关运行记录，写入 stats.db）",
             section_requests: "请求",
             total: "总计",
             stream: "流式",
@@ -666,9 +666,27 @@ async fn load_global_stats(settings: &CliSettings) -> Result<GatewayStats> {
 }
 
 fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
-    let stats_path = crate::config::stats_file()?;
-    let data = stats::data::load(&stats_path)?;
     let data_dir = crate::config::app_dir()?;
+    let db_path = crate::config::stats_db()?;
+    let db_exists = db_path.exists();
+    let stats_path = if db_exists {
+        db_path.clone()
+    } else {
+        crate::config::stats_file()?
+    };
+    let data = if db_exists {
+        let db = stats::db::StatsDb::open(&data_dir, &data_dir.join("stats.json.bak"))?;
+        db.load_totals(StatsScope::Global)?
+    } else {
+        stats::data::load(&stats_path)?
+    };
+    let latency_p95_p99 = if db_exists {
+        stats::db::StatsDb::open(&data_dir, &data_dir.join("stats.json.bak"))?
+            .latency_percentiles(StatsScope::Global)
+            .ok()
+    } else {
+        None
+    };
     let experience = experience_snapshot_from_disk(&data_dir, settings).ok();
     let classifier = classifier_snapshot_from_disk(&data_dir, settings).ok();
     let effective_routing = experience.as_ref().and_then(|exp| {
@@ -680,7 +698,7 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
             &config.adaptive_routing,
         ))
     });
-    let snap = stats::build_snapshot(
+    let mut snap = stats::build_snapshot(
         &data,
         StatsScope::Global,
         stats_path.display().to_string(),
@@ -690,6 +708,10 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
         effective_routing,
         None,
     );
+    if let Some((p95, p99)) = latency_p95_p99 {
+        snap.latency.p95_ms = p95;
+        snap.latency.p99_ms = p99;
+    }
     Ok(from_snapshot(snap))
 }
 

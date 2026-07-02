@@ -35,11 +35,11 @@ export function RoutingPage() {
 
   const saveRouting = () => {
     if (!connected) {
-      showToast(t('conn.offline'), false)
+      showToast('conn.offline', false)
       return
     }
     saveSetup.mutate({ gateway: form }, {
-      onSuccess: () => showToast(t('toast.routingSaved')),
+      onSuccess: () => showToast('toast.routingSaved'),
     })
   }
 
@@ -47,7 +47,7 @@ export function RoutingPage() {
     setForm({ ...DEFAULTS })
     if (connected) {
       saveSetup.mutate({ gateway: DEFAULTS }, {
-        onSuccess: () => showToast(t('toast.resetOk')),
+        onSuccess: () => showToast('toast.resetOk'),
       })
     }
   }

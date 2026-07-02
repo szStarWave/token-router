@@ -345,6 +345,42 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Checks whether OpenClaw or Hermes config has been initialized.",
+          "type": "string",
+          "const": "allow-check-agent-initialized",
+          "markdownDescription": "Checks whether OpenClaw or Hermes config has been initialized."
+        },
+        {
+          "description": "Writes Token Router gateway settings into Claude Code settings.json.",
+          "type": "string",
+          "const": "allow-configure-claude-code-agent",
+          "markdownDescription": "Writes Token Router gateway settings into Claude Code settings.json."
+        },
+        {
+          "description": "Writes Token Router provider config into Codex config.toml.",
+          "type": "string",
+          "const": "allow-configure-codex-agent",
+          "markdownDescription": "Writes Token Router provider config into Codex config.toml."
+        },
+        {
+          "description": "Writes Token Router provider config into Hermes config.yaml.",
+          "type": "string",
+          "const": "allow-configure-hermes-agent",
+          "markdownDescription": "Writes Token Router provider config into Hermes config.yaml."
+        },
+        {
+          "description": "Writes Token Router provider config into Hermes Flash config.yaml.",
+          "type": "string",
+          "const": "allow-configure-hermes-flash-agent",
+          "markdownDescription": "Writes Token Router provider config into Hermes Flash config.yaml."
+        },
+        {
+          "description": "Writes Token Router provider config into OpenClaw openclaw.json.",
+          "type": "string",
+          "const": "allow-configure-openclaw-agent",
+          "markdownDescription": "Writes Token Router provider config into OpenClaw openclaw.json."
+        },
+        {
           "description": "Returns the desktop app version for feedback.",
           "type": "string",
           "const": "allow-feedback-app-version",
@@ -463,6 +499,12 @@
           "type": "string",
           "const": "allow-ota-get-post-restart-notice",
           "markdownDescription": "Reads and consumes the post-OTA restart notice."
+        },
+        {
+          "description": "Reads inbound gateway auth keys from config.toml for agent setup.",
+          "type": "string",
+          "const": "allow-read-inbound-auth-key",
+          "markdownDescription": "Reads inbound gateway auth keys from config.toml for agent setup."
         },
         {
           "description": "Enables the show_main_window command.",

@@ -65,6 +65,10 @@ pub async fn stats(
     let usage = state.agent_usage.snapshot();
     let agent_budgets = AgentBudgetSnapshot::from_config_and_usage(&config.agents, &usage);
     let agent_budgets = if agent_budgets.is_empty() { None } else { Some(agent_budgets) };
+    let config_auth_keys = state
+        .config_mgr
+        .list_auth_keys()
+        .unwrap_or_default();
     Ok(Json(state.stats.snapshot(
         scope,
         uptime,
@@ -72,7 +76,55 @@ pub async fn stats(
         classifier,
         effective_routing,
         agent_budgets,
+        &config_auth_keys,
     )))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TimelineQuery {
+    #[serde(default)]
+    pub scope: Option<String>,
+    pub range: String,
+    /// Browser `Date.getTimezoneOffset()` for daily aggregation.
+    #[serde(default)]
+    pub tz_offset: Option<i32>,
+}
+
+pub async fn stats_timeline(
+    State(state): State<AppState>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<crate::gateway::stats::TimelineResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let scope = match query.scope.as_deref() {
+        None | Some("session") => crate::gateway::stats::StatsScope::Session,
+        Some("global") => crate::gateway::stats::StatsScope::Global,
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("invalid stats scope `{other}` (use session or global)")
+                })),
+            ));
+        }
+    };
+    let range = crate::gateway::stats::TimelineRange::parse(&query.range).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid timeline range `{}` (use h24, d7, or d30)", query.range)
+            })),
+        )
+    })?;
+    let tz_offset = query.tz_offset.unwrap_or(0);
+    state
+        .stats
+        .query_timeline(scope, range, tz_offset)
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })
 }
 
 pub async fn status(State(state): State<AppState>) -> Json<GatewayStatus> {

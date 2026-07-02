@@ -27,7 +27,11 @@ CONFIG_FLAG := $(if $(CONFIG),--config $(CONFIG),)
 # Release binary if built; otherwise `cargo run --`.
 ROUTER      = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
 
-UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
+ifeq ($(OS),Windows_NT)
+UNAME_S := Windows
+else
+UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
+endif
 ifeq ($(UNAME_S),Windows)
   DYLIB := $(TARGET)\release\token_router.dll
 else ifeq ($(UNAME_S),Darwin)
@@ -60,7 +64,8 @@ endif
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh \
         package-electron-win clean-package-electron-win \
-        ui-build tauri-dev tauri-build
+        ui-build tauri-dev tauri-build \
+        ota-check-windows ota-stage build-ota ota-publish push version
 
 help:
 	@echo "  build            Build debug CLI + library"
@@ -81,9 +86,16 @@ help:
 	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
 	@echo "  tauri-build      Build Tauri desktop app (release)"
+	@echo "  build-ota        Build Tauri release and stage OTA-named exe (Windows)"
+	@echo "  push             Publish staged OTA exe to ModelScope (needs MODELSCOPE_TOKEN)"
+	@echo "  version X.Y.Z    Bump app version across manifests (e.g. make version 0.4.0 or VER=0.4.0)"
 	@echo ""
 	@echo "Options:"
 	@echo "  CONFIG=path      Pass --config to token-router (e.g. CONFIG=example/config.toml)"
+	@echo "  BUILD=1          Run build-ota before push"
+	@echo "  OTA_REGION=CN|INTL   Override OTA region (default from VITE_EDITION)"
+	@echo "  OTA_CHANNEL=flowy    Override OTA channel"
+	@echo "  OTA_ENABLE_ACCOUNT=true|false"
 
 build:
 	$(CARGO) build
@@ -207,3 +219,94 @@ tauri-dev:
 tauri-build:
 	$(PNPM) --dir $(DESKTOP) run icons:generate
 	$(PNPM) --dir $(DESKTOP) run tauri:build
+
+# OTA publish (Windows release desktop → ModelScope)
+OTA_CHANNEL          ?= flowy
+OTA_ENABLE_ACCOUNT   ?= true
+UV                   ?= uv
+OTA_PUBLISH_SCRIPT   := scripts/publish_ota/publish.py
+ifeq ($(UNAME_S),Windows)
+DESKTOP_VERSION      := $(shell powershell -NoProfile -Command "$$l = (Select-String -Path 'desktop/src-tauri/Cargo.toml' -Pattern '^version = ' | Select-Object -First 1).Line; if ($$l) { $$l -replace 'version = \"','' -replace '\"','' } else { '0.0.0' }")
+VITE_EDITION         := $(shell powershell -NoProfile -Command "$$v='domestic'; if (Test-Path 'desktop/frontend/.env') { Get-Content 'desktop/frontend/.env' | ForEach-Object { if ($$_ -match '^VITE_EDITION=(.+)$$') { $$v = $$matches[1].Trim('\"','''') } } }; $$v")
+TAURI_RELEASE_EXE    := desktop\src-tauri\target\release\token-router-desktop.exe
+OTA_STAGING_DIR      := $(TARGET)\ota
+else
+DESKTOP_VERSION      := $(shell grep -E '^version = ' desktop/src-tauri/Cargo.toml 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
+VITE_EDITION         := $(shell grep -E '^VITE_EDITION=' desktop/frontend/.env 2>/dev/null | head -1 | cut -d= -f2 | tr -d '\r"'"'"'' | tr '[:upper:]' '[:lower:]')
+TAURI_RELEASE_EXE    := desktop/src-tauri/target/release/token-router-desktop.exe
+OTA_STAGING_DIR      := $(TARGET)/ota
+endif
+ifndef OTA_REGION
+ifeq ($(VITE_EDITION),international)
+OTA_REGION           := INTL
+else
+OTA_REGION           := CN
+endif
+endif
+ifeq ($(OTA_ENABLE_ACCOUNT),true)
+OTA_ACCOUNT_DIR      := with_account
+else
+OTA_ACCOUNT_DIR      := without_account
+endif
+OTA_EXE_NAME         := Token-Router-v$(DESKTOP_VERSION)-$(OTA_CHANNEL)-$(OTA_REGION)-$(OTA_ACCOUNT_DIR).exe
+ifeq ($(UNAME_S),Windows)
+OTA_STAGED_EXE       := $(OTA_STAGING_DIR)\$(OTA_EXE_NAME)
+else
+OTA_STAGED_EXE       := $(OTA_STAGING_DIR)/$(OTA_EXE_NAME)
+endif
+
+ota-check-windows:
+ifneq ($(UNAME_S),Windows)
+	@echo ERROR: OTA targets require Windows
+	@exit 1
+endif
+
+ota-stage: ota-check-windows
+ifeq ($(UNAME_S),Windows)
+	@if not exist "$(TAURI_RELEASE_EXE)" (echo ERROR: missing $(TAURI_RELEASE_EXE). Run: make build-ota && exit /b 1)
+	@if not exist "$(OTA_STAGING_DIR)" mkdir "$(OTA_STAGING_DIR)"
+	@copy /Y "$(TAURI_RELEASE_EXE)" "$(OTA_STAGED_EXE)" >nul
+	@echo Staged $(OTA_STAGED_EXE)
+else
+	@test -f "$(TAURI_RELEASE_EXE)" || (echo "ERROR: missing $(TAURI_RELEASE_EXE). Run: make build-ota" && exit 1)
+	@mkdir -p "$(OTA_STAGING_DIR)"
+	@cp "$(TAURI_RELEASE_EXE)" "$(OTA_STAGED_EXE)"
+	@echo "Staged $(OTA_STAGED_EXE)"
+endif
+
+build-ota: ota-check-windows tauri-build ota-stage
+
+ota-publish: ota-stage ota-check-windows
+ifeq ($(UNAME_S),Windows)
+	@if "$(MODELSCOPE_TOKEN)"=="" (echo ERROR: set MODELSCOPE_TOKEN environment variable, e.g. $$env:MODELSCOPE_TOKEN = "your-token" && exit /b 1)
+else
+	@test -n "$(MODELSCOPE_TOKEN)" || (echo "ERROR: set MODELSCOPE_TOKEN environment variable" && exit 1)
+endif
+	$(UV) run --with modelscope python $(OTA_PUBLISH_SCRIPT) \
+		--channel $(OTA_CHANNEL) \
+		--region-scope $(OTA_REGION) \
+		--version v$(DESKTOP_VERSION) \
+		--enable-account-system $(OTA_ENABLE_ACCOUNT) \
+		--exe-path "$(OTA_STAGED_EXE)"
+
+ifeq ($(BUILD),1)
+push: ota-check-windows build-ota ota-publish
+else
+push: ota-check-windows ota-publish
+endif
+
+# Bump version: make version 0.4.0  OR  make version VER=0.4.0
+BUMP_VERSION := $(VER)
+ifeq ($(BUMP_VERSION),)
+BUMP_VERSION := $(firstword $(filter-out version,$(MAKECMDGOALS)))
+endif
+ifneq ($(filter version,$(MAKECMDGOALS)),)
+$(eval $(filter-out version,$(MAKECMDGOALS)):;@:)
+endif
+
+version:
+ifeq ($(BUMP_VERSION),)
+	@echo ERROR: missing version. Usage: make version 0.4.0  OR  make version VER=0.4.0
+	@exit 1
+endif
+	node scripts/bump_version.mjs $(BUMP_VERSION)

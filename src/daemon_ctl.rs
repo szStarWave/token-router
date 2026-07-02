@@ -8,7 +8,7 @@ use crate::cli_settings::CliSettings;
 use crate::config::pid_file as config_pid_file;
 use crate::gateway::config::AppConfig;
 use crate::gateway::daemon;
-use crate::gateway::init_logging;
+use crate::gateway::{init_logging, LogRotateConfig};
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -202,7 +202,14 @@ pub fn schedule_daemon_restart(config_path: &Path, old_pid: u32) -> Result<()> {
 /// Wait until the gateway pid exits, then re-exec `__serve` (separate process from the dying gateway).
 pub fn run_restart_wait(old_pid: u32, config_override: Option<&Path>) -> Result<()> {
     let app_config = AppConfig::load_from(config_override)?;
-    let log_path = init_logging(&app_config.data_dir, false)?;
+    let log_path = init_logging(
+        &app_config.data_dir,
+        false,
+        LogRotateConfig {
+            max_size_mb: app_config.log_max_size_mb,
+            max_files: app_config.log_max_files,
+        },
+    )?;
     info!(
         old_pid,
         config = %app_config.config_path.display(),

@@ -7,7 +7,7 @@ use token_router::client;
 use token_router::config::{self, ensure_initialized, load_from_path};
 use token_router::daemon_ctl;
 use token_router::env_cmd;
-use token_router::gateway::{self, init_logging, AppConfig};
+use token_router::gateway::{self, init_logging, AppConfig, LogRotateConfig};
 use token_router::setup_cmd;
 use token_router::stats_cmd;
 use tracing::info;
@@ -34,7 +34,7 @@ enum Commands {
     },
     /// Show gateway routing and traffic statistics.
     Stats {
-        /// Cumulative totals from `stats.json` (includes history across restarts).
+        /// Cumulative totals from `stats.db` (includes history across restarts).
         #[arg(long)]
         global: bool,
         #[arg(long)]
@@ -140,7 +140,14 @@ fn print_init_message(created: bool, path: &std::path::Path) {
 async fn run_serve(config_override: Option<PathBuf>) -> Result<()> {
     let app_config = AppConfig::load_from(config_override.as_deref())?;
 
-    let log_path = init_logging(&app_config.data_dir, false)?;
+    let log_path = init_logging(
+        &app_config.data_dir,
+        false,
+        LogRotateConfig {
+            max_size_mb: app_config.log_max_size_mb,
+            max_files: app_config.log_max_files,
+        },
+    )?;
     info!(
         config = %app_config.config_path.display(),
         app_dir = %app_config.data_dir.display(),

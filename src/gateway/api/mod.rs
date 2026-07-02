@@ -1,3 +1,4 @@
+pub mod auth_keys;
 pub mod admin;
 pub mod anthropic;
 pub mod auth;

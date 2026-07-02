@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
 import { StatsChart, StatsChartRange, type ChartRange } from '../components/stats/StatsChart'
+import { AuthKeyStatsPanel } from '../components/stats/AuthKeyStatsPanel'
 import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierTokenSummary, tokenSummary, tokenTableRows, topStepKinds } from '../lib/stats-utils'
 import { apiFetch } from '../lib/gateway'
 import type { StatsScope, StatsSnapshot } from '../types/gateway'
@@ -187,7 +188,7 @@ export function StatsPage() {
           <div className="panel-title" style={{ marginBottom: 0 }}>{t('stats.tokenTrend')}</div>
           <StatsChartRange range={chartRange} onChange={setChartRange} />
         </div>
-        <StatsChart scope={scope} range={chartRange} tokenBreakdown={tb} />
+        <StatsChart scope={scope} range={chartRange} />
       </div>
 
       <div className="panel">
@@ -215,6 +216,10 @@ export function StatsPage() {
           </table>
         </div>
       </div>
+
+      {(stats?.auth_key_stats?.length ?? 0) > 0 && (
+        <AuthKeyStatsPanel keys={stats!.auth_key_stats!} />
+      )}
 
       <div className="panel">
         <div className="panel-title">{t('stats.cascadeLatency')}</div>

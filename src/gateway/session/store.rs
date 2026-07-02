@@ -130,6 +130,7 @@ impl SessionStore {
             if let Some(entry) = guard.get_mut(conversation_key) {
                 f(&mut entry.data);
                 entry.data.version = data::SESSION_VERSION;
+                entry.data.last_updated_unix = now_unix();
             }
         }
         if self.persist_enabled {
@@ -212,6 +213,164 @@ impl SessionStore {
             }
         });
     }
+
+    pub fn spawn_cleanup_task(
+        self: &std::sync::Arc<Self>,
+        retention_days: u64,
+        cleanup_interval_secs: u64,
+    ) {
+        let store = self.clone();
+        let interval_secs = cleanup_interval_secs.max(60);
+        tokio::spawn(async move {
+            if let Err(e) = store.cleanup(retention_days) {
+                tracing::warn!(error = %e, "session cleanup failed");
+            }
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if let Err(e) = store.cleanup(retention_days) {
+                    tracing::warn!(error = %e, "session cleanup failed");
+                }
+            }
+        });
+    }
+
+    pub fn cleanup(&self, retention_days: u64) -> anyhow::Result<CleanupStats> {
+        if !self.persist_enabled {
+            return Ok(CleanupStats::default());
+        }
+
+        let skip_paths = self.dirty_session_paths();
+        let now = now_unix();
+        let mut stats = CleanupStats::default();
+
+        let entries = match std::fs::read_dir(&self.sessions_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(stats),
+            Err(e) => return Err(e.into()),
+        };
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+
+            if file_name.ends_with(".json.tmp") {
+                if remove_session_file(&path, skip_paths.contains(&path)) {
+                    stats.removed_invalid += 1;
+                }
+                continue;
+            }
+
+            if !file_name.ends_with(".json") {
+                continue;
+            }
+
+            if skip_paths.contains(&path) {
+                stats.kept += 1;
+                continue;
+            }
+
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "session cleanup read failed");
+                    stats.kept += 1;
+                    continue;
+                }
+            };
+
+            match serde_json::from_str::<SessionData>(&text) {
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "removing invalid session file"
+                    );
+                    if remove_session_file(&path, false) {
+                        self.evict_path(&path);
+                        stats.removed_invalid += 1;
+                    }
+                }
+                Ok(data) => {
+                    let mtime = file_mtime_unix(&path);
+                    if data.is_expired(retention_days, mtime, now) {
+                        if remove_session_file(&path, false) {
+                            self.evict_path(&path);
+                            stats.removed_expired += 1;
+                        }
+                    } else {
+                        stats.kept += 1;
+                    }
+                }
+            }
+        }
+
+        if stats.removed_invalid > 0 || stats.removed_expired > 0 {
+            tracing::info!(
+                removed_invalid = stats.removed_invalid,
+                removed_expired = stats.removed_expired,
+                kept = stats.kept,
+                retention_days,
+                "session cleanup"
+            );
+        }
+
+        Ok(stats)
+    }
+
+    fn dirty_session_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let keys = self
+            .dirty_keys
+            .lock()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        keys.into_iter()
+            .map(|key| self.session_path(&key))
+            .collect()
+    }
+
+    fn evict_path(&self, path: &Path) {
+        let mut guard = self.inner.lock().expect("session mutex");
+        guard.retain(|key, _| self.session_path(key) != path);
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupStats {
+    pub removed_invalid: u32,
+    pub removed_expired: u32,
+    pub kept: u32,
+}
+
+fn remove_session_file(path: &Path, skipped: bool) -> bool {
+    if skipped {
+        return false;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "session cleanup delete failed");
+            false
+        }
+    }
+}
+
+fn file_mtime_unix(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 fn now_unix() -> u64 {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/gateway'
-import { normalizeClientGatewayBase, readGatewayAuthKeyFromStorage } from '../lib/gateway'
+import { normalizeClientGatewayBase } from '../lib/gateway'
 import {
   bootstrapHerdsmanStatus,
   ensureEdgeUpstreamConfigured,
@@ -33,7 +33,6 @@ export function useBootstrap(enabled: boolean) {
     setUptimeAnchor,
     showToast,
     setIsTauriApp,
-    setGatewayAuthKeyPending,
   } = useAppStore()
 
   const setSetup = useSetupStore((s) => s.setSetup)
@@ -58,7 +57,7 @@ export function useBootstrap(enabled: boolean) {
         modelId: setup?.edge?.model?.trim() || undefined,
       })
       void qc.invalidateQueries({ queryKey: ['gateway'] })
-      showToast(useAppStore.getState().locale === 'zh' ? '已连接 Gateway' : 'Connected to Gateway')
+      showToast('toast.connected')
     } catch {
       setConnected(false)
       setStatus(null)
@@ -116,9 +115,6 @@ export function useBootstrap(enabled: boolean) {
     applyTheme()
     void initEdgeUpstream()
 
-    const storedKey = readGatewayAuthKeyFromStorage()
-    if (storedKey) setGatewayAuthKeyPending(storedKey)
-
     const run = async () => {
       if (tauri) {
         try {
@@ -172,7 +168,6 @@ export function useBootstrap(enabled: boolean) {
     enabled,
     afterBoot,
     applyTheme,
-    setGatewayAuthKeyPending,
     setGatewayBase,
     setGlobalStats,
     setIsTauriApp,

@@ -107,6 +107,12 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let sessions_path = sessions_dir().unwrap_or_else(|_| config.data_dir.join("sessions"));
     let sessions = SessionStore::open(sessions_path, config.session_persist_enabled)?;
     sessions.spawn_flush_task();
+    if config.session_persist_enabled {
+        sessions.spawn_cleanup_task(
+            config.session_retention_days,
+            config.session_cleanup_interval_secs,
+        );
+    }
 
     let agent_usage = AgentCloudUsageStore::open(&config.data_dir)?;
     agent_usage.spawn_flush_task();

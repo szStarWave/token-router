@@ -6,6 +6,9 @@ export const BRAND = {
   storePrefix: 'tokenrouter',
 } as const
 
+/** Flowy login / device activate client app id (distinct from FlowyClaw aipc). */
+export const FLOWY_CLIENT_APP = 'tokenrouter' as const
+
 export const FLOWY_HOSTS = {
   productionDomesticHost: 'server.flowyaipc.cn',
   productionInternationalHost: 'server.flowyaipc.com',

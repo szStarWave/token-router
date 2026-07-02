@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, postSetup, refreshGatewayStatusAfterRestart } from '../lib/gateway'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
-import type { LogsResponse, GatewayStatus, StatsSnapshot, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
+import type { LogsResponse, GatewayStatus, StatsSnapshot, StatsTimelineResponse, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
+import { toastErrorKey } from '../lib/toast-i18n'
 import { queryKeys } from './keys'
 import { normalizeClientGatewayBase } from '../lib/gateway'
 import { gatewayReadLogs, gatewayRestart, gatewayStart, gatewayStop, isTauri } from '../lib/tauri'
@@ -36,6 +37,21 @@ export function useGatewayStatsQuery(scope: 'session' | 'global') {
   return useQuery({
     queryKey: queryKeys.gatewayStats(scope),
     queryFn: () => apiFetch<StatsSnapshot>(`/v1/admin/stats?scope=${scope}`),
+    enabled: connected,
+    refetchInterval: connected ? 10_000 : false,
+  })
+}
+
+export function useStatsTimelineQuery(scope: 'session' | 'global', range: 'h24' | 'd7' | 'd30') {
+  const connected = useAppStore((s) => s.connected)
+  return useQuery({
+    queryKey: queryKeys.statsTimeline(scope, range),
+    queryFn: async () => {
+      const tzOffset = new Date().getTimezoneOffset()
+      return apiFetch<StatsTimelineResponse>(
+        `/v1/admin/stats/timeline?scope=${scope}&range=${range}&tz_offset=${tzOffset}`,
+      )
+    },
     enabled: connected,
     refetchInterval: connected ? 10_000 : false,
   })
@@ -76,9 +92,12 @@ export function useSaveSetupMutation() {
     onSuccess: (res) => {
       if (res.upstream) setSetup(res.upstream)
       void qc.invalidateQueries({ queryKey: ['gateway'] })
-      if (res.message) showToast(res.message)
+      showToast('toast.upstreamSaved')
     },
-    onError: (e: Error) => showToast(e.message, false),
+    onError: (e: Error) => {
+      const { key, vars } = toastErrorKey(e, 'toast.saveFail')
+      showToast(key, false, vars)
+    },
   })
 }
 
@@ -98,11 +117,15 @@ export function useGatewayControlMutations() {
         await refreshGatewayStatusAfterRestart()
         setConnected(true)
       } catch (e) {
-        showToast(e instanceof Error ? e.message : String(e), false)
+        const { key, vars } = toastErrorKey(e, 'toast.startFail')
+        showToast(key, false, vars)
       }
       void qc.invalidateQueries({ queryKey: ['gateway'] })
     },
-    onError: (e: Error) => useAppStore.getState().showToast(e.message, false),
+    onError: (e: Error) => {
+      const { key, vars } = toastErrorKey(e, 'toast.startFail')
+      useAppStore.getState().showToast(key, false, vars)
+    },
   })
   const stop = useMutation({
     mutationFn: () => gatewayStop(),
@@ -115,7 +138,10 @@ export function useGatewayControlMutations() {
       }
       void qc.invalidateQueries({ queryKey: ['gateway'] })
     },
-    onError: (e: Error) => useAppStore.getState().showToast(e.message, false),
+    onError: (e: Error) => {
+      const { key, vars } = toastErrorKey(e, 'toast.stopFail')
+      useAppStore.getState().showToast(key, false, vars)
+    },
   })
   const restart = useMutation({
     mutationFn: async () => {
@@ -130,11 +156,15 @@ export function useGatewayControlMutations() {
         await refreshGatewayStatusAfterRestart()
         setConnected(true)
       } catch (e) {
-        showToast(e instanceof Error ? e.message : String(e), false)
+        const { key, vars } = toastErrorKey(e, 'toast.restartFail')
+        showToast(key, false, vars)
       }
       void qc.invalidateQueries({ queryKey: ['gateway'] })
     },
-    onError: (e: Error) => useAppStore.getState().showToast(e.message, false),
+    onError: (e: Error) => {
+      const { key, vars } = toastErrorKey(e, 'toast.restartFail')
+      useAppStore.getState().showToast(key, false, vars)
+    },
   })
   return { start, stop, restart }
 }

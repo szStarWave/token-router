@@ -2,36 +2,14 @@ import { useEffect, useRef, useCallback } from 'react'
 import * as echarts from 'echarts'
 import { formatAxisNum } from '../../lib/format-number'
 import { useI18n } from '../../hooks/useI18n'
-import { snapshotFromTokenBreakdown } from '../../lib/stats-utils'
+import { apiFetch } from '../../lib/gateway'
+import type { StatsScope, StatsTimelineResponse } from '../../types/gateway'
 
 export type ChartRange = 'h24' | 'd7' | 'd30'
 
-const CHART_RANGE_CONFIG: Record<ChartRange, { bucket: 'hour' | 'day'; limit: number }> = {
-  h24: { bucket: 'hour', limit: 24 },
-  d7: { bucket: 'day', limit: 7 },
-  d30: { bucket: 'day', limit: 30 },
-}
-
-const MAX_SNAPSHOT_AGE_MS = 30 * 24 * 60 * 60 * 1000
-const MAX_SNAPSHOTS = 50_000
-
-type BucketMode = 'minute' | 'hour' | 'day'
-type Scope = 'session' | 'global'
-
-interface Snapshot {
-  ts: number
-  edgeIn: number
-  edgeOut: number
-  cloudIn: number
-  cloudOut: number
-}
-
-const historyByScope: Record<Scope, Snapshot[]> = { session: [], global: [] }
-
-const BUCKET_MS: Record<BucketMode, number> = {
-  minute: 60 * 1000,
-  hour: 60 * 60 * 1000,
-  day: 24 * 60 * 60 * 1000,
+interface StatsChartProps {
+  scope: StatsScope
+  range: ChartRange
 }
 
 function themeColors() {
@@ -52,133 +30,26 @@ function pad2(n: number) {
   return String(n).padStart(2, '0')
 }
 
-function bucketStartTs(ts: number, mode: BucketMode) {
-  const d = new Date(ts)
-  if (mode === 'day') d.setHours(0, 0, 0, 0)
-  else if (mode === 'hour') d.setMinutes(0, 0, 0)
-  else d.setSeconds(0, 0)
-  return d.getTime()
-}
-
-function formatTimeLabel(bucketTs: number, mode: BucketMode) {
-  const d = new Date(bucketTs)
-  if (mode === 'hour') return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:00`
+function formatTimeLabel(bucketTs: number, granularity: string) {
+  const d = new Date(bucketTs * 1000)
+  if (granularity === 'hour') {
+    return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:00`
+  }
   return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
 }
 
-function countersReset(cur: Snapshot, prev: Snapshot) {
-  return cur.edgeIn < prev.edgeIn || cur.edgeOut < prev.edgeOut || cur.cloudIn < prev.cloudIn || cur.cloudOut < prev.cloudOut
+async function fetchTimeline(scope: StatsScope, range: ChartRange): Promise<StatsTimelineResponse> {
+  const tzOffset = new Date().getTimezoneOffset()
+  return apiFetch<StatsTimelineResponse>(
+    `/v1/admin/stats/timeline?scope=${scope}&range=${range}&tz_offset=${tzOffset}`,
+  )
 }
 
-function subtractCumulative(
-  cur: Pick<Snapshot, 'edgeIn' | 'edgeOut' | 'cloudIn' | 'cloudOut'>,
-  prev: Pick<Snapshot, 'edgeIn' | 'edgeOut' | 'cloudIn' | 'cloudOut'>,
-) {
-  return {
-    edgeIn: Math.max(0, cur.edgeIn - prev.edgeIn),
-    edgeOut: Math.max(0, cur.edgeOut - prev.edgeOut),
-    cloudIn: Math.max(0, cur.cloudIn - prev.cloudIn),
-    cloudOut: Math.max(0, cur.cloudOut - prev.cloudOut),
-  }
-}
-
-function trimHistory(hist: Snapshot[]) {
-  const cutoff = Date.now() - MAX_SNAPSHOT_AGE_MS
-  while (hist.length > 0 && hist[0].ts < cutoff) hist.shift()
-  if (hist.length > MAX_SNAPSHOTS) hist.splice(0, hist.length - MAX_SNAPSHOTS)
-}
-
-function latestSnapshotPerBucket(snapshots: Snapshot[], mode: BucketMode) {
-  const map = new Map<number, Snapshot & { bucket: number }>()
-  for (const snap of snapshots) {
-    const bucket = bucketStartTs(snap.ts, mode)
-    const existing = map.get(bucket)
-    if (!existing || snap.ts >= existing.ts) map.set(bucket, { ...snap, bucket })
-  }
-  return map
-}
-
-function aggregateHistory(snapshots: Snapshot[], range: ChartRange) {
-  const { bucket, limit } = CHART_RANGE_CONFIG[range]
-  const step = BUCKET_MS[bucket]
-  const windowEnd = bucketStartTs(Date.now(), bucket)
-  const windowStart = windowEnd - (limit - 1) * step
-
-  const zeroPoint = (bucketTs: number) => ({
-    bucket: bucketTs,
-    edgeIn: 0,
-    edgeOut: 0,
-    cloudIn: 0,
-    cloudOut: 0,
-  })
-
-  const windowBuckets: number[] = []
-  for (let bucketTs = windowStart; bucketTs <= windowEnd; bucketTs += step) {
-    windowBuckets.push(bucketTs)
-  }
-
-  if (!snapshots.length) {
-    return windowBuckets.map(zeroPoint)
-  }
-
-  const bucketMap = latestSnapshotPerBucket(snapshots, bucket)
-  const bucketStarts = [...bucketMap.keys()].sort((a, b) => a - b)
-
-  let prevCumulative = { edgeIn: 0, edgeOut: 0, cloudIn: 0, cloudOut: 0 }
-  for (const bucketTs of bucketStarts) {
-    if (bucketTs >= windowStart) break
-    const snap = bucketMap.get(bucketTs)!
-    prevCumulative = {
-      edgeIn: snap.edgeIn,
-      edgeOut: snap.edgeOut,
-      cloudIn: snap.cloudIn,
-      cloudOut: snap.cloudOut,
-    }
-  }
-
-  return windowBuckets.map((bucketTs) => {
-    const snap = bucketMap.get(bucketTs)
-    if (!snap) return zeroPoint(bucketTs)
-    const delta = subtractCumulative(snap, prevCumulative)
-    prevCumulative = {
-      edgeIn: snap.edgeIn,
-      edgeOut: snap.edgeOut,
-      cloudIn: snap.cloudIn,
-      cloudOut: snap.cloudOut,
-    }
-    return { bucket: bucketTs, ...delta }
-  })
-}
-
-export function recordStatsChart(scope: Scope, tb: Record<string, unknown> | undefined) {
-  if (!scope) return
-  const cur = snapshotFromTokenBreakdown(tb)
-  const hist = historyByScope[scope]
-  const ts = Date.now()
-  const minuteBucket = bucketStartTs(ts, 'minute')
-  const last = hist[hist.length - 1]
-  if (last && countersReset({ ts, ...cur }, last)) hist.length = 0
-  const tail = hist[hist.length - 1]
-  if (tail && bucketStartTs(tail.ts, 'minute') === minuteBucket) {
-    tail.ts = ts
-    Object.assign(tail, cur)
-  } else {
-    hist.push({ ts, ...cur })
-  }
-  trimHistory(hist)
-}
-
-interface StatsChartProps {
-  scope: Scope
-  range: ChartRange
-  tokenBreakdown?: Record<string, unknown> | null
-}
-
-export function StatsChart({ scope, range, tokenBreakdown }: StatsChartProps) {
+export function StatsChart({ scope, range }: StatsChartProps) {
   const { locale, t } = useI18n()
   const chartRef = useRef<HTMLDivElement>(null)
   const instanceRef = useRef<echarts.ECharts | null>(null)
-  const bucketMode = CHART_RANGE_CONFIG[range].bucket
+  const timelineRef = useRef<StatsTimelineResponse | null>(null)
 
   const labels = {
     edgeIn: t('chart.edgeInput'),
@@ -189,14 +60,13 @@ export function StatsChart({ scope, range, tokenBreakdown }: StatsChartProps) {
 
   const render = useCallback(() => {
     const el = chartRef.current
-    if (!el) return
+    const timeline = timelineRef.current
+    if (!el || !timeline) return
     if (!instanceRef.current) instanceRef.current = echarts.init(el)
     const chart = instanceRef.current
-    const snapshots = historyByScope[scope] || []
-    const history = aggregateHistory(snapshots, range)
     chart.resize()
     const colors = themeColors()
-    const times = history.map((p) => formatTimeLabel(p.bucket, bucketMode))
+    const times = timeline.points.map((p) => formatTimeLabel(p.bucket_ts, timeline.granularity))
     const legend = [labels.edgeIn, labels.edgeOut, labels.cloudIn, labels.cloudOut]
     const makeSeries = (name: string, data: number[], color: string, alpha: number) => ({
       name,
@@ -234,20 +104,34 @@ export function StatsChart({ scope, range, tokenBreakdown }: StatsChartProps) {
           splitLine: { lineStyle: { color: colors.split } },
         },
         series: [
-          makeSeries(labels.edgeIn, history.map((p) => p.edgeIn), colors.edge, 0.18),
-          makeSeries(labels.edgeOut, history.map((p) => p.edgeOut), colorAlpha(colors.edge, 0.72), 0.12),
-          makeSeries(labels.cloudIn, history.map((p) => p.cloudIn), colors.cloud, 0.18),
-          makeSeries(labels.cloudOut, history.map((p) => p.cloudOut), colorAlpha(colors.cloud, 0.72), 0.12),
+          makeSeries(labels.edgeIn, timeline.points.map((p) => p.edge_in), colors.edge, 0.18),
+          makeSeries(labels.edgeOut, timeline.points.map((p) => p.edge_out), colorAlpha(colors.edge, 0.72), 0.12),
+          makeSeries(labels.cloudIn, timeline.points.map((p) => p.cloud_in), colors.cloud, 0.18),
+          makeSeries(labels.cloudOut, timeline.points.map((p) => p.cloud_out), colorAlpha(colors.cloud, 0.72), 0.12),
         ],
       },
       { notMerge: true },
     )
-  }, [scope, range, bucketMode, labels, locale])
+  }, [labels, locale])
 
   useEffect(() => {
-    if (tokenBreakdown) recordStatsChart(scope, tokenBreakdown)
-    render()
-  }, [scope, range, tokenBreakdown, render])
+    let cancelled = false
+    const load = () => {
+      void fetchTimeline(scope, range)
+        .then((data) => {
+          if (cancelled) return
+          timelineRef.current = data
+          render()
+        })
+        .catch((e) => console.warn('stats timeline', e))
+    }
+    load()
+    const poll = setInterval(load, 10_000)
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+    }
+  }, [scope, range, render])
 
   useEffect(() => {
     const onResize = () => instanceRef.current?.resize()

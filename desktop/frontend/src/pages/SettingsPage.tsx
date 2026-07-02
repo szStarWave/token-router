@@ -1,7 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useQueryClient } from '@tanstack/react-query'
-import { apiFetch, generateGatewayAuthKey, maskGatewayAuthKey, normalizeClientGatewayBase, persistGatewayAuthKeyFull, readGatewayAuthKeyFromStorage, refreshGatewayStatusAfterRestart } from '../lib/gateway'
-import { gatewayRestart, feedbackAppVersion, invokeErrorMessage, isTauri, isWindowsTauri, otaCheckNow } from '../lib/tauri'
+import { apiFetch, normalizeClientGatewayBase, refreshGatewayStatusAfterRestart } from '../lib/gateway'
+import {
+  gatewayRestart,
+  feedbackAppVersion,
+  invokeErrorMessage,
+  isTauri,
+  isWindowsTauri,
+  otaCheckNow,
+  type OtaEventPayload,
+} from '../lib/tauri'
 import { useGatewayControlMutations } from '../queries/gateway'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
@@ -9,7 +18,10 @@ import { useAuthStore } from '../stores/authStore'
 import { useI18n, useTheme } from '../hooks/useI18n'
 import { usePrefs } from '../hooks/usePrefs'
 import { DEFAULT_GATEWAY_PORT } from '../constants/defaults'
-import type { GatewayConfigView } from '../types/gateway'
+import { GatewayAuthKeysPanel } from '../components/settings/GatewayAuthKeysPanel'
+import { useOnboardingContext } from '../components/onboarding/OnboardingContext'
+import { clearOnboardingSeen, ONBOARDING_ENABLED } from '../lib/onboarding'
+import type { UpstreamSetupView } from '../types/gateway'
 
 export function SettingsPage() {
   const { t } = useI18n()
@@ -22,37 +34,23 @@ export function SettingsPage() {
   const status = useAppStore((s) => s.status)
   const showToast = useAppStore((s) => s.showToast)
   const setGatewayBase = useAppStore((s) => s.setGatewayBase)
-  const gatewayAuthKeyPending = useAppStore((s) => s.gatewayAuthKeyPending)
-  const setGatewayAuthKeyPending = useAppStore((s) => s.setGatewayAuthKeyPending)
   const setup = useSetupStore((s) => s.setup)
   const setSetup = useSetupStore((s) => s.setSetup)
   const logout = useAuthStore((s) => s.logout)
   const { start, stop, restart } = useGatewayControlMutations()
   const qc = useQueryClient()
+  const { restartTour } = useOnboardingContext()
 
   const g = setup?.gateway
   const [port, setPort] = useState(g?.listen_port ?? DEFAULT_GATEWAY_PORT)
   const [lan, setLan] = useState(!!g?.listen_lan)
-  const [authKeyDisplay, setAuthKeyDisplay] = useState('')
+  const [authEnabled, setAuthEnabled] = useState(!!g?.auth_enabled)
 
   useEffect(() => {
     setPort(g?.listen_port ?? DEFAULT_GATEWAY_PORT)
     setLan(!!g?.listen_lan)
-    refreshAuthKeyDisplay(g)
+    setAuthEnabled(!!g?.auth_enabled)
   }, [g])
-
-  const refreshAuthKeyDisplay = (gateway?: GatewayConfigView | null) => {
-    const pending = gatewayAuthKeyPending ?? readGatewayAuthKeyFromStorage()
-    if (pending) {
-      setAuthKeyDisplay(pending)
-      return
-    }
-    if (gateway?.api_key_set && gateway.api_key_preview) {
-      setAuthKeyDisplay(gateway.api_key_preview)
-    } else {
-      setAuthKeyDisplay('')
-    }
-  }
 
   const onTheme = (pref: 'light' | 'dark' | 'system') => {
     setThemePref(pref)
@@ -64,47 +62,17 @@ export function SettingsPage() {
     savePrefs()
   }
 
-  const generateKey = async () => {
-    const key = generateGatewayAuthKey()
-    setGatewayAuthKeyPending(key)
-    persistGatewayAuthKeyFull(key)
-    setAuthKeyDisplay(key)
-    if (connected) {
-      try {
-        await apiFetch('/v1/admin/setup', { method: 'POST', body: JSON.stringify({ gateway: { api_key: key } }) })
-        showToast(t('toast.gatewayAuthKeySaved'))
-      } catch {
-        /* saved locally */
-      }
-    }
-  }
-
-  const copyKey = async () => {
-    const key = gatewayAuthKeyPending ?? readGatewayAuthKeyFromStorage()
-    if (!key) {
-      showToast(t('toast.gatewayAuthKeyEmpty'), false)
-      return
-    }
-    await navigator.clipboard.writeText(key)
-    showToast(t('toast.copied'))
-  }
-
   const saveGatewayEndpoint = async () => {
     if (!connected) {
-      showToast(t('conn.offline'), false)
+      showToast('conn.offline', false)
       return
     }
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      showToast(t('toast.gatewayPortInvalid'), false)
+      showToast('toast.gatewayPortInvalid', false)
       return
     }
     try {
-      const gateway: Record<string, unknown> = { listen_port: port, listen_lan: lan }
-      const key = gatewayAuthKeyPending ?? readGatewayAuthKeyFromStorage()
-      if (key) {
-        gateway.api_key = key
-        persistGatewayAuthKeyFull(key)
-      }
+      const gateway = { listen_port: port, listen_lan: lan, auth_enabled: authEnabled }
       const res = await apiFetch<{ message?: string; upstream: typeof setup }>('/v1/admin/setup', {
         method: 'POST',
         body: JSON.stringify({ gateway }),
@@ -114,19 +82,27 @@ export function SettingsPage() {
         const url = await gatewayRestart()
         if (url) setGatewayBase(normalizeClientGatewayBase(url))
         await refreshGatewayStatusAfterRestart()
-        showToast(res.message || t('toast.gatewayEndpointSaved'))
+        showToast('toast.gatewayEndpointSaved')
       } else {
-        showToast(t('toast.gatewayEndpointRestart'))
+        showToast('toast.gatewayEndpointRestart')
       }
+      const freshSetup = await apiFetch<UpstreamSetupView>('/v1/admin/setup')
+      setSetup(freshSetup)
       void qc.invalidateQueries({ queryKey: ['gateway'] })
     } catch (e) {
-      showToast(t('toast.saveFail', { msg: e instanceof Error ? e.message : String(e) }), false)
+      showToast('toast.saveFail', false, { msg: e instanceof Error ? e.message : String(e) })
     }
   }
 
   const handleLogout = () => {
     logout()
     location.reload()
+  }
+
+  const handleRestartOnboarding = () => {
+    clearOnboardingSeen()
+    restartTour()
+    showToast('onboarding.restarted', true)
   }
 
   const gatewayRunning = status?.status === 'running'
@@ -163,11 +139,18 @@ export function SettingsPage() {
 
       <div className="panel">
         <div className="panel-title">{t('settings.gatewayListen')}</div>
-        <div className="form-switches">
+        <div className="form-switches form-switches-stacked">
           <div className="switch-row">
             <label htmlFor="gateway_lan_enabled">{t('field.gatewayLanEnabled')}</label>
             <label className="switch" aria-hidden="true">
               <input type="checkbox" id="gateway_lan_enabled" checked={lan} onChange={(e) => setLan(e.target.checked)} />
+              <span className="switch-slider" />
+            </label>
+          </div>
+          <div className="switch-row">
+            <label htmlFor="gateway_auth_enabled">{t('field.gatewayAuthEnabled')}</label>
+            <label className="switch" aria-hidden="true">
+              <input type="checkbox" id="gateway_auth_enabled" checked={authEnabled} onChange={(e) => setAuthEnabled(e.target.checked)} />
               <span className="switch-slider" />
             </label>
           </div>
@@ -179,28 +162,6 @@ export function SettingsPage() {
               <input id="gateway_port" type="number" min={1024} max={65535} step={1} value={port} onChange={(e) => setPort(Number(e.target.value))} />
             </div>
           </div>
-          <div className="form-row">
-            <div>
-              <label>{t('field.gatewayAuthKey')}</label>
-              <div className="input-action-row">
-                <input
-                  id="gateway_api_key"
-                  type="text"
-                  readOnly
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder={t('ph.gatewayAuthKey')}
-                  value={authKeyDisplay ? (authKeyDisplay.length > 12 && !authKeyDisplay.startsWith('token-') ? authKeyDisplay : maskGatewayAuthKey(authKeyDisplay)) : ''}
-                />
-                <button type="button" className="btn btn-ghost btn-sm" id="btn-gateway-auth-key-generate" onClick={() => void generateKey()}>
-                  {t('action.generateAuthKey')}
-                </button>
-                <button type="button" className="btn btn-ghost btn-sm" id="btn-gateway-auth-key-copy" onClick={() => void copyKey()}>
-                  {t('action.copy')}
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
         <div className="upstream-actions">
           <button type="button" className="btn btn-primary" onClick={() => void saveGatewayEndpoint()}>
@@ -208,6 +169,8 @@ export function SettingsPage() {
           </button>
         </div>
       </div>
+
+      <GatewayAuthKeysPanel />
 
       <div className="panel">
         <div className="panel-title">{t('settings.gatewayControl')}</div>
@@ -227,6 +190,16 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {ONBOARDING_ENABLED ? (
+        <div className="panel onboarding-settings-panel">
+          <div className="panel-title">{t('settings.guide')}</div>
+          <p className="setting-hint">{t('onboarding.settingsHint')}</p>
+          <button type="button" className="btn btn-primary btn-sm" id="btn-restart-onboarding" onClick={handleRestartOnboarding}>
+            {t('onboarding.restart')}
+          </button>
+        </div>
+      ) : null}
 
       <div className="panel">
         <div className="panel-title">{t('settings.account')}</div>
@@ -251,6 +224,8 @@ function AboutPanel() {
   const { t } = useI18n()
   const showToast = useAppStore((s) => s.showToast)
   const [version, setVersion] = useState('—')
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const manualCheckRef = useRef(false)
 
   useEffect(() => {
     if (isTauri()) {
@@ -260,16 +235,57 @@ function AboutPanel() {
     }
   }, [])
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined
+    void listen<OtaEventPayload>('ota:event', (event) => {
+      if (!manualCheckRef.current) return
+
+      const { message, data } = event.payload
+      switch (message) {
+        case 'ota.upToDate':
+          manualCheckRef.current = false
+          showToast('toast.checkUpdateUpToDate', true)
+          break
+        case 'ota.newVersion': {
+          manualCheckRef.current = false
+          const newVersion = typeof data?.new_version === 'string' ? data.new_version : ''
+          showToast('toast.checkUpdateNewVersion', true, { version: newVersion })
+          break
+        }
+        case 'ota.checkFailed':
+        case 'ota.compareFailed': {
+          manualCheckRef.current = false
+          const msg =
+            typeof data?.error === 'string'
+              ? data.error
+              : t(message === 'ota.checkFailed' ? 'ota.checkFailed' : 'ota.compareFailed')
+          showToast('toast.checkUpdateFail', false, { msg })
+          break
+        }
+      }
+    }).then((fn) => {
+      unlisten = fn
+    })
+    return () => {
+      void unlisten?.()
+    }
+  }, [showToast, t])
+
   const checkUpdate = async () => {
+    if (checkingUpdate) return
     if (!isWindowsTauri()) {
-      showToast(t('ota.installFailed'), false)
+      showToast('ota.installFailed', false)
       return
     }
+    manualCheckRef.current = true
+    setCheckingUpdate(true)
     try {
       await otaCheckNow()
-      showToast(t('settings.checkUpdateStarted'), true)
     } catch (err) {
-      showToast(`${t('ota.checkFailed')}: ${invokeErrorMessage(err)}`, false)
+      manualCheckRef.current = false
+      showToast('toast.checkUpdateFail', false, { msg: invokeErrorMessage(err) })
+    } finally {
+      setCheckingUpdate(false)
     }
   }
 
@@ -280,8 +296,15 @@ function AboutPanel() {
         <span className="about-version-label">{t('settings.appVersion')}</span>
         <code className="about-version-code">{formatAppVersion(version)}</code>
         {isWindowsTauri() && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void checkUpdate()}>
-            {t('settings.checkUpdate')}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={checkingUpdate}
+            aria-busy={checkingUpdate}
+            onClick={() => void checkUpdate()}
+          >
+            {checkingUpdate && <span className="btn-spinner" aria-hidden="true" />}
+            {checkingUpdate ? t('settings.checkUpdateStarted') : t('settings.checkUpdate')}
           </button>
         )}
       </div>

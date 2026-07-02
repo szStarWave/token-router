@@ -2,8 +2,10 @@ import { Outlet, useRouterState } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { TitleBar } from './TitleBar'
 import { Toast } from '../common/Toast'
-import { useAppStore } from '../../stores/appStore'
+import { OnboardingProvider } from '../onboarding/OnboardingProvider'
 import { useI18n } from '../../hooks/useI18n'
+import { useEdgeSetupSync } from '../../hooks/useEdgeSetupSync'
+import { useAutoRefreshBalance } from '../../hooks/useAutoRefreshBalance'
 
 const PAGE_TITLE_KEYS: Record<string, string> = {
   overview: 'page.overview',
@@ -19,7 +21,8 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
 
 export function AppLayout() {
   const { t } = useI18n()
-  const connected = useAppStore((s) => s.connected)
+  useEdgeSetupSync()
+  useAutoRefreshBalance()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
   const pageTitle = (() => {
@@ -34,7 +37,7 @@ export function AppLayout() {
   })()
 
   return (
-    <>
+    <OnboardingProvider>
       <div className="app" id="app">
         <Sidebar />
         <div className="divider-v" />
@@ -44,12 +47,6 @@ export function AppLayout() {
               {pageTitle}
             </div>
             <div className="page-header-right">
-              <div className="page-actions">
-                <span className={`tag bordered ${connected ? 'ok' : 'off'}`} id="conn-badge">
-                  <span className="dot" />
-                  <span>{connected ? t('conn.connected') : t('conn.offline')}</span>
-                </span>
-              </div>
               <TitleBar />
             </div>
           </header>
@@ -59,6 +56,6 @@ export function AppLayout() {
         </main>
       </div>
       <Toast />
-    </>
+    </OnboardingProvider>
   )
 }

@@ -7,6 +7,7 @@ use tauri::{
 
 use token_router::embedded;
 
+mod agent_setup;
 mod devtools_gate;
 mod feedback;
 mod flowy_test_server;
@@ -187,6 +188,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(wechat_callback_plugin())
         .invoke_handler(tauri::generate_handler![
+            agent_setup::configure_openclaw_agent,
+            agent_setup::configure_hermes_agent,
+            agent_setup::configure_hermes_flash_agent,
+            agent_setup::configure_claude_code_agent,
+            agent_setup::configure_codex_agent,
+            agent_setup::read_inbound_auth_key_cmd,
+            agent_setup::check_agent_initialized,
             gateway_start,
             gateway_stop,
             gateway_restart,
@@ -198,6 +206,7 @@ pub fn run() {
             show_main_window,
             herdsman::herdsman_open_or_install,
             herdsman::herdsman_get_status,
+            herdsman::herdsman_refresh_status,
             herdsman::herdsman_start,
             feedback::feedback_app_version,
             feedback::feedback_submit,

@@ -20,7 +20,7 @@ export function AgentsPage() {
 
   const loadSetup = async () => {
     if (!connected) {
-      showToast(t('conn.offline'), false)
+      showToast('conn.offline', false)
       return
     }
     try {
@@ -30,9 +30,9 @@ export function AgentsPage() {
       const view = await apiFetch<UpstreamSetupView>(path)
       setSetup(view)
       void qc.invalidateQueries({ queryKey: queryKeys.gatewaySetup(agentId.trim() || undefined) })
-      showToast(t('toast.setupLoaded'))
+      showToast('toast.setupLoaded')
     } catch (e) {
-      showToast(t('toast.loadFail', { msg: e instanceof Error ? e.message : String(e) }), false)
+      showToast('toast.loadFail', false, { msg: e instanceof Error ? e.message : String(e) })
     }
   }
 

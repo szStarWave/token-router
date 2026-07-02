@@ -1,4 +1,4 @@
-import { BRAND } from './config'
+import { BRAND, FLOWY_CLIENT_APP } from './config'
 import { getCurrentFlowyServerBase } from './server'
 import { getAuthToken, useAuthStore } from '../../stores/authStore'
 
@@ -63,7 +63,7 @@ export async function loginByEmail(
     inviteCode: inviteCode?.trim() || undefined,
     channel: BRAND.id,
     device: '',
-    app: 'aipc',
+    app: FLOWY_CLIENT_APP,
   })
   if (res?.code !== 200) throw new Error(res?.msg || '登录失败')
   const token = res?.data
@@ -73,7 +73,7 @@ export async function loginByEmail(
 
 export async function loginByWeChatCallback(callbackUrl: string) {
   const url = new URL(callbackUrl)
-  url.searchParams.set('app', 'aipc')
+  url.searchParams.set('app', FLOWY_CLIENT_APP)
   const res = await get(url.toString(), null, true)
   if (res?.code !== 200) throw new Error(res?.msg || '微信登录失败')
   const token = res?.data
@@ -124,10 +124,28 @@ export async function loginByToken(token?: string | null) {
 
 export async function deviceActivateAfterLogin(token: string) {
   try {
-    await post('/device/activate', { app: 'aipc', channel: BRAND.id }, token)
+    await post('/device/activate', { app: FLOWY_CLIENT_APP, channel: BRAND.id }, token)
   } catch (e) {
     console.warn('[device/activate]', e)
   }
+}
+
+export interface DailyCheckInResult {
+  alreadyCheckedIn: boolean
+  grantedPoints: number
+  balance: number
+  dayKey: number
+}
+
+export async function dailyCheckIn(token?: string | null): Promise<DailyCheckInResult> {
+  const authToken = token ?? getAuthToken()
+  if (!authToken) throw new Error('未登录')
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await post('/credits/checkin', { timeZone }, authToken)
+  if (res?.code !== 200) throw new Error(res?.msg || '签到失败')
+  const data = res?.data
+  if (!data || typeof data !== 'object') throw new Error('签到失败')
+  return data as DailyCheckInResult
 }
 
 export async function reportLocalModelUsage(

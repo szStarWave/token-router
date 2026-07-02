@@ -16,5 +16,5 @@ pub mod stats;
 pub mod upstream;
 
 pub use config::AppConfig;
-pub use logging::init as init_logging;
+pub use logging::{init as init_logging, LogRotateConfig};
 pub use server::run;

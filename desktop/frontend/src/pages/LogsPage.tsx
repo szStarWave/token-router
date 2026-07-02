@@ -13,12 +13,26 @@ interface LogEntry {
 
 let nextLogId = 0
 
+const LOG_LINE_START = /^\d{4}-\d{2}-\d{2}T/
+
 function mapLogLines(raw: Array<{ level: string; text?: string; msg?: string }>): LogEntry[] {
   return raw.map((line) => ({
     id: nextLogId++,
     level: line.level,
     msg: line.text ?? line.msg ?? '',
   }))
+}
+
+function mergeAppendedLogLines(prev: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  if (!incoming.length) return prev
+  if (!prev.length) return incoming
+  if (LOG_LINE_START.test(incoming[0].msg)) return [...prev, ...incoming]
+  const last = prev[prev.length - 1]
+  return [
+    ...prev.slice(0, -1),
+    { ...last, msg: last.msg + incoming[0].msg },
+    ...incoming.slice(1),
+  ]
 }
 
 export function LogsPage() {
@@ -29,6 +43,7 @@ export function LogsPage() {
   const [headOffset, setHeadOffset] = useState(0)
   const [hasOlder, setHasOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [lines, setLines] = useState<LogEntry[]>([])
   const viewRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -65,7 +80,7 @@ export function LogsPage() {
     }
 
     setLines((prev) => {
-      let next = [...prev, ...mapLogLines(data.lines)]
+      let next = mergeAppendedLogLines(prev, mapLogLines(data.lines))
       if (next.length > LOG_MAX_LINES) next = next.slice(-LOG_MAX_LINES)
       return next
     })
@@ -113,7 +128,7 @@ export function LogsPage() {
         return next
       })
     } catch (e) {
-      showToast(t('logs.loadFail', { msg: e instanceof Error ? e.message : String(e) }), false)
+      showToast('logs.loadFail', false, { msg: e instanceof Error ? e.message : String(e) })
     } finally {
       loadingOlderRef.current = false
       setLoadingOlder(false)
@@ -133,7 +148,26 @@ export function LogsPage() {
     try {
       await gatewayOpenLogsDir()
     } catch (e) {
-      showToast(t('toast.openLogsDirFail', { msg: e instanceof Error ? e.message : String(e) }), false)
+      showToast('toast.openLogsDirFail', false, { msg: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const refreshLogs = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    stickToBottomRef.current = true
+    try {
+      const data = await fetchGatewayLogs({ offset: null })
+      setTailOffset(data.next_offset)
+      setHeadOffset(data.offset)
+      setHasOlder(data.offset > 0)
+      let next = mapLogLines(data.lines)
+      if (next.length > LOG_MAX_LINES) next = next.slice(-LOG_MAX_LINES)
+      setLines(next)
+    } catch (e) {
+      showToast('logs.loadFail', false, { msg: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -148,6 +182,14 @@ export function LogsPage() {
             )}
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void openLogsDir()}>
               {t('action.openLogsDir')}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={refreshing}
+              onClick={() => void refreshLogs()}
+            >
+              {t('action.refresh')}
             </button>
           </div>
         </div>

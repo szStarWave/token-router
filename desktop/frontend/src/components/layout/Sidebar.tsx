@@ -14,6 +14,7 @@ import { getAuthToken } from '../../stores/authStore'
 import { resolveEdgeModelLabel, isEdgeUpstreamConfigured } from '../../lib/edge-upstream'
 import { getCloudModelDisplayName, AUTO_MODEL_ID } from '../../lib/cloud-upstream'
 import type { RouteMode } from '../../types/gateway'
+import { openExternalUrl } from '../../lib/open-external'
 
 const CREDIT_TYPE_ORDER = ['DAILY_CHECKIN', 'PLAN', 'PACK', 'SIGNUP', 'TEAM_SEAT', 'OTHER']
 
@@ -23,7 +24,6 @@ const NAV_CARDS = [
   { page: 'upstream', navId: 'edge', wide: false, accent: 'accent-edge' },
   { page: 'upstream', navId: 'cloud', wide: false, accent: 'accent-cloud' },
   { page: 'routing', navId: 'routing', wide: false, accent: '' },
-  { page: 'agents', navId: 'agents', wide: false, accent: '' },
   { page: 'logs', navId: 'logs', wide: false, accent: '' },
   { page: 'settings', navId: 'settings', wide: false, accent: '' },
 ] as const
@@ -105,16 +105,11 @@ export function Sidebar() {
   }
 
   const openExternal = useCallback(async (url: string) => {
-    const tauri = window as Window & { __TAURI__?: { opener?: { openUrl: (u: string) => Promise<void> } } }
-    if (tauri.__TAURI__?.opener?.openUrl) {
-      try {
-        await tauri.__TAURI__.opener.openUrl(url)
-        return
-      } catch (e) {
-        console.warn('[sidebar] openUrl', e)
-      }
+    try {
+      await openExternalUrl(url)
+    } catch (e) {
+      console.warn('[sidebar] openUrl', e)
     }
-    window.open(url, '_blank', 'noopener,noreferrer')
   }, [])
 
   const openBilling = useCallback(() => {
@@ -180,21 +175,25 @@ export function Sidebar() {
         </div>
       </div>
 
-      <div className="route-tabs" id="route-tabs">
-        {(['auto', 'edge', 'cloud', 'cascade'] as RouteMode[]).map((route) => (
-          <button
-            key={route}
-            type="button"
-            className={`route-tab${routeTab === route ? ' active' : ''}`}
-            data-route={route}
-            onClick={() => onRouteTab(route)}
-          >
-            {t(`route.${route}`)}
-          </button>
-        ))}
-      </div>
+      <div className="sider-scroll">
+        <div className="route-tabs-card">
+          <div className="route-tabs-title">{t('route.switch')}</div>
+          <div className="route-tabs" id="route-tabs">
+            {(['auto', 'edge', 'cloud', 'cascade'] as RouteMode[]).map((route) => (
+              <button
+                key={route}
+                type="button"
+                className={`route-tab${routeTab === route ? ' active' : ''}`}
+                data-route={route}
+                onClick={() => onRouteTab(route)}
+              >
+                {t(`route.${route}`)}
+              </button>
+            ))}
+          </div>
+        </div>
 
-      <div className="card-grid" id="card-grid">
+        <div className="card-grid" id="card-grid">
         {NAV_CARDS.map((card) => {
           const active = activeNavId === card.navId
           const link = navTo(card.page, card.navId)
@@ -203,6 +202,7 @@ export function Sidebar() {
             <Link
               key={card.navId}
               {...link}
+              id={`nav-card-${card.navId}`}
               className={`nav-card${card.wide ? ' nav-card-wide' : ''}${card.accent ? ` ${card.accent}` : ''}${active ? ' active' : ''}`}
               data-page={card.page}
               data-nav-id={card.navId}
@@ -218,6 +218,7 @@ export function Sidebar() {
             </Link>
           )
         })}
+        </div>
       </div>
 
       <footer className="sider-footer no-drag" id="sider-footer">

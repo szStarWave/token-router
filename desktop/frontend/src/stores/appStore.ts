@@ -5,7 +5,8 @@ import { DEFAULT_GATEWAY_BASE } from '../constants/defaults'
 
 export interface ToastItem {
   id: number
-  message: string
+  key: string
+  vars?: Record<string, string | number>
   ok: boolean
 }
 
@@ -35,7 +36,7 @@ interface AppState {
   setConnected: (connected: boolean) => void
   setSiderWidth: (width: number) => void
   setSiderNarrow: (narrow: boolean) => void
-  showToast: (message: string, ok?: boolean) => void
+  showToast: (key: string, ok?: boolean, vars?: Record<string, string | number>) => void
   removeToast: (id: number) => void
   setStatus: (status: GatewayStatus | null) => void
   setStats: (stats: StatsSnapshot | null) => void
@@ -77,9 +78,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setConnected: (connected) => set({ connected }),
   setSiderWidth: (width) => set({ siderWidth: width }),
   setSiderNarrow: (narrow) => set({ siderNarrow: narrow }),
-  showToast: (message, ok = true) => {
+  showToast: (key, ok = true, vars) => {
     const id = ++toastId
-    set({ toasts: [...get().toasts, { id, message, ok }] })
+    set({ toasts: [...get().toasts, { id, key, vars, ok }] })
     setTimeout(() => get().removeToast(id), 3000)
   },
   removeToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),

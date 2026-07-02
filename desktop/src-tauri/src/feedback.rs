@@ -6,7 +6,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 const WEIXIN_FEEDBACK_WEBHOOK: &str =
-    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ceacfc4a-183f-4419-bcb2-674c0d8a739e";
+    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=e39bf4ef-785e-4488-ab46-4360ac702fb4";
 const MAX_FEEDBACK_CHARS: usize = 3000;
 const MAX_MARKDOWN_CHARS: usize = 3800;
 const MAX_LOG_LINES: usize = 3000;

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use crate::config::{
     ConfigFile, config_file, gateway_log_file, load_from_path, logs_dir, pid_file, sessions_dir,
-    stats_file, user_home,
+    stats_db, stats_file, user_home,
 };
 use serde::Serialize;
 
@@ -28,6 +28,7 @@ pub struct EnvPaths {
     pub logs_dir: String,
     pub gateway_log: String,
     pub stats_file: String,
+    pub stats_db: String,
     pub gateway_pid: Option<u32>,
     pub gateway_bin: String,
 }
@@ -106,6 +107,7 @@ fn build_report(config_override: &Option<PathBuf>) -> Result<EnvReport> {
             logs_dir: logs_dir()?.display().to_string(),
             gateway_log: gateway_log_file()?.display().to_string(),
             stats_file: stats_file()?.display().to_string(),
+            stats_db: stats_db()?.display().to_string(),
             gateway_pid: daemon_ctl::read_pid(),
             gateway_bin,
         },
@@ -153,6 +155,7 @@ fn print_human(r: &EnvReport) {
     println!("  logs_dir:       {}", r.paths.logs_dir);
     println!("  gateway_log:    {}", r.paths.gateway_log);
     println!("  stats_file:     {}", r.paths.stats_file);
+    println!("  stats_db:       {}", r.paths.stats_db);
     println!(
         "  gateway_pid:    {}",
         r.paths

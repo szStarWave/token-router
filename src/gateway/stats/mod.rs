@@ -1,17 +1,15 @@
 pub mod data;
+pub mod db;
 pub mod metrics;
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-
-const MAX_LATENCY_SAMPLES: usize = 2048;
 
 use serde::Serialize;
 
 pub use data::StatsData;
+pub use db::{StatsDb, TimelinePoint, TimelineRange, TimelineResponse};
 pub use metrics::{FinalResponseMetrics, UpstreamCallMetrics};
 pub use crate::gateway::routing::EffectiveRouting;
 
@@ -19,7 +17,7 @@ use crate::gateway::error::AppError;
 use crate::gateway::classifier::ClassifierSnapshot;
 use crate::gateway::experience::ExperienceSnapshot;
 use crate::gateway::routing::RouteDecision;
-use crate::gateway::agent_usage::AgentBudgetUsage;
+use crate::config::auth_keys::GatewayAuthKeyView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsScope {
@@ -44,43 +42,52 @@ impl StatsScope {
     }
 }
 
+use crate::gateway::agent_usage::AgentBudgetUsage;
+
+#[derive(Debug, Clone)]
+pub struct AuthKeyContext {
+    pub id: String,
+    pub name: String,
+    pub key_preview: String,
+}
+
 pub struct GatewayStats {
-    global: Mutex<StatsData>,
-    session: Mutex<StatsData>,
-    latency_samples: Mutex<VecDeque<u64>>,
-    path: PathBuf,
-    dirty: AtomicBool,
+    db: StatsDb,
+    stats_json_path: PathBuf,
+    pending_latency_ms: Mutex<Option<u64>>,
     session_started: Instant,
 }
 
 impl GatewayStats {
     pub fn open(data_dir: &Path) -> anyhow::Result<std::sync::Arc<Self>> {
-        let path = data_dir.join("stats.json");
-        let data = data::load(&path)?;
+        let stats_json_path = data_dir.join("stats.json");
+        let db = StatsDb::open(data_dir, &stats_json_path)?;
         Ok(std::sync::Arc::new(Self {
-            global: Mutex::new(data),
-            session: Mutex::new(StatsData::default()),
-            latency_samples: Mutex::new(VecDeque::new()),
-            path,
-            dirty: AtomicBool::new(false),
+            db,
+            stats_json_path,
+            pending_latency_ms: Mutex::new(None),
             session_started: Instant::now(),
         }))
     }
 
     #[cfg(test)]
     pub fn new_in_memory() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            global: Mutex::new(StatsData::default()),
-            session: Mutex::new(StatsData::default()),
-            latency_samples: Mutex::new(VecDeque::new()),
-            path: PathBuf::from("/tmp/flowy-test-stats.json"),
-            dirty: AtomicBool::new(false),
-            session_started: Instant::now(),
-        })
+        let dir = std::env::temp_dir().join(format!(
+            "flowy-stats-mem-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self::open(&dir).expect("in-memory stats db")
     }
 
     pub fn stats_file(&self) -> &Path {
-        &self.path
+        self.db.path()
+    }
+
+    pub fn stats_json_path(&self) -> &Path {
+        &self.stats_json_path
     }
 
     pub fn record_request(&self, stream: bool) {
@@ -91,26 +98,37 @@ impl GatewayStats {
         self.with_mut(|d| d.record_decision(decision));
     }
 
-    pub fn record_completion_tokens(&self, tokens_out: u32) {
-        self.with_mut(|d| d.record_completion_tokens(tokens_out));
-    }
-
-    pub fn record_upstream_metrics(&self, metrics: &UpstreamCallMetrics) {
-        self.with_mut(|d| d.record_upstream_metrics(metrics));
+    pub fn record_upstream_metrics(
+        &self,
+        metrics: &UpstreamCallMetrics,
+        auth_key: Option<&AuthKeyContext>,
+    ) {
         if metrics.latency_ms > 0 {
-            let mut samples = self
-                .latency_samples
-                .lock()
-                .expect("stats latency_samples mutex");
-            if samples.len() >= MAX_LATENCY_SAMPLES {
-                samples.pop_front();
-            }
-            samples.push_back(metrics.latency_ms);
+            *self.pending_latency_ms.lock().expect("pending latency") =
+                Some(metrics.latency_ms);
+        }
+        self.with_mut(|d| d.record_upstream_metrics(metrics));
+        if let Some(ctx) = auth_key {
+            self.auth_key_with_mut(ctx, |d| d.record_upstream_metrics(metrics));
         }
     }
 
-    pub fn record_final_response(&self, metrics: &FinalResponseMetrics) {
+    pub fn record_final_response(
+        &self,
+        metrics: &FinalResponseMetrics,
+        auth_key: Option<&AuthKeyContext>,
+    ) {
         self.with_mut(|d| d.record_final_response(metrics));
+        if let Some(ctx) = auth_key {
+            self.auth_key_with_mut(ctx, |d| d.record_final_response(metrics));
+        }
+    }
+
+    pub fn record_completion_tokens(&self, tokens_out: u32, auth_key: Option<&AuthKeyContext>) {
+        self.with_mut(|d| d.record_completion_tokens(tokens_out));
+        if let Some(ctx) = auth_key {
+            self.auth_key_with_mut(ctx, |d| d.record_completion_tokens(tokens_out));
+        }
     }
 
     pub fn record_upstream_edge(&self) {
@@ -133,23 +151,68 @@ impl GatewayStats {
         self.with_mut(|d| d.record_error(err));
     }
 
+    pub fn record_request_for_auth_key(&self, ctx: &AuthKeyContext, stream: bool) {
+        self.auth_key_with_mut(ctx, |d| d.record_request(stream));
+    }
+
+    pub fn record_decision_for_auth_key(&self, ctx: &AuthKeyContext, decision: &RouteDecision) {
+        self.auth_key_with_mut(ctx, |d| d.record_decision(decision));
+    }
+
+    pub fn record_error_for_auth_key(&self, ctx: &AuthKeyContext, err: &AppError) {
+        self.auth_key_with_mut(ctx, |d| d.record_error(err));
+    }
+
+    pub fn touch_auth_key_last_used(&self, ctx: &AuthKeyContext) {
+        let now = data::now_unix();
+        if let Err(e) = self.db.touch_auth_key_last_used(&ctx.id, now) {
+            tracing::warn!(error = %e, "auth key touch last used failed");
+        }
+    }
+
+    pub fn upsert_auth_key_meta(&self, id: &str, name: &str, key_preview: &str) {
+        if let Err(e) = self.db.upsert_auth_key_meta(id, name, key_preview) {
+            tracing::warn!(error = %e, "auth key meta upsert failed");
+        }
+    }
+
+    pub fn update_auth_key_meta_name(&self, id: &str, name: &str) {
+        if let Err(e) = self.db.update_auth_key_meta_name(id, name) {
+            tracing::warn!(error = %e, "auth key meta rename failed");
+        }
+    }
+
+    fn auth_key_with_mut(&self, ctx: &AuthKeyContext, update: impl Fn(&mut StatsData)) {
+        if let Err(e) = self
+            .db
+            .auth_key_with_mut(&ctx.id, &ctx.name, &ctx.key_preview, update)
+        {
+            tracing::warn!(error = %e, "auth key stats db write failed");
+        }
+    }
+
+    pub fn build_auth_key_stats(
+        &self,
+        scope: StatsScope,
+        config_keys: &[GatewayAuthKeyView],
+    ) -> Option<Vec<AuthKeyStatsSnapshot>> {
+        build_auth_key_stats_snapshots(&self.db, scope, config_keys)
+    }
+
     fn with_mut(&self, update: impl Fn(&mut StatsData)) {
-        update(&mut self.global.lock().expect("stats global mutex"));
-        update(&mut self.session.lock().expect("stats session mutex"));
-        self.dirty.store(true, Ordering::Release);
+        let bucket_ts = db::hour_bucket_ts(data::now_unix());
+        let latency_ms = self.pending_latency_ms.lock().expect("pending latency").take();
+        if let Err(e) = self.db.with_mut(&update, bucket_ts, latency_ms) {
+            tracing::warn!(error = %e, "stats db write failed");
+        }
     }
 
     pub fn flush_if_dirty(&self) -> anyhow::Result<()> {
-        if !self.dirty.swap(false, Ordering::AcqRel) {
-            return Ok(());
-        }
-        let data = self.global.lock().expect("stats global mutex").clone();
-        data::save(&self.path, &data)
+        self.db.flush_if_dirty()
     }
 
     pub fn flush(&self) -> anyhow::Result<()> {
-        self.dirty.store(true, Ordering::Release);
-        self.flush_if_dirty()
+        self.db.flush()
     }
 
     pub fn snapshot(
@@ -160,15 +223,19 @@ impl GatewayStats {
         classifier: Option<ClassifierSnapshot>,
         effective_routing: Option<EffectiveRouting>,
         agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
+        config_auth_keys: &[GatewayAuthKeyView],
     ) -> StatsSnapshot {
-        let data = match scope {
-            StatsScope::Session => self.session.lock().expect("stats session mutex").clone(),
-            StatsScope::Global => self.global.lock().expect("stats global mutex").clone(),
-        };
+        let data = self
+            .db
+            .load_totals(scope)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "stats db load totals failed");
+                StatsData::default()
+            });
         let mut snap = build_snapshot(
             &data,
             scope,
-            self.path.display().to_string(),
+            self.db.path().display().to_string(),
             session_uptime_secs,
             experience,
             classifier,
@@ -176,13 +243,26 @@ impl GatewayStats {
             agent_budgets,
         );
         let samples = self
-            .latency_samples
-            .lock()
-            .expect("stats latency_samples mutex");
-        let (p95_ms, p99_ms) = latency_percentiles(&samples);
+            .db
+            .load_latency_samples(scope)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "stats db load latency failed");
+                Vec::new()
+            });
+        let (p95_ms, p99_ms) = latency_percentiles_from_slice(&samples);
         snap.latency.p95_ms = p95_ms;
         snap.latency.p99_ms = p99_ms;
+        snap.auth_key_stats = self.build_auth_key_stats(scope, config_auth_keys);
         snap
+    }
+
+    pub fn query_timeline(
+        &self,
+        scope: StatsScope,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<TimelineResponse> {
+        self.db.query_timeline(scope, range, tz_offset_minutes)
     }
 
     pub fn session_uptime_secs(&self) -> u64 {
@@ -190,7 +270,12 @@ impl GatewayStats {
     }
 
     pub fn global_data(&self) -> StatsData {
-        self.global.lock().expect("stats global mutex").clone()
+        self.db
+            .load_totals(StatsScope::Global)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "stats db load global totals failed");
+                StatsData::default()
+            })
     }
 
     pub fn spawn_flush_task(self: &std::sync::Arc<Self>) {
@@ -371,6 +456,119 @@ pub fn build_snapshot(
         classifier,
         effective_routing,
         agent_budgets,
+        auth_key_stats: None,
+    }
+}
+
+pub fn build_auth_key_stats_snapshots(
+    db: &StatsDb,
+    scope: StatsScope,
+    config_keys: &[GatewayAuthKeyView],
+) -> Option<Vec<AuthKeyStatsSnapshot>> {
+    use std::collections::{HashMap, HashSet};
+
+    let active_ids: HashSet<String> = config_keys.iter().map(|k| k.id.clone()).collect();
+    let config_by_id: HashMap<String, &GatewayAuthKeyView> =
+        config_keys.iter().map(|k| (k.id.clone(), k)).collect();
+
+    let mut by_id: HashMap<String, AuthKeyStatsSnapshot> = HashMap::new();
+
+    if let Ok(meta_rows) = db.list_auth_key_meta() {
+        for (id, name, key_preview, last_used) in meta_rows {
+            let data = db.load_auth_key_totals(scope, &id).unwrap_or_default();
+            let deleted = !active_ids.contains(&id);
+            by_id.insert(
+                id.clone(),
+                auth_key_snapshot_from_data(
+                    id,
+                    name,
+                    key_preview,
+                    last_used,
+                    deleted,
+                    &data,
+                ),
+            );
+        }
+    }
+
+    for key in config_keys {
+        by_id
+            .entry(key.id.clone())
+            .and_modify(|snap| {
+                snap.name = key.name.clone();
+                snap.key_preview = key.key_preview.clone();
+                snap.deleted = false;
+            })
+            .or_insert_with(|| {
+                auth_key_snapshot_from_data(
+                    key.id.clone(),
+                    key.name.clone(),
+                    key.key_preview.clone(),
+                    None,
+                    false,
+                    &StatsData::default(),
+                )
+            });
+    }
+
+    if by_id.is_empty() {
+        return None;
+    }
+
+    let mut rows: Vec<AuthKeyStatsSnapshot> = by_id.into_values().collect();
+    for snap in &mut rows {
+        if let Some(cfg) = config_by_id.get(&snap.id) {
+            if active_ids.contains(&snap.id) {
+                snap.name = cfg.name.clone();
+                snap.key_preview = cfg.key_preview.clone();
+                snap.deleted = false;
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    Some(rows)
+}
+
+fn auth_key_snapshot_from_data(
+    id: String,
+    name: String,
+    key_preview: String,
+    last_used_at_unix: Option<u64>,
+    deleted: bool,
+    data: &StatsData,
+) -> AuthKeyStatsSnapshot {
+    let route_edge = data.route_edge;
+    let route_cloud = data.route_cloud;
+    let route_cascade = data.route_cascade;
+    let routed = route_edge + route_cloud + route_cascade;
+    let input = data.edge_tokens_in + data.cloud_tokens_in;
+    let output = data.edge_tokens_out + data.cloud_tokens_out;
+    AuthKeyStatsSnapshot {
+        id,
+        name,
+        key_preview,
+        deleted,
+        last_used_at_unix,
+        requests_total: data.requests_total,
+        tokens: AuthKeyTokenStats {
+            input,
+            output,
+            total: input + output,
+        },
+        latency: AuthKeyLatencyStats {
+            avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
+            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+        },
+        routing: RouteCounts {
+            edge: route_edge,
+            cloud: route_cloud,
+            cascade: route_cascade,
+            edge_pct: pct(route_edge, routed),
+            cloud_pct: pct(route_cloud, routed),
+            cascade_pct: pct(route_cascade, routed),
+        },
     }
 }
 
@@ -409,11 +607,11 @@ fn avg_tps(sum_x1000: u64, count: u64) -> f64 {
     }
 }
 
-fn latency_percentiles(samples: &VecDeque<u64>) -> (f64, f64) {
+fn latency_percentiles_from_slice(samples: &[u64]) -> (f64, f64) {
     if samples.is_empty() {
         return (0.0, 0.0);
     }
-    let mut sorted: Vec<u64> = samples.iter().copied().collect();
+    let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     (percentile(&sorted, 95.0), percentile(&sorted, 99.0))
 }
@@ -484,6 +682,36 @@ pub struct StatsSnapshot {
     pub effective_routing: Option<EffectiveRouting>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_key_stats: Option<Vec<AuthKeyStatsSnapshot>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthKeyStatsSnapshot {
+    pub id: String,
+    pub name: String,
+    pub key_preview: String,
+    pub deleted: bool,
+    pub last_used_at_unix: Option<u64>,
+    pub requests_total: u64,
+    pub tokens: AuthKeyTokenStats,
+    pub latency: AuthKeyLatencyStats,
+    pub routing: RouteCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthKeyTokenStats {
+    pub input: u64,
+    pub output: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthKeyLatencyStats {
+    pub avg_request_ms: f64,
+    pub avg_tps: f64,
+    pub edge_tps: f64,
+    pub cloud_tps: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -657,30 +885,39 @@ mod tests {
     #[test]
     fn upstream_metrics_aggregates_token_breakdown() {
         let stats = GatewayStats::new_in_memory();
-        stats.record_upstream_metrics(&UpstreamCallMetrics {
-            tier: "edge",
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            cached_tokens: 80,
-            latency_ms: 200,
-            ttft_ms: Some(50),
-            stream: true,
-        });
-        stats.record_upstream_metrics(&UpstreamCallMetrics {
-            tier: "cloud",
-            prompt_tokens: 200,
-            completion_tokens: 100,
-            cached_tokens: 0,
-            latency_ms: 500,
-            ttft_ms: None,
-            stream: false,
-        });
-        stats.record_final_response(&FinalResponseMetrics {
-            served_tier: "edge",
-            cloud_input_saved: 100,
-            completion_tokens: 50,
-        });
-        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None);
+        stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: "edge",
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                cached_tokens: 80,
+                latency_ms: 200,
+                ttft_ms: Some(50),
+                stream: true,
+            },
+            None,
+        );
+        stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: "cloud",
+                prompt_tokens: 200,
+                completion_tokens: 100,
+                cached_tokens: 0,
+                latency_ms: 500,
+                ttft_ms: None,
+                stream: false,
+            },
+            None,
+        );
+        stats.record_final_response(
+            &FinalResponseMetrics {
+                served_tier: "edge",
+                cloud_input_saved: 100,
+                completion_tokens: 50,
+            },
+            None,
+        );
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
         assert_eq!(snap.token_breakdown.edge.input, 100);
         assert_eq!(snap.token_breakdown.cloud.input, 200);
         assert_eq!(snap.token_breakdown.cloud_saved.total, 150);
@@ -700,7 +937,7 @@ mod tests {
         stats.record_request(false);
         stats.record_decision(&sample_decision(RouteTier::Edge));
         stats.record_decision(&sample_decision(RouteTier::Cloud));
-        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None);
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
         assert_eq!(snap.scope, "session");
         assert_eq!(snap.requests_total, 1);
         assert_eq!(snap.routing.edge, 1);
@@ -708,7 +945,7 @@ mod tests {
         assert_eq!(snap.tokens.in_estimate, 200);
         assert!(snap.step_kinds.contains_key("directchat"));
 
-        let global = stats.snapshot(StatsScope::Global, 60, None, None, None, None);
+        let global = stats.snapshot(StatsScope::Global, 60, None, None, None, None, &[]);
         assert_eq!(global.scope, "global");
         assert_eq!(global.requests_total, 1);
     }
@@ -719,22 +956,76 @@ mod tests {
             "flowy-stats-session-{}",
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         {
             let stats = GatewayStats::open(&dir).unwrap();
             stats.record_request(true);
             stats.flush().unwrap();
-            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None);
+            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None, &[]);
             assert_eq!(session.requests_total, 1);
         }
         {
             let stats = GatewayStats::open(&dir).unwrap();
-            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None);
-            let global = stats.snapshot(StatsScope::Global, 10, None, None, None, None);
+            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None, &[]);
+            let global = stats.snapshot(StatsScope::Global, 10, None, None, None, None, &[]);
             assert_eq!(session.requests_total, 0, "new process session starts at 0");
             assert_eq!(global.requests_total, 1, "global survives restart");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auth_key_stats_per_key_in_snapshot() {
+        use crate::config::auth_keys::GatewayAuthKeyView;
+
+        let stats = GatewayStats::new_in_memory();
+        let ctx1 = AuthKeyContext {
+            id: "id-key-a".into(),
+            name: "Key A".into(),
+            key_preview: "ka-****".into(),
+        };
+        let ctx2 = AuthKeyContext {
+            id: "id-key-b".into(),
+            name: "Key B".into(),
+            key_preview: "kb-****".into(),
+        };
+        stats.record_request_for_auth_key(&ctx1, true);
+        stats.record_request_for_auth_key(&ctx2, false);
+        stats.record_request_for_auth_key(&ctx2, false);
+
+        let config = vec![
+            GatewayAuthKeyView {
+                id: "id-key-a".into(),
+                name: "Key A".into(),
+                key_preview: "ka-****".into(),
+                created_at: 0,
+            },
+            GatewayAuthKeyView {
+                id: "id-key-b".into(),
+                name: "Key B".into(),
+                key_preview: "kb-****".into(),
+                created_at: 0,
+            },
+        ];
+        let snap = stats.snapshot(
+            StatsScope::Session,
+            60,
+            None,
+            None,
+            None,
+            None,
+            &config,
+        );
+        let keys = snap.auth_key_stats.expect("auth key stats");
+        assert_eq!(
+            keys.iter().find(|k| k.id == "id-key-a").unwrap().requests_total,
+            1
+        );
+        assert_eq!(
+            keys.iter().find(|k| k.id == "id-key-b").unwrap().requests_total,
+            2
+        );
     }
 
     #[test]
@@ -743,16 +1034,19 @@ mod tests {
             "flowy-stats-test-{}",
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("stats.json");
         {
             let stats = GatewayStats::open(&dir).unwrap();
             stats.record_request(true);
             stats.flush().unwrap();
         }
-        let loaded = data::load(&path).unwrap();
-        assert_eq!(loaded.requests_total, 1);
-        assert_eq!(loaded.requests_stream, 1);
+        let db_path = dir.join("stats.db");
+        assert!(db_path.exists());
+        let stats = GatewayStats::open(&dir).unwrap();
+        let global = stats.snapshot(StatsScope::Global, 0, None, None, None, None, &[]);
+        assert_eq!(global.requests_total, 1);
+        assert_eq!(global.requests_stream, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

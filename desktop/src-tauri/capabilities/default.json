@@ -18,6 +18,10 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "ccswitch://*" }]
+    },
     "allow-gateway-start",
     "allow-gateway-stop",
     "allow-gateway-restart",
@@ -34,6 +38,13 @@
     "allow-ota-check-now",
     "allow-ota-download-update",
     "allow-ota-do-update",
-    "allow-ota-get-post-restart-notice"
+    "allow-ota-get-post-restart-notice",
+    "allow-configure-openclaw-agent",
+    "allow-configure-hermes-agent",
+    "allow-configure-hermes-flash-agent",
+    "allow-configure-claude-code-agent",
+    "allow-configure-codex-agent",
+    "allow-read-inbound-auth-key",
+    "allow-check-agent-initialized"
   ]
 }

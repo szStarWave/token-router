@@ -16,10 +16,11 @@ from modelscope.hub.api import HubApi
 
 OWNER_NAME = "flowy2025"
 DATASET_NAME = "token_router_versions"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def parse_args():
-    default_release_notes = Path(__file__).resolve().parents[3] / "docs" / "ota-release-notes.json"
+    default_release_notes = REPO_ROOT / "docs" / "ota-release-notes.json"
     parser = argparse.ArgumentParser(description="OTA publish script for Token Router")
     parser.add_argument("--channel", type=str, default="flowy", help="Channel (flowy/gmk)")
     parser.add_argument("--region-scope", type=str, default="CN", help="Region scope (CN/INTL)")

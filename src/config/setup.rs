@@ -29,6 +29,7 @@ pub struct GatewayConfigView {
     pub classifier_prior_from_heuristic: bool,
     pub listen_port: u16,
     pub listen_lan: bool,
+    pub auth_enabled: bool,
     pub api_key_set: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_preview: Option<String>,
@@ -59,6 +60,7 @@ pub struct GatewayConfigPatch {
     pub classifier_prior_from_heuristic: Option<bool>,
     pub listen_port: Option<u16>,
     pub listen_lan: Option<bool>,
+    pub auth_enabled: Option<bool>,
     pub api_key: Option<String>,
 }
 
@@ -87,6 +89,7 @@ impl GatewayConfigPatch {
             && self.classifier_prior_from_heuristic.is_none()
             && self.listen_port.is_none()
             && self.listen_lan.is_none()
+            && self.auth_enabled.is_none()
             && self.api_key.is_none()
     }
 }
@@ -200,6 +203,48 @@ pub fn client_gateway_http_url(listen: &str) -> String {
     format!("http://{client_host}:{port}")
 }
 
+fn is_wildcard_bind_host(host: &str) -> bool {
+    matches!(host.trim(), "0.0.0.0" | "::" | "[::]")
+}
+
+/// Normalize an HTTP(S) URL for local client access.
+/// Wildcard bind hosts (`0.0.0.0`, `::`) cannot be used as HTTP destinations.
+pub fn normalize_client_http_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return url.to_string();
+    }
+
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some(parts) => parts,
+        None => return url.to_string(),
+    };
+
+    let (authority, path_and_query) = match rest.split_once('/') {
+        Some((auth, path)) => (auth, format!("/{path}")),
+        None => (rest, String::new()),
+    };
+
+    let (host, port_suffix) = if let Some((bracket_host, port)) = authority.rsplit_once("]:") {
+        let host = bracket_host.trim_start_matches('[');
+        (host, format!(":{port}"))
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.contains('.') {
+            (host, format!(":{port}"))
+        } else {
+            (authority, String::new())
+        }
+    } else {
+        (authority, String::new())
+    };
+
+    if !is_wildcard_bind_host(host) {
+        return url.to_string();
+    }
+
+    format!("{scheme}://127.0.0.1{port_suffix}{path_and_query}")
+}
+
 pub fn normalize_listen_port(port: u16) -> Result<u16, String> {
     if (LISTEN_PORT_MIN..=LISTEN_PORT_MAX).contains(&port) {
         Ok(port)
@@ -235,13 +280,13 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         classifier_prior_from_heuristic: g.classifier_prior_from_heuristic,
         listen_port: listen_port_from_addr(&g.listen),
         listen_lan: listen_lan_from_addr(&g.listen),
-        api_key_set: g
-            .api_key
-            .as_ref()
-            .is_some_and(|s| !s.trim().is_empty()),
+        auth_enabled: g.auth_enabled,
+        api_key_set: !crate::config::auth_keys::collect_inbound_api_keys(g).is_empty(),
         api_key_preview: g
-            .api_key
-            .as_deref()
+            .api_keys
+            .first()
+            .map(|entry| entry.key.as_str())
+            .or(g.api_key.as_deref())
             .and_then(mask_gateway_api_key),
     }
 }
@@ -461,6 +506,9 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     if patch.listen_port.is_some() || patch.listen_lan.is_some() {
         g.listen = build_listen_addr(listen_port, listen_lan);
     }
+    if let Some(v) = patch.auth_enabled {
+        g.auth_enabled = v;
+    }
     if let Some(key) = &patch.api_key {
         let k = key.trim();
         g.api_key = if k.is_empty() {
@@ -477,7 +525,7 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     Ok(())
 }
 
-fn normalize_gateway_api_key(key: &str) -> Result<String, String> {
+pub fn normalize_gateway_api_key(key: &str) -> Result<String, String> {
     let k = key.trim();
     if k.is_empty() {
         return Err("gateway.api_key cannot be empty".into());
@@ -496,7 +544,7 @@ fn normalize_gateway_api_key(key: &str) -> Result<String, String> {
 }
 
 /// Masked preview for UI: `token-abc` + `x` * (len - 6) + last 3 suffix chars.
-fn mask_gateway_api_key(key: &str) -> Option<String> {
+pub fn mask_gateway_api_key(key: &str) -> Option<String> {
     let k = key.trim();
     if k.is_empty() || !k.starts_with("token-") {
         return None;
@@ -596,6 +644,7 @@ fn apply_tier_patch(slot: &mut Option<UpstreamEndpoint>, patch: &UpstreamEndpoin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::file::{load_from_path, save};
 
     #[test]
     fn default_setup_cloud_auto_edge_empty() {
@@ -677,6 +726,22 @@ mod tests {
     }
 
     #[test]
+    fn normalize_client_http_url_maps_wildcard_bind_to_loopback() {
+        assert_eq!(
+            normalize_client_http_url("http://0.0.0.0:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            normalize_client_http_url("http://0.0.0.0:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+        assert_eq!(
+            normalize_client_http_url("http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+    }
+
+    #[test]
     fn patch_gateway_api_key() {
         let mut file = ConfigFile::default();
         apply_setup_patch(
@@ -736,6 +801,54 @@ mod tests {
         let view = view_from_config(&file);
         assert_eq!(view.gateway.listen_port, 12080);
         assert!(view.gateway.listen_lan);
+    }
+
+    #[test]
+    fn patch_auth_enabled() {
+        let mut file = ConfigFile::default();
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                gateway: Some(GatewayConfigPatch {
+                    auth_enabled: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(file.gateway.auth_enabled);
+        let view = view_from_config(&file);
+        assert!(view.gateway.auth_enabled);
+
+        let patch: UpstreamSetupUpdate = serde_json::from_str(
+            r#"{"gateway":{"listen_port":11080,"listen_lan":false,"auth_enabled":true}}"#,
+        )
+        .unwrap();
+        apply_setup_patch(&mut file, &patch).unwrap();
+        assert!(file.gateway.auth_enabled);
+    }
+
+    #[test]
+    fn auth_enabled_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "tr-auth-enabled-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        let mut file = ConfigFile::default();
+        file.gateway.auth_enabled = true;
+        save(&path, &file).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("auth_enabled"));
+
+        let (loaded, _) = load_from_path(&path).unwrap();
+        assert!(loaded.gateway.auth_enabled);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

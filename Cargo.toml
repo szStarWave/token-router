@@ -1,6 +1,6 @@
 [package]
 name = "token-router"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "Token Router — edge/cloud LLM routing gateway and CLI"
@@ -35,13 +35,20 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+file-rotate = "0.7"
 uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+filetime = "0.2"
 tokio-test = "0.4"
+
+[features]
+desktop = []
 
 [[test]]
 name = "gateway_cli"

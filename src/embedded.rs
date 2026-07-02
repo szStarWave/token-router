@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::config::AppConfig;
-use crate::gateway::{init_logging, server};
+use crate::gateway::{init_logging, server, LogRotateConfig};
 
 struct EmbeddedGateway {
     cancel: CancellationToken,
@@ -44,7 +44,14 @@ pub fn start(config_path: Option<&Path>) -> Result<String> {
                 .context("create tokio runtime")?;
 
             rt.block_on(async move {
-                let log_path = init_logging(&app_config.data_dir, false)?;
+                let log_path = init_logging(
+                    &app_config.data_dir,
+                    false,
+                    LogRotateConfig {
+                        max_size_mb: app_config.log_max_size_mb,
+                        max_files: app_config.log_max_files,
+                    },
+                )?;
                 tracing::info!(
                     config = %app_config.config_path.display(),
                     app_dir = %app_config.data_dir.display(),

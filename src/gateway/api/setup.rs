@@ -91,7 +91,7 @@ pub struct AgentQueryParams {
     pub agent_id: Option<String>,
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Option<Response> {
+pub fn require_admin(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     let config = state.config_mgr.get();
     let Some(expected) = config.admin_token.as_ref() else {
         return None;

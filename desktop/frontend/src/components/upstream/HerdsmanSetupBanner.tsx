@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../hooks/useI18n'
-import { HERDSMAN_INSTALL_URL, openHerdsmanOrInstall, startHerdsman } from '../../lib/edge-upstream'
+import { HERDSMAN_INSTALL_URL, refreshHerdsmanStatus, startHerdsman } from '../../lib/edge-upstream'
+import { openExternalUrl } from '../../lib/open-external'
 import { useEdgeStore } from '../../stores/edgeStore'
 
 const START_TIMEOUT_MS = 60_000
+const INSTALL_POLL_INTERVAL_MS = 15_000
+const INSTALL_POLL_TIMEOUT_MS = 10 * 60_000
 
 function HerdsmanIcon() {
   return (
@@ -19,16 +22,6 @@ function PlayIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <polygon points="8,5 19,12 8,19" />
-    </svg>
-  )
-}
-
-function DownloadIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3v12" />
-      <path d="M7 10l5 5 5-5" />
-      <path d="M5 21h14" />
     </svg>
   )
 }
@@ -51,7 +44,10 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
   const { t } = useI18n()
   const herdsmanConnected = useEdgeStore((s) => s.herdsmanConnected)
   const [starting, setStarting] = useState(false)
+  const [detectingInstall, setDetectingInstall] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const hint = installed ? t('edgeModel.herdsmanInstalledHint') : t('edgeModel.herdsmanNotInstalledHint')
 
@@ -62,6 +58,17 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
     }
   }, [])
 
+  const clearInstallPoll = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current)
+      pollTimeoutRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     if (starting && herdsmanConnected) {
       setStarting(false)
@@ -69,7 +76,17 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
     }
   }, [starting, herdsmanConnected, clearStartTimeout])
 
-  useEffect(() => () => clearStartTimeout(), [clearStartTimeout])
+  useEffect(() => {
+    if (detectingInstall && installed) {
+      setDetectingInstall(false)
+      clearInstallPoll()
+    }
+  }, [detectingInstall, installed, clearInstallPoll])
+
+  useEffect(() => () => {
+    clearStartTimeout()
+    clearInstallPoll()
+  }, [clearStartTimeout, clearInstallPoll])
 
   const handleStart = async () => {
     if (starting) return
@@ -82,6 +99,21 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
       setStarting(false)
       clearStartTimeout()
     }
+  }
+
+  const handleDownload = () => {
+    if (detectingInstall) return
+    void openExternalUrl(HERDSMAN_INSTALL_URL)
+    setDetectingInstall(true)
+    clearInstallPoll()
+    void refreshHerdsmanStatus()
+    pollIntervalRef.current = setInterval(() => {
+      void refreshHerdsmanStatus()
+    }, INSTALL_POLL_INTERVAL_MS)
+    pollTimeoutRef.current = setTimeout(() => {
+      setDetectingInstall(false)
+      clearInstallPoll()
+    }, INSTALL_POLL_TIMEOUT_MS)
   }
 
   return (
@@ -104,21 +136,16 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
               {starting ? t('herdsman.starting') : t('herdsman.start')}
             </button>
           ) : (
-            <>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => void openHerdsmanOrInstall()}>
-                <DownloadIcon />
-                {t('herdsman.download')}
-              </button>
-              <a
-                className="btn btn-ghost btn-sm edge-herdsman-link"
-                href={HERDSMAN_INSTALL_URL}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t('edgeModel.herdsmanDownloadLink')}
-                <ExternalIcon />
-              </a>
-            </>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm edge-herdsman-link"
+              disabled={detectingInstall}
+              aria-busy={detectingInstall}
+              onClick={handleDownload}
+            >
+              {detectingInstall ? <BtnSpinner /> : <ExternalIcon />}
+              <span>{detectingInstall ? t('herdsman.detectingInstall') : t('edgeModel.herdsmanDownloadLink')}</span>
+            </button>
           )}
         </div>
       </div>

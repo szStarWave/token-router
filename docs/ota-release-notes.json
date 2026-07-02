@@ -1,5 +1,53 @@
 {
   "versions": {
+    "0.3.0": {
+      "zh-CN": [
+        "OTA 更新下载显示进度、速度与文件大小",
+        "检查更新支持 loading 与结果提示",
+        "正式版禁用 DevTools 与页面刷新快捷键",
+        "Herdsman 安装引导改为官网下载"
+      ],
+      "en-US": [
+        "OTA downloads show progress, speed, and file size",
+        "Check for updates shows loading and result toasts",
+        "Production builds disable DevTools and page refresh shortcuts",
+        "Herdsman setup now links to the official download site"
+      ]
+    },
+    "v0.3.0": {
+      "zh-CN": [
+        "OTA 更新下载显示进度、速度与文件大小",
+        "检查更新支持 loading 与结果提示",
+        "正式版禁用 DevTools 与页面刷新快捷键",
+        "Herdsman 安装引导改为官网下载"
+      ],
+      "en-US": [
+        "OTA downloads show progress, speed, and file size",
+        "Check for updates shows loading and result toasts",
+        "Production builds disable DevTools and page refresh shortcuts",
+        "Herdsman setup now links to the official download site"
+      ]
+    },
+    "0.2.0": {
+      "zh-CN": [
+        "sessions/ 目录支持定时清理过期与无效 session 文件",
+        "新增 session_retention_days、session_cleanup_interval_secs 配置项"
+      ],
+      "en-US": [
+        "Scheduled cleanup for expired and invalid session files in sessions/",
+        "New session_retention_days and session_cleanup_interval_secs settings"
+      ]
+    },
+    "v0.2.0": {
+      "zh-CN": [
+        "sessions/ 目录支持定时清理过期与无效 session 文件",
+        "新增 session_retention_days、session_cleanup_interval_secs 配置项"
+      ],
+      "en-US": [
+        "Scheduled cleanup for expired and invalid session files in sessions/",
+        "New session_retention_days and session_cleanup_interval_secs settings"
+      ]
+    },
     "0.1.0": {
       "zh-CN": [
         "Token Router 桌面版首次发布",
@@ -18,6 +66,54 @@
       "en-US": [
         "Initial Token Router desktop release",
         "Flowy account login and Gateway management"
+      ]
+    },
+    "0.4.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.4.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "0.5.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.5.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "0.6.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.6.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
       ]
     }
   }
