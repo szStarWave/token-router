@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Checks whether Token Router has been written into an agent config.",
+          "type": "string",
+          "const": "allow-check-agent-deployed",
+          "markdownDescription": "Checks whether Token Router has been written into an agent config."
+        },
+        {
           "description": "Checks whether OpenClaw or Hermes config has been initialized.",
           "type": "string",
           "const": "allow-check-agent-initialized",

@@ -1,7 +1,7 @@
 import { getCurrentFlowyServerBase } from './flowy/server'
 import { getAuthToken } from '../stores/authStore'
 import { getAvailableModelList, type CloudModel } from './flowy/api'
-import { CLOUD_BUDGET_MIN, DEFAULT_CLOUD_TOKEN_BUDGET } from '../constants/defaults'
+import { CLOUD_BUDGET_MIN } from '../constants/defaults'
 import type { ApiFetch } from '../stores/edgeStore'
 
 export const AUTO_MODEL_ID = 'auto'
@@ -50,15 +50,21 @@ export function normalizeCloudTokenBudget(tokenBudget: unknown) {
   return Math.floor(n)
 }
 
-export function buildCloudSavePayload(modelId: string, tokenBudget: number) {
+export function buildCloudSavePayload(modelId: string, tokenBudget?: number | null) {
   const token = getAuthToken()
   if (!token) throw new Error('未登录')
-  return {
+  const payload: {
+    base_url: string
+    model: string
+    api_key: string
+    token_budget?: number
+  } = {
     base_url: getCloudBaseUrl(),
     model: modelId || AUTO_MODEL_ID,
     api_key: token,
-    token_budget: tokenBudget,
   }
+  if (tokenBudget != null) payload.token_budget = tokenBudget
+  return payload
 }
 
 export function sliderFromCloudBudget(budget: number) {
@@ -89,12 +95,12 @@ export async function ensureCloudUpstreamConfigured(
   const models = await fetchCloudModels('Auto')
   if (!apiFetch) return { models, posted: false }
 
-  const budget =
-    options.tokenBudget === undefined
-      ? DEFAULT_CLOUD_TOKEN_BUDGET
-      : normalizeCloudTokenBudget(options.tokenBudget)
   const modelId = normalizeModelId(options.currentModel) || AUTO_MODEL_ID
-  const cloud = buildCloudSavePayload(modelId, budget)
+  const tokenBudget =
+    options.tokenBudget === undefined
+      ? undefined
+      : normalizeCloudTokenBudget(options.tokenBudget)
+  const cloud = buildCloudSavePayload(modelId, tokenBudget)
 
   try {
     const res = (await apiFetch('/v1/admin/setup', {

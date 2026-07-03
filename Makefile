@@ -86,8 +86,8 @@ help:
 	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
 	@echo "  tauri-build      Build Tauri desktop app (release)"
-	@echo "  build-ota        Build Tauri release and stage OTA-named exe (Windows)"
-	@echo "  push             Publish staged OTA exe to ModelScope (needs MODELSCOPE_TOKEN)"
+	@echo "  build-ota        Build Tauri release and stage OTA NSIS setup (Windows)"
+	@echo "  push             Build, stage, and publish OTA setup (needs MODELSCOPE_TOKEN)"
 	@echo "  version X.Y.Z    Bump app version across manifests (e.g. make version 0.4.0 or VER=0.4.0)"
 	@echo ""
 	@echo "Options:"
@@ -225,15 +225,16 @@ OTA_CHANNEL          ?= flowy
 OTA_ENABLE_ACCOUNT   ?= true
 UV                   ?= uv
 OTA_PUBLISH_SCRIPT   := scripts/publish_ota/publish.py
+TAURI_PRODUCT_NAME   := Token Router
 ifeq ($(UNAME_S),Windows)
 DESKTOP_VERSION      := $(shell powershell -NoProfile -Command "$$l = (Select-String -Path 'desktop/src-tauri/Cargo.toml' -Pattern '^version = ' | Select-Object -First 1).Line; if ($$l) { $$l -replace 'version = \"','' -replace '\"','' } else { '0.0.0' }")
 VITE_EDITION         := $(shell powershell -NoProfile -Command "$$v='domestic'; if (Test-Path 'desktop/frontend/.env') { Get-Content 'desktop/frontend/.env' | ForEach-Object { if ($$_ -match '^VITE_EDITION=(.+)$$') { $$v = $$matches[1].Trim('\"','''') } } }; $$v")
-TAURI_RELEASE_EXE    := desktop\src-tauri\target\release\token-router-desktop.exe
+TAURI_NSIS_SETUP     := desktop\src-tauri\target\release\bundle\nsis\$(TAURI_PRODUCT_NAME)_$(DESKTOP_VERSION)_x64-setup.exe
 OTA_STAGING_DIR      := $(TARGET)\ota
 else
 DESKTOP_VERSION      := $(shell grep -E '^version = ' desktop/src-tauri/Cargo.toml 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
 VITE_EDITION         := $(shell grep -E '^VITE_EDITION=' desktop/frontend/.env 2>/dev/null | head -1 | cut -d= -f2 | tr -d '\r"'"'"'' | tr '[:upper:]' '[:lower:]')
-TAURI_RELEASE_EXE    := desktop/src-tauri/target/release/token-router-desktop.exe
+TAURI_NSIS_SETUP     := desktop/src-tauri/target/release/bundle/nsis/$(TAURI_PRODUCT_NAME)_$(DESKTOP_VERSION)_x64-setup.exe
 OTA_STAGING_DIR      := $(TARGET)/ota
 endif
 ifndef OTA_REGION
@@ -248,11 +249,11 @@ OTA_ACCOUNT_DIR      := with_account
 else
 OTA_ACCOUNT_DIR      := without_account
 endif
-OTA_EXE_NAME         := Token-Router-v$(DESKTOP_VERSION)-$(OTA_CHANNEL)-$(OTA_REGION)-$(OTA_ACCOUNT_DIR).exe
+OTA_SETUP_NAME       := Token-Router-v$(DESKTOP_VERSION)-$(OTA_CHANNEL)-$(OTA_REGION)-$(OTA_ACCOUNT_DIR)-setup.exe
 ifeq ($(UNAME_S),Windows)
-OTA_STAGED_EXE       := $(OTA_STAGING_DIR)\$(OTA_EXE_NAME)
+OTA_STAGED_SETUP     := $(OTA_STAGING_DIR)\$(OTA_SETUP_NAME)
 else
-OTA_STAGED_EXE       := $(OTA_STAGING_DIR)/$(OTA_EXE_NAME)
+OTA_STAGED_SETUP     := $(OTA_STAGING_DIR)/$(OTA_SETUP_NAME)
 endif
 
 ota-check-windows:
@@ -263,15 +264,15 @@ endif
 
 ota-stage: ota-check-windows
 ifeq ($(UNAME_S),Windows)
-	@if not exist "$(TAURI_RELEASE_EXE)" (echo ERROR: missing $(TAURI_RELEASE_EXE). Run: make build-ota && exit /b 1)
+	@if not exist "$(TAURI_NSIS_SETUP)" (echo ERROR: missing $(TAURI_NSIS_SETUP). Run: make build-ota && exit /b 1)
 	@if not exist "$(OTA_STAGING_DIR)" mkdir "$(OTA_STAGING_DIR)"
-	@copy /Y "$(TAURI_RELEASE_EXE)" "$(OTA_STAGED_EXE)" >nul
-	@echo Staged $(OTA_STAGED_EXE)
+	@copy /Y "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)" >nul
+	@echo Staged $(OTA_STAGED_SETUP)
 else
-	@test -f "$(TAURI_RELEASE_EXE)" || (echo "ERROR: missing $(TAURI_RELEASE_EXE). Run: make build-ota" && exit 1)
+	@test -f "$(TAURI_NSIS_SETUP)" || (echo "ERROR: missing $(TAURI_NSIS_SETUP). Run: make build-ota" && exit 1)
 	@mkdir -p "$(OTA_STAGING_DIR)"
-	@cp "$(TAURI_RELEASE_EXE)" "$(OTA_STAGED_EXE)"
-	@echo "Staged $(OTA_STAGED_EXE)"
+	@cp "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)"
+	@echo "Staged $(OTA_STAGED_SETUP)"
 endif
 
 build-ota: ota-check-windows tauri-build ota-stage
@@ -287,7 +288,7 @@ endif
 		--region-scope $(OTA_REGION) \
 		--version v$(DESKTOP_VERSION) \
 		--enable-account-system $(OTA_ENABLE_ACCOUNT) \
-		--exe-path "$(OTA_STAGED_EXE)"
+		--setup-path "$(OTA_STAGED_SETUP)"
 
 ifeq ($(BUILD),1)
 push: ota-check-windows build-ota ota-publish

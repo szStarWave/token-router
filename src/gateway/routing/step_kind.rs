@@ -48,6 +48,10 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::RecoveryAfterFailure;
     }
 
+    if signals.consecutive_tool_error_streak >= 1 {
+        return StepKind::RecoveryAfterFailure;
+    }
+
     if signals.pending_tool_calls {
         return if signals.tool_arg_ready {
             StepKind::ToolArgFill
@@ -100,6 +104,71 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         StepKind::ToolSelect
     } else {
         StepKind::FinalReply
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signals_with_tool_error_streak(streak: u32) -> RequestSignals {
+        RequestSignals {
+            tok_system: 0,
+            tok_tools_schema: 0,
+            tok_rest: 100,
+            tok_total_in: 100,
+            tok_loop_delta: 0,
+            tok_out_estimate: 0,
+            n_tool_defs: 1,
+            n_turns: 2,
+            last_user_tok: 20,
+            loop_steps: 0,
+            pending_tool_calls: false,
+            tool_arg_ready: false,
+            last_role_tool: true,
+            synthetic_tool_result: false,
+            assistant_failed_recent: false,
+            is_heartbeat_poll: false,
+            voice_repair_loop: false,
+            subagent_spawn_hint: false,
+            memory_compact_hint: false,
+            cron_background: false,
+            tools_enabled: true,
+            had_tool_roundtrip: true,
+            risky_tool_tier1: false,
+            intent_hard: false,
+            intent_easy: false,
+            intent_plan: false,
+            multimodal: false,
+            user_multimodal: false,
+            consecutive_tool_error_streak: streak,
+            tool_invocations_since_last_user: 0,
+            user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
+        }
+    }
+
+    #[test]
+    fn tool_error_streak_resolves_recovery_after_failure() {
+        let req = ChatCompletionRequest::default();
+        let signals = signals_with_tool_error_streak(1);
+        assert_eq!(
+            resolve_step_kind(&req, &signals),
+            StepKind::RecoveryAfterFailure
+        );
+    }
+
+    #[test]
+    fn successful_tool_tail_stays_tool_result_digest() {
+        let req = ChatCompletionRequest::default();
+        let mut signals = signals_with_tool_error_streak(0);
+        signals.last_role_tool = true;
+        assert_eq!(
+            resolve_step_kind(&req, &signals),
+            StepKind::ToolResultDigest
+        );
     }
 }
 

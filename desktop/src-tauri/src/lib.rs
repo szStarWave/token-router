@@ -13,6 +13,7 @@ mod feedback;
 mod flowy_test_server;
 mod herdsman;
 pub mod ota;
+mod status_pipe;
 mod wechat_interceptor;
 
 #[derive(Clone, serde::Serialize)]
@@ -24,18 +25,26 @@ struct GatewayStatus {
 
 #[tauri::command]
 fn gateway_start() -> Result<String, String> {
-    if embedded::is_running() {
-        return embedded::gateway_url().ok_or_else(|| "gateway already running".to_string());
+    let result = if embedded::is_running() {
+        embedded::gateway_url().ok_or_else(|| "gateway already running".to_string())
+    } else {
+        embedded::start(None).map_err(|e| e.to_string())
+    };
+    if result.is_ok() {
+        status_pipe::sync_gateway_state();
     }
-    embedded::start(None).map_err(|e| e.to_string())
+    result
 }
 
 #[tauri::command]
 fn gateway_stop() -> Result<(), String> {
     if !embedded::is_running() {
+        status_pipe::sync_gateway_state();
         return Ok(());
     }
-    embedded::stop().map_err(|e| e.to_string())
+    let result = embedded::stop().map_err(|e| e.to_string());
+    status_pipe::sync_gateway_state();
+    result
 }
 
 #[tauri::command]
@@ -43,7 +52,9 @@ fn gateway_restart() -> Result<String, String> {
     if embedded::is_running() {
         embedded::stop().map_err(|e| e.to_string())?;
     }
-    embedded::start(None).map_err(|e| e.to_string())
+    let result = embedded::start(None).map_err(|e| e.to_string());
+    status_pipe::sync_gateway_state();
+    result
 }
 
 #[tauri::command]
@@ -195,6 +206,7 @@ pub fn run() {
             agent_setup::configure_codex_agent,
             agent_setup::read_inbound_auth_key_cmd,
             agent_setup::check_agent_initialized,
+            agent_setup::check_agent_deployed,
             gateway_start,
             gateway_stop,
             gateway_restart,
@@ -219,6 +231,10 @@ pub fn run() {
         .manage(ota::service::manage_state())
         .setup(|app| {
             setup_tray(app)?;
+            status_pipe::start();
+            if embedded::is_running() {
+                status_pipe::sync_gateway_state();
+            }
             herdsman::start_herdsman_service(app.handle().clone());
             ota::start_background_checks(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -250,6 +266,7 @@ pub fn run() {
             if let RunEvent::Exit = event {
                 ota::stop_background_checks();
                 herdsman::stop_herdsman_service();
+                status_pipe::stop();
                 if embedded::is_running() {
                     let _ = embedded::stop();
                 }

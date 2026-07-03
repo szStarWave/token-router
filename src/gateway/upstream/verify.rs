@@ -28,7 +28,7 @@ pub fn cloud_verifies_edge(edge: &ChatCompletionResponse, cloud: &ChatCompletion
     if edge_text.len() < 8 || cloud_text.len() < 8 {
         return false;
     }
-    if cloud_text.contains("不确定") {
+    if crate::gateway::routing::response_has_uncertainty(cloud_text) {
         return false;
     }
 

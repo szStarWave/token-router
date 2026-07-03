@@ -92,6 +92,12 @@ export interface AgentInitStatusPayload {
   agent: string
 }
 
+export interface AgentDeployStatusPayload {
+  deployed: boolean
+  configPath: string
+  agent: string
+}
+
 export type AgentKind =
   | 'openclaw'
   | 'hermes'
@@ -101,6 +107,10 @@ export type AgentKind =
 
 export async function checkAgentInitialized(agent: AgentKind) {
   return tauriInvoke<AgentInitStatusPayload>('check_agent_initialized', { agent })
+}
+
+export async function checkAgentDeployed(agent: AgentKind) {
+  return tauriInvoke<AgentDeployStatusPayload>('check_agent_deployed', { agent })
 }
 
 export async function configureOpenClawAgent(apiKey?: string | null) {

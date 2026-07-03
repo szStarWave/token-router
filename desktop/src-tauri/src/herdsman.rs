@@ -50,9 +50,7 @@ struct HerdsmanInstallDetected {
 struct HerdsmanStatus {
     #[allow(dead_code)]
     app_name: Option<String>,
-    #[allow(dead_code)]
     host: Option<String>,
-    #[allow(dead_code)]
     port: Option<u32>,
     endpoint: String,
     #[allow(dead_code)]
@@ -378,29 +376,140 @@ fn read_status_from_pipe() -> Option<HerdsmanStatus> {
     }
 }
 
+fn push_api_base_candidate(candidates: &mut Vec<String>, raw: &str) {
+    let trimmed = raw.trim().trim_end_matches('/').trim_end_matches("/v1");
+    if trimmed.is_empty() {
+        return;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    if !candidates.iter().any(|c| c == &with_scheme) {
+        candidates.push(with_scheme);
+    }
+    let normalized = normalize_client_http_url(trimmed)
+        .trim_end_matches('/')
+        .to_string();
+    if !normalized.is_empty() && !candidates.iter().any(|c| c == &normalized) {
+        candidates.push(normalized);
+    }
+}
+
 fn fetch_models(endpoint: &str, openai_endpoint: &str) -> Vec<HerdsmanModelInfo> {
-    let base = normalize_client_http_url(endpoint).trim_end_matches('/').to_string();
     let client_openai_endpoint = normalize_client_http_url(openai_endpoint);
-    let url = format!("{base}/api/v1/models");
+    let mut candidates = Vec::new();
+    push_api_base_candidate(&mut candidates, endpoint);
+    push_api_base_candidate(&mut candidates, openai_endpoint);
+    fetch_models_from_candidates(&candidates, &client_openai_endpoint)
+}
+
+fn fetch_models_from_status(status: &HerdsmanStatus) -> Vec<HerdsmanModelInfo> {
+    let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
+    let mut candidates = Vec::new();
+    push_api_base_candidate(&mut candidates, &status.endpoint);
+    push_api_base_candidate(&mut candidates, &status.openai_endpoint);
+    if let Some(port) = status.port {
+        push_api_base_candidate(&mut candidates, &format!("http://127.0.0.1:{port}"));
+        if let Some(host) = status.host.as_deref() {
+            push_api_base_candidate(&mut candidates, &format!("http://{host}:{port}"));
+        }
+    }
+    fetch_models_from_candidates(&candidates, &client_openai_endpoint)
+}
+
+fn fetch_models_from_candidates(
+    candidates: &[String],
+    openai_endpoint: &str,
+) -> Vec<HerdsmanModelInfo> {
+    let mut last_empty = Vec::new();
+    for (idx, base) in candidates.iter().enumerate() {
+        match try_fetch_models(base, openai_endpoint) {
+            Some(models) if !models.is_empty() => return models,
+            Some(models) => {
+                last_empty = models;
+                if idx + 1 == candidates.len() {
+                    return last_empty;
+                }
+            }
+            None => continue,
+        }
+    }
+    last_empty
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ModelsApiResponse {
+    Direct(Vec<RawHerdsmanModel>),
+    Data { data: Vec<RawHerdsmanModel> },
+    Models { models: Vec<RawHerdsmanModel> },
+}
+
+fn parse_models_response(body: &str) -> Option<Vec<RawHerdsmanModel>> {
+    if let Ok(models) = serde_json::from_str::<Vec<RawHerdsmanModel>>(body) {
+        return Some(models);
+    }
+    if let Ok(wrapped) = serde_json::from_str::<ModelsApiResponse>(body) {
+        return Some(match wrapped {
+            ModelsApiResponse::Direct(models) => models,
+            ModelsApiResponse::Data { data } => data,
+            ModelsApiResponse::Models { models } => models,
+        });
+    }
+    None
+}
+
+fn try_fetch_models(base: &str, openai_endpoint: &str) -> Option<Vec<HerdsmanModelInfo>> {
+    let url = format!("{}/api/v1/models", base.trim_end_matches('/'));
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            herdsman_warn(format!("models fetch client build failed: {e}"));
+            return None;
+        }
     };
 
     let response = match client.get(&url).send() {
         Ok(r) if r.status().is_success() => r,
-        _ => return Vec::new(),
+        Ok(r) => {
+            herdsman_warn(format!(
+                "models fetch failed: url={url} status={}",
+                r.status()
+            ));
+            return None;
+        }
+        Err(e) => {
+            herdsman_warn(format!("models fetch error: url={url} err={e}"));
+            return None;
+        }
     };
 
-    let raw: Vec<RawHerdsmanModel> = match response.json() {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
+    let body = match response.text() {
+        Ok(text) => text,
+        Err(e) => {
+            herdsman_warn(format!("models fetch read failed: url={url} err={e}"));
+            return None;
+        }
     };
 
-    map_models(raw, &client_openai_endpoint)
+    let raw = parse_models_response(&body)?;
+    let models = map_models(raw.clone(), openai_endpoint);
+    if raw.is_empty() {
+        herdsman_info(format!("models fetch parsed empty list from {url}"));
+    } else if models.is_empty() {
+        herdsman_warn(format!(
+            "models fetch: {} raw models from {url} but none marked running",
+            raw.len()
+        ));
+    } else {
+        herdsman_info(format!("models fetch ok: url={url} count={}", models.len()));
+    }
+    Some(models)
 }
 
 fn emit_connected(app: &AppHandle, connected: bool) {
@@ -523,7 +632,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
             endpoint = Some(client_endpoint.clone());
             openai_endpoint = Some(client_openai_endpoint.clone());
 
-            let models = fetch_models(&status.endpoint, &status.openai_endpoint);
+            let models = fetch_models_from_status(&status);
             herdsman_info(format!(
                 "status received: endpoint={}, openai_endpoint={} (client: {}, {})",
                 status.endpoint,

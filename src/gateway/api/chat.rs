@@ -81,6 +81,7 @@ pub async fn chat_completions_core(
         &routing,
         Some(state.edge_load.as_ref()),
         Some(state.classifier.as_ref()),
+        state.wordfreq.as_ref(),
     );
     state.stats.record_decision(&decision);
     let auth_key_ref = auth_ctx.as_ref();
@@ -91,7 +92,13 @@ pub async fn chat_completions_core(
     let conv_key = decision.conversation_key.clone();
     let assistant_failed = decision.assistant_failed_recent;
 
-    log_route_decision(&decision, stream, agent_id.as_deref());
+    log_route_decision(
+        &decision,
+        &req.model,
+        &decision.lexical_learn.last_user_text,
+        stream,
+        agent_id.as_deref(),
+    );
 
     if stream {
         match state
@@ -196,6 +203,11 @@ fn record_learning(
     state
         .experience
         .record_outcome(decision.step_kind, outcome);
+    state.wordfreq.reinforce_from_outcome(
+        &decision.lexical_learn,
+        decision.step_kind,
+        outcome,
+    );
     if let Some(features) = decision.classifier_features.as_ref() {
         state.classifier.record(
             features,

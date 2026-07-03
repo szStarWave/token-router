@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::gateway::api::openai::{
-        ChatCompletionRequest, ContentPart, FunctionDefinition, ImageUrl, Message, Role,
-        ToolDefinition,
+        ChatCompletionRequest, ContentPart, FunctionCallPayload, FunctionDefinition, ImageUrl,
+        Message, Role, ToolCall, ToolDefinition,
     };
     use crate::config::{ConfigFile, UpstreamEndpoint};
 
@@ -12,8 +12,8 @@ mod tests {
     use crate::gateway::multimodal::MultimodalStore;
     use crate::gateway::edge_load::EdgeInferenceTracker;
     use crate::gateway::routing::{
-        EffectiveRouting, Profile, RouteDecision, RouteTier, RoutingMode, StepKind, WorkStrategy,
-        conversation::conversation_key, decide, require_any_upstream,
+        EffectiveRouting, Profile, RouteDecision, RouteTier, RoutingMode, StepKind, WordFreqStore,
+        WorkStrategy, conversation::conversation_key, decide, require_any_upstream,
     };
     use crate::gateway::multimodal::MultimodalStrategy;
     use crate::gateway::session::SessionStore;
@@ -27,8 +27,18 @@ mod tests {
     }
 
     fn test_config_with_verify_rate(edge: bool, cloud: bool, verify_rate: f32) -> AppConfig {
+        test_config_with_ctx_max(edge, cloud, verify_rate, ConfigFile::default().gateway.ctx_edge_max_tokens)
+    }
+
+    fn test_config_with_ctx_max(
+        edge: bool,
+        cloud: bool,
+        verify_rate: f32,
+        ctx_edge_max_tokens: u32,
+    ) -> AppConfig {
         let mut file = ConfigFile::default();
         file.gateway.work_verify_sample_rate = verify_rate;
+        file.gateway.ctx_edge_max_tokens = ctx_edge_max_tokens;
         if edge {
             file.upstream.edge = Some(UpstreamEndpoint {
                 base_url: "http://127.0.0.1:11434/v1".into(),
@@ -54,6 +64,12 @@ mod tests {
         })
     }
 
+    fn test_wordfreq() -> std::sync::Arc<WordFreqStore> {
+        std::sync::Arc::new(
+            WordFreqStore::open_in_memory().expect("test wordfreq store"),
+        )
+    }
+
     fn decide_test(
         config: &AppConfig,
         req: &ChatCompletionRequest,
@@ -70,6 +86,7 @@ mod tests {
             &EffectiveRouting::passthrough(config),
             None,
             None,
+            test_wordfreq().as_ref(),
         )
     }
 
@@ -90,6 +107,7 @@ mod tests {
             &EffectiveRouting::passthrough(config),
             None,
             Some(classifier),
+            test_wordfreq().as_ref(),
         )
     }
 
@@ -405,6 +423,15 @@ mod tests {
     }
 
     /// Simulates OpenClaw-sized system + tool schema with a short user turn.
+    fn openclaw_large_prompt_greeting_request() -> ChatCompletionRequest {
+        let mut req = openclaw_large_prompt_daily_request();
+        if let Some(user) = req.messages.iter_mut().find(|m| m.role == Role::User) {
+            user.content = Some("你好".into());
+        }
+        req
+    }
+
+    /// Simulates OpenClaw-sized system + tool schema with a short user turn.
     fn openclaw_large_prompt_daily_request() -> ChatCompletionRequest {
         let system_blob = "OpenClaw agent context. ".repeat(8_000);
         let tools = (0..40)
@@ -444,8 +471,27 @@ mod tests {
     }
 
     #[test]
-    fn openclaw_large_prompt_daily_routes_casual_not_cloud() {
-        let cfg = test_config(true, true);
+    fn openclaw_large_prompt_greeting_stays_edge() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_large_prompt_greeting_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(
+            casual_routes_edge(decision.route),
+            "single greeting with huge OpenClaw bootstrap: {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn openclaw_large_prompt_daily_stays_edge_for_casual_user() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -462,7 +508,7 @@ mod tests {
         );
         assert!(
             casual_routes_edge(decision.route),
-            "large prompt casual: {:?}",
+            "static OpenClaw overhead must not force cloud: {:?}",
             decision
         );
         assert!(
@@ -656,7 +702,7 @@ mod tests {
             decision
                 .reason_codes
                 .iter()
-                .any(|c| c == "INITIAL_PLAN_CLOUD"),
+                .any(|c| c == "PLAN_INTENT_CLOUD" || c == "INITIAL_PLAN_CLOUD"),
             "{:?}",
             decision.reason_codes
         );
@@ -703,6 +749,74 @@ mod tests {
         }
     }
 
+    fn single_tool_error_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("fix it".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("Error: command failed".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("e1".into()),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "exec".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    fn successful_tool_result_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("list files".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("file1.txt\nfile2.txt".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("ok1".into()),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "exec".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn consecutive_tool_errors_force_cloud() {
         let cfg = test_config(true, true);
@@ -728,6 +842,276 @@ mod tests {
             decision.reason_codes
         );
         assert!(decision.force_cloud_sticky);
+    }
+
+    #[test]
+    fn single_tool_error_increases_difficulty() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let baseline = decide_test(
+            &cfg,
+            &successful_tool_result_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let decision = decide_test(
+            &cfg,
+            &single_tool_error_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "STEP_RECOVERY_AFTER_FAILURE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "TOOL_ERROR_STREAK_1"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision.difficulty > baseline.difficulty,
+            "single tool error should increase difficulty: {} vs {}",
+            decision.difficulty,
+            baseline.difficulty
+        );
+    }
+
+    #[test]
+    fn single_tool_error_routes_cascade_or_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &single_tool_error_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            matches!(decision.route, RouteTier::Cascade | RouteTier::Cloud),
+            "single tool error should not route to edge: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_TOOL_ERROR_STREAK"),
+            "single tool error should not hit hard gate: {:?}",
+            decision.reason_codes
+        );
+    }
+
+    fn tool_loop_request(tool_count: u32) -> ChatCompletionRequest {
+        let mut messages = vec![Message {
+            role: Role::User,
+            content: Some("fix the project".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        for i in 0..tool_count {
+            messages.push(Message {
+                role: Role::Assistant,
+                content: None,
+                content_parts: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: format!("call_{i}"),
+                    call_type: "function".into(),
+                    function: FunctionCallPayload {
+                        name: "read".into(),
+                        arguments: r#"{"path":"."}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            });
+            messages.push(Message {
+                role: Role::Tool,
+                content: Some(format!("output {i}")),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{i}")),
+            });
+        }
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages,
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "read".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn four_tool_loop_no_difficulty_bump() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &tool_loop_request(4),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("TOOL_LOOP_")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn five_tool_loop_first_tier() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let baseline = decide_test(
+            &cfg,
+            &tool_loop_request(4),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let decision = decide_test(
+            &cfg,
+            &tool_loop_request(5),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "TOOL_LOOP_5"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision.difficulty > baseline.difficulty,
+            "5 tools should bump difficulty: {} vs {}",
+            decision.difficulty,
+            baseline.difficulty
+        );
+    }
+
+    #[test]
+    fn six_tool_loop_stays_first_tier() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let five = decide_test(
+            &cfg,
+            &tool_loop_request(5),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let six = decide_test(
+            &cfg,
+            &tool_loop_request(6),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            six.reason_codes.iter().any(|c| c == "TOOL_LOOP_6"),
+            "{:?}",
+            six.reason_codes
+        );
+        assert!(
+            (five.difficulty - six.difficulty).abs() < 0.01,
+            "5 and 6 tool loops share first tier: {} vs {}",
+            five.difficulty,
+            six.difficulty
+        );
+    }
+
+    #[test]
+    fn seven_tool_loop_second_tier() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let six = decide_test(
+            &cfg,
+            &tool_loop_request(6),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let seven = decide_test(
+            &cfg,
+            &tool_loop_request(7),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            seven.reason_codes.iter().any(|c| c == "TOOL_LOOP_7"),
+            "{:?}",
+            seven.reason_codes
+        );
+        assert!(seven.difficulty > six.difficulty);
+    }
+
+    #[test]
+    fn eight_tool_loop_cap_tier() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let seven = decide_test(
+            &cfg,
+            &tool_loop_request(7),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let eight = decide_test(
+            &cfg,
+            &tool_loop_request(8),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            eight.reason_codes.iter().any(|c| c == "TOOL_LOOP_8"),
+            "{:?}",
+            eight.reason_codes
+        );
+        assert!(eight.difficulty > seven.difficulty);
+    }
+
+    #[test]
+    fn multi_tool_loop_routes_cascade_or_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &tool_loop_request(8),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            matches!(decision.route, RouteTier::Cascade | RouteTier::Cloud),
+            "deep tool loop should not route to edge: {:?}",
+            decision
+        );
     }
 
     fn plan_intent_request() -> ChatCompletionRequest {
@@ -1065,6 +1449,7 @@ mod tests {
             edge_ok_probability: None,
             classifier_features: None,
             casual_quality_fallback: false,
+            lexical_learn: Default::default(),
         };
         sessions.apply_outcome(
             conv_key,
@@ -1171,6 +1556,7 @@ mod tests {
             edge_ok_probability: None,
             classifier_features: None,
             casual_quality_fallback: false,
+            lexical_learn: Default::default(),
         };
         sessions.apply_outcome(
             key,
@@ -1197,6 +1583,7 @@ mod tests {
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
             None,
+            test_wordfreq().as_ref(),
         );
         assert!(
             casual_routes_edge(decision.route),
@@ -1225,6 +1612,7 @@ mod tests {
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
             None,
+            test_wordfreq().as_ref(),
         );
         assert!(
             matches!(decision.route, RouteTier::Cloud),

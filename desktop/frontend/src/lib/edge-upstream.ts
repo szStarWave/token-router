@@ -179,18 +179,36 @@ export function isAllowedHerdsmanEndpoint(endpoint: string | null | undefined): 
   }
 }
 
-/** Map wildcard bind hosts to loopback for local HTTP clients. */
+/** Map local Herdsman bind/advertised hosts to loopback for local HTTP clients. */
 export function normalizeHerdsmanEndpoint(endpoint: string): string {
+  const raw = (endpoint || '').trim()
+  if (!raw) return endpoint
+
+  let href = raw
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(href)) {
+    href = `http://${href}`
+  }
+
   try {
-    const url = new URL(endpoint)
-    if (url.hostname === '0.0.0.0' || url.hostname === '::') {
+    const url = new URL(href)
+    if (shouldMapHerdsmanHostToLoopback(url.hostname)) {
       url.hostname = '127.0.0.1'
       return url.toString().replace(/\/+$/, '')
     }
+    return href.replace(/\/+$/, '')
   } catch {
-    // ignore
+    return endpoint
   }
-  return endpoint
+}
+
+function shouldMapHerdsmanHostToLoopback(host: string): boolean {
+  if (host === '0.0.0.0' || host === '::') return true
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+  if (/^10\./.test(host)) return true
+  if (/^192\.168\./.test(host)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true
+  if (/^169\.254\./.test(host)) return true
+  return false
 }
 
 function isHerdsmanEdgeSetup(edge: SetupEdge | null | undefined): boolean {
@@ -277,6 +295,35 @@ async function clearEdgeUpstreamConfiguration(clearUserFlag?: boolean): Promise<
 
 async function clearHerdsmanEdgeConfiguration(): Promise<EdgeReconcileResult> {
   return clearEdgeUpstreamConfiguration(true)
+}
+
+function shouldClearStaleHerdsmanEdge(): boolean {
+  const state = getEdgeStoreState()
+  if (!state.herdsmanConnected) return false
+
+  const setupEdge = useSetupStore.getState().setup?.edge
+
+  if (state.selectedKey?.startsWith('herdsman:') && !getSelectedItem()) {
+    return true
+  }
+
+  if (isHerdsmanEdgeSetup(setupEdge) && !setupEdgeMatchesDisplayItems(setupEdge)) {
+    return true
+  }
+
+  const pending = state.pendingSetupSelection
+  if (pending && isAllowedHerdsmanEndpoint(pending.url) && isEdgeUserConfigured()) {
+    if (!findHerdsmanItem(pending.model, pending.url)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function syncHerdsmanEdgeAvailability(): void {
+  if (!shouldClearStaleHerdsmanEdge()) return
+  void clearHerdsmanEdgeConfiguration()
 }
 
 function handleHerdsmanDisconnected(): void {
@@ -388,6 +435,7 @@ export function buildDisplayItems(): EdgeDisplayItem[] {
       base_url: entry.base_url,
       model: entry.model,
       api_key: entry.api_key,
+      context_window: entry.context_window,
     })
   }
 
@@ -564,7 +612,11 @@ function newManualId(): string {
 
 export function upsertManualEntry(entry: ManualEdgeEntry): void {
   const state = getEdgeStoreState()
-  const normalized: ManualEdgeEntry = { ...entry, fromSetupRestore: false }
+  const normalized: ManualEdgeEntry = {
+    ...entry,
+    fromSetupRestore: false,
+    context_window: normalizeContextWindow(entry.context_window),
+  }
   const manualEntries = [...state.manualEntries]
   const idx = manualEntries.findIndex((e) => e.id === normalized.id)
   if (idx >= 0) manualEntries[idx] = normalized
@@ -905,6 +957,7 @@ function handleHerdsmanModels(models: unknown): void {
   pruneHerdsmanManualDuplicates()
   applyPendingSetupSelection()
   ensureSelectedKey()
+  syncHerdsmanEdgeAvailability()
   updateHerdsmanConnectionUi(state.herdsmanConnected)
   if (!state.edgeBootReconciled && state.pendingEdgeReconcile) {
     void finishEdgeReconcile().then((result) => {
@@ -929,6 +982,7 @@ function applyHerdsmanSnapshot(snapshot: HerdsmanStatusSnapshot): void {
   pruneHerdsmanManualDuplicates()
   applyPendingSetupSelection()
   ensureSelectedKey()
+  syncHerdsmanEdgeAvailability()
   updateHerdsmanConnectionUi(!!snapshot.connected)
 }
 

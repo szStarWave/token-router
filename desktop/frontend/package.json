@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --import tsx --test src/lib/routing-log.test.ts src/lib/routing-reasons.test.ts"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.91.0",
     "@tanstack/react-form": "^1.28.3",
     "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-router": "^1.163.2",
@@ -33,6 +35,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "babel-plugin-react-compiler": "^1.0.0",
     "oxlint": "^1.71.0",
+    "tsx": "^4.22.5",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   }

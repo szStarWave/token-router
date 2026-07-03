@@ -350,7 +350,7 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
     }
 
     ota_info(format!(
-        "apply started: version={version_label} package={dl} target={replace_exe}"
+        "apply started: version={version_label} setup={dl} app_exe={replace_exe}"
     ));
 
     emit(
@@ -400,7 +400,7 @@ pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), S
     }
 
     ota_info(format!(
-        "apply spawned successfully: version={version_label} target={replace_exe}; exiting app"
+        "apply spawned successfully: version={version_label} setup={dl}; exiting app"
     ));
     emit(
         &app,

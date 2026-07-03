@@ -7,8 +7,10 @@ export type CcSwitchApp = 'claude' | 'codex' | 'openclaw' | 'gemini' | 'opencode
 export const CC_SWITCH_RELEASES_URL = 'https://github.com/farion1231/cc-switch/releases'
 
 const PROVIDER_NAME = 'Token Router'
-const OPENCLAW_PROVIDER = 'flowy'
+const OPENCLAW_PROVIDER = 'token-router'
 const OPENCLAW_MODEL_DISPLAY = 'Token Router Auto Route'
+const OPENCLAW_CONTEXT_WINDOW = 1_000_000
+const OPENCLAW_TIMEOUT_SECONDS = 300
 const CODEX_PROVIDER = 'token_router'
 const CODEX_PROVIDER_NAME = 'Token Router'
 const DEFAULT_MODEL = 'auto'
@@ -52,21 +54,22 @@ function buildCodexToml(baseUrl: string, model: string, apiKey: string): string 
   ].join('\n')
 }
 
-function buildOpenClawJson(baseUrl: string, model: string, apiKey: string): string {
+function buildOpenClawJson(baseUrl: string, apiKey: string): string {
   return JSON.stringify({
     models: {
       providers: {
         [OPENCLAW_PROVIDER]: {
           baseUrl,
           apiKey,
-          models: [{ id: model, name: OPENCLAW_MODEL_DISPLAY }],
+          timeoutSeconds: OPENCLAW_TIMEOUT_SECONDS,
+          models: [{ id: DEFAULT_MODEL, name: OPENCLAW_MODEL_DISPLAY, contextWindow: OPENCLAW_CONTEXT_WINDOW }],
         },
       },
     },
     agents: {
       defaults: {
         model: {
-          primary: `${OPENCLAW_PROVIDER}/${model}`,
+          primary: `${OPENCLAW_PROVIDER}/${DEFAULT_MODEL}`,
         },
       },
     },
@@ -126,7 +129,7 @@ export function buildCcSwitchImportUrl(app: CcSwitchApp, opts: CcSwitchExportPar
     }
     case 'openclaw': {
       params.set('configFormat', 'json')
-      params.set('config', utf8ToBase64(buildOpenClawJson(opts.baseUrl, opts.model, opts.apiKey)))
+      params.set('config', utf8ToBase64(buildOpenClawJson(opts.baseUrl, opts.apiKey)))
       break
     }
     case 'hermes': {

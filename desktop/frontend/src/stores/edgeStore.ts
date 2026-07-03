@@ -13,6 +13,7 @@ export interface ManualEdgeEntry {
   base_url: string
   model: string
   api_key?: string
+  context_window?: number
   fromSetupRestore?: boolean
 }
 

@@ -84,6 +84,14 @@ pub struct GatewaySection {
     pub classifier_decay_half_life_hours: f64,
     #[serde(default = "default_classifier_prior_from_heuristic")]
     pub classifier_prior_from_heuristic: bool,
+    #[serde(default = "default_wordfreq_learning_enabled")]
+    pub wordfreq_learning_enabled: bool,
+    #[serde(default = "default_wordfreq_max_learned_per_lang")]
+    pub wordfreq_max_learned_per_lang: u32,
+    #[serde(default = "default_wordfreq_min_seen_to_promote")]
+    pub wordfreq_min_seen_to_promote: u32,
+    #[serde(default = "default_wordfreq_max_tokens_per_observation")]
+    pub wordfreq_max_tokens_per_observation: u32,
     /// Max size of `gateway.log` before rotation (MiB). 0 = no size limit / no rotation.
     #[serde(default = "default_log_max_size_mb")]
     pub log_max_size_mb: u64,
@@ -123,6 +131,9 @@ pub struct GatewayApiKeyEntry {
 pub struct AgentConfig {
     #[serde(default)]
     pub cloud_token_budget: Option<u64>,
+    /// Last configured limit kept when quota enforcement is turned off (`cloud_token_budget = 0`).
+    #[serde(default)]
+    pub cloud_token_budget_saved: Option<u64>,
     #[serde(default)]
     pub upstream: AgentUpstreamSection,
 }
@@ -238,6 +249,22 @@ fn default_classifier_prior_from_heuristic() -> bool {
     true
 }
 
+fn default_wordfreq_learning_enabled() -> bool {
+    true
+}
+
+fn default_wordfreq_max_learned_per_lang() -> u32 {
+    5000
+}
+
+fn default_wordfreq_min_seen_to_promote() -> u32 {
+    3
+}
+
+fn default_wordfreq_max_tokens_per_observation() -> u32 {
+    32
+}
+
 fn default_log_max_size_mb() -> u64 {
     10
 }
@@ -277,6 +304,10 @@ impl Default for GatewaySection {
             classifier_prior_alpha: default_classifier_prior_alpha(),
             classifier_decay_half_life_hours: default_classifier_decay_half_life_hours(),
             classifier_prior_from_heuristic: default_classifier_prior_from_heuristic(),
+            wordfreq_learning_enabled: default_wordfreq_learning_enabled(),
+            wordfreq_max_learned_per_lang: default_wordfreq_max_learned_per_lang(),
+            wordfreq_min_seen_to_promote: default_wordfreq_min_seen_to_promote(),
+            wordfreq_max_tokens_per_observation: default_wordfreq_max_tokens_per_observation(),
             log_max_size_mb: default_log_max_size_mb(),
             log_max_files: default_log_max_files(),
         }

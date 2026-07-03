@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import flowyaipcIcon from '../../assets/flowyaipc.png?url'
+import openclawIcon from '@lobehub/icons-static-svg/icons/openclaw-color.svg?url'
+import hermesIcon from '@lobehub/icons-static-svg/icons/hermesagent.svg?url'
+import claudecodeIcon from '@lobehub/icons-static-svg/icons/claudecode-color.svg?url'
+import codexIcon from '@lobehub/icons-static-svg/icons/codex-color.svg?url'
 import { useAppStore } from '../../stores/appStore'
 import { useI18n } from '../../hooks/useI18n'
 import { isTauri } from '../../lib/tauri'
 import {
-  agentKindLabel,
   agentSetupErrorMessage,
   configureAgent,
+  getAgentDeployStatus,
   parseAgentNotInitializedError,
   type AgentKind,
 } from '../../lib/agent-quick-setup'
@@ -14,20 +19,51 @@ function BtnSpinner() {
   return <span className="btn-spinner" aria-hidden="true" />
 }
 
+type AgentNameKey =
+  | 'overview.agentFlowyAipcName'
+  | 'overview.agentOpenClawName'
+  | 'overview.agentHermesName'
+  | 'overview.agentClaudeCodeName'
+  | 'overview.agentCodexName'
+
+type AgentCardId = 'flowyaipc' | AgentKind
+
 const AGENT_ACTIONS: Array<{
+  id: AgentCardId
   kind: AgentKind
-  labelKey:
-    | 'overview.configureOpenClaw'
-    | 'overview.configureHermes'
-    | 'overview.configureHermesFlash'
-    | 'overview.configureClaudeCode'
-    | 'overview.configureCodex'
+  nameKey: AgentNameKey
+  icon: string
 }> = [
-  { kind: 'openclaw', labelKey: 'overview.configureOpenClaw' },
-  { kind: 'hermes', labelKey: 'overview.configureHermes' },
-  { kind: 'hermes-flash', labelKey: 'overview.configureHermesFlash' },
-  { kind: 'claude-code', labelKey: 'overview.configureClaudeCode' },
-  { kind: 'codex', labelKey: 'overview.configureCodex' },
+  {
+    id: 'flowyaipc',
+    kind: 'openclaw',
+    nameKey: 'overview.agentFlowyAipcName',
+    icon: flowyaipcIcon,
+  },
+  {
+    id: 'openclaw',
+    kind: 'openclaw',
+    nameKey: 'overview.agentOpenClawName',
+    icon: openclawIcon,
+  },
+  {
+    id: 'hermes',
+    kind: 'hermes',
+    nameKey: 'overview.agentHermesName',
+    icon: hermesIcon,
+  },
+  {
+    id: 'claude-code',
+    kind: 'claude-code',
+    nameKey: 'overview.agentClaudeCodeName',
+    icon: claudecodeIcon,
+  },
+  {
+    id: 'codex',
+    kind: 'codex',
+    nameKey: 'overview.agentCodexName',
+    icon: codexIcon,
+  },
 ]
 
 export function AgentQuickSetupCard() {
@@ -36,22 +72,61 @@ export function AgentQuickSetupCard() {
   const showToast = useAppStore((s) => s.showToast)
   const desktopApp = isTauri()
 
-  const [loading, setLoading] = useState<AgentKind | null>(null)
+  const [loadingId, setLoadingId] = useState<AgentCardId | null>(null)
+  const [deployedMap, setDeployedMap] = useState<Partial<Record<AgentCardId, boolean>>>({})
 
-  const disabled = !desktopApp || !connected || loading !== null
+  const disabled = !desktopApp || !connected || loadingId !== null
   const disabledHint = !desktopApp
     ? t('overview.desktopOnly')
     : !connected
       ? t('overview.gatewayRequired')
       : null
 
-  const runConfigure = async (kind: AgentKind) => {
+  const refreshDeployStatus = useCallback(async () => {
+    if (!desktopApp) {
+      setDeployedMap({})
+      return
+    }
+
+    const uniqueKinds = [...new Set(AGENT_ACTIONS.map((card) => card.kind))]
+    const kindStatus = new Map<AgentKind, boolean | null>()
+    await Promise.all(
+      uniqueKinds.map(async (kind) => {
+        kindStatus.set(kind, await getAgentDeployStatus(kind))
+      }),
+    )
+
+    setDeployedMap((prev) => {
+      const next = { ...prev }
+      for (const card of AGENT_ACTIONS) {
+        const deployed = kindStatus.get(card.kind)
+        if (deployed !== null && deployed !== undefined) {
+          next[card.id] = deployed
+        }
+      }
+      return next
+    })
+  }, [desktopApp])
+
+  useEffect(() => {
+    void refreshDeployStatus()
+  }, [refreshDeployStatus])
+
+  const runConfigure = async (card: (typeof AGENT_ACTIONS)[number]) => {
     if (disabled) return
-    setLoading(kind)
+    setLoadingId(card.id)
+    const agentLabel = t(card.nameKey)
     try {
-      const result = await configureAgent(kind)
+      const result = await configureAgent(card.kind)
+      setDeployedMap((prev) => {
+        const next = { ...prev }
+        for (const item of AGENT_ACTIONS) {
+          if (item.kind === card.kind) next[item.id] = true
+        }
+        return next
+      })
       showToast('toast.agentConfigured', true, {
-        agent: agentKindLabel(kind),
+        agent: agentLabel,
         path: result.path,
         model: result.model,
       })
@@ -59,14 +134,14 @@ export function AgentQuickSetupCard() {
       const notInit = parseAgentNotInitializedError(err)
       if (notInit) {
         showToast('toast.agentNotInitialized', false, {
-          agent: agentKindLabel(notInit.agent),
+          agent: agentLabel,
           path: notInit.configPath,
         })
         return
       }
       showToast('toast.agentConfigureFail', false, { msg: agentSetupErrorMessage(err) })
     } finally {
-      setLoading(null)
+      setLoadingId(null)
     }
   }
 
@@ -75,19 +150,25 @@ export function AgentQuickSetupCard() {
       <div className="panel-title">{t('overview.agentQuickSetup')}</div>
       <p className="agent-quick-setup-hint">{t('overview.agentQuickSetupHint')}</p>
       {disabledHint && <p className="agent-quick-setup-note">{disabledHint}</p>}
-      <div className="agent-quick-setup-actions">
-        {AGENT_ACTIONS.map(({ kind, labelKey }) => (
-          <button
-            key={kind}
-            type="button"
-            className="btn btn-primary"
-            disabled={disabled}
-            onClick={() => void runConfigure(kind)}
-          >
-            {loading === kind ? <BtnSpinner /> : null}
-            {t(labelKey)}
-          </button>
-        ))}
+      <div className="agent-card-grid">
+        {AGENT_ACTIONS.map((card) => {
+          const deployed = !!deployedMap[card.id]
+          return (
+            <article key={card.id} className="agent-card">
+              <img className="agent-card-logo" src={card.icon} alt="" />
+              <h3 className="agent-card-name">{t(card.nameKey)}</h3>
+              <button
+                type="button"
+                className={`btn agent-card-deploy ${deployed ? 'btn-success' : 'btn-primary'}`}
+                disabled={disabled}
+                onClick={() => void runConfigure(card)}
+              >
+                {loadingId === card.id ? <BtnSpinner /> : null}
+                {deployed ? t('overview.agentDeployed') : t('overview.deployAgent')}
+              </button>
+            </article>
+          )
+        })}
       </div>
     </div>
   )

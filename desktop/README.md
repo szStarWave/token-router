@@ -53,6 +53,51 @@ npm run tauri:build
 | 托盘 | 右键菜单：Show / 显示、Quit / 退出；左键显示窗口 |
 | 关闭窗口 | 隐藏到托盘，不退出进程（托盘 Quit 退出） |
 
+## IPC Status Pipe（Windows）
+
+Token Router 桌面版在 Windows 上提供命名管道，供第三方客户端发现 Gateway URL（协议与 [Herdsman](https://github.com/szStarWave/herdsman) 对称）。
+
+| 项目 | 值 |
+|------|-----|
+| 管道路径 | `\\.\pipe\Token-Router-status` |
+| 命令 | `/status` → JSON；`/exit` → 关闭连接 |
+| 权限 | 本地任意进程可连接 |
+
+### `/status` 响应示例
+
+```json
+{
+  "app_name": "Token Router",
+  "running": true,
+  "host": "127.0.0.1",
+  "port": 11080,
+  "endpoint": "http://127.0.0.1:11080",
+  "webui_url": "http://127.0.0.1:11080/setup",
+  "openai_endpoint": "http://127.0.0.1:11080/v1",
+  "chat_endpoint": "http://127.0.0.1:11080/v1",
+  "responses_endpoint": "http://127.0.0.1:11080/v1/responses",
+  "anthropic_endpoint": "http://127.0.0.1:11080/anthropic",
+  "timestamp": "..."
+}
+```
+
+`running: false` 时各 URL 字段为空字符串。管道随桌面应用启动，Gateway 启停后状态自动更新。
+
+### PowerShell 客户端示例
+
+```powershell
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "Token-Router-status", [System.IO.Pipes.PipeDirection]::InOut)
+$pipe.Connect(3000)
+$writer = New-Object System.IO.StreamWriter($pipe)
+$reader = New-Object System.IO.StreamReader($pipe)
+$writer.Write("/status")
+$writer.Flush()
+$reader.ReadToEnd()
+$pipe.Close()
+```
+
+实现参考：`src-tauri/src/status_pipe.rs`（服务端）、`src-tauri/src/herdsman.rs`（客户端模式，连接 Herdsman 管道）。
+
 ## Tauri 命令（前端 `invoke`）
 
 | 命令 | 说明 |
@@ -76,15 +121,15 @@ $env:MODELSCOPE_TOKEN = "<your-token>"
 uv run --with modelscope python scripts/publish_ota/init_dataset.py
 ```
 
-2. 构建 release 并复制为版本化 exe 名称，例如 `Token-Router-v0.6.0-flowy-CN-with_account.exe`。
+2. 构建 release 并复制 NSIS setup 为版本化文件名，例如 `Token-Router-v0.8.0-flowy-CN-with_account-setup.exe`。
 
-3. 上传 exe 与 `latest.json`：
+3. 上传 setup 安装包与 `latest.json`：
 
 ```powershell
 uv run --with modelscope python scripts/publish_ota/publish.py `
-  --channel flowy --region-scope CN --version v0.6.0 `
+  --channel flowy --region-scope CN --version v0.8.0 `
   --enable-account-system true `
-  --exe-path "path\to\Token-Router-v0.6.0-flowy-CN-with_account.exe"
+  --setup-path "path\to\Token-Router-v0.8.0-flowy-CN-with_account-setup.exe"
 ```
 
 更新说明维护在仓库根目录 [`docs/ota-release-notes.json`](../docs/ota-release-notes.json)。

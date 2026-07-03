@@ -863,6 +863,8 @@
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-primary { background: var(--primary); color: var(--primary-fg); }
     .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover:not(:disabled) { filter: brightness(1.08); }
     .btn-primary.btn-unsaved { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 55%, transparent); }
     .btn-ghost { background: var(--content2); color: var(--foreground); }
     .btn-ghost:hover:not(:disabled) { background: var(--content3); }
@@ -960,9 +962,13 @@
       display: flex; align-items: center; justify-content: space-between;
       gap: 12px; min-height: 36px; margin-top: 0;
     }
-    .switch-row > label:first-of-type {
+    .switch-row > .switch-row-label,
+    .switch-row > label:not(.switch) {
       margin-bottom: 0; flex: 1; min-width: 0;
       font-size: 13px; font-weight: 600; color: var(--foreground);
+    }
+    .switch-row > label.switch {
+      flex: 0 0 auto;
     }
     .form-switches {
       display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
@@ -1313,6 +1319,39 @@
       gap: 8px;
     }
 
+    .agent-card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+      gap: 12px;
+    }
+    .agent-card {
+      background: var(--content2);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 20px 14px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 12px;
+      min-height: 168px;
+    }
+    .agent-card-logo {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+    }
+    .agent-card-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--foreground);
+    }
+    .agent-card-deploy {
+      width: 100%;
+      margin-top: auto;
+      justify-content: center;
+    }
+
     .btn-spinner {
       width: 14px; height: 14px; flex-shrink: 0;
       border: 2px solid currentColor;
@@ -1388,13 +1427,123 @@
       font-size: 12px;
       color: var(--muted-foreground);
     }
-    #page-logs .log-view {
+    #page-logs .log-view,
+    #page-logs .routing-log-list {
       flex: 1; min-height: 0;
     }
     .log-line { padding: 1px 0; }
     .log-line.info { color: var(--log-info); }
     .log-line.warn { color: var(--warning); }
     .log-line.err { color: var(--danger); }
+
+    .log-view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .log-view-toggle__btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .log-view-toggle__btn:hover {
+      background: var(--content2);
+      color: var(--foreground);
+    }
+    .log-view-toggle__btn.active {
+      background: var(--primary);
+      color: var(--primary-fg);
+    }
+
+    .routing-log-list {
+      overflow-y: auto;
+      padding: 8px 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .routing-log-card {
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
+      background: var(--content1);
+      padding: 12px 14px;
+      flex-shrink: 0;
+    }
+    .routing-log-card__meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted-foreground);
+      margin-bottom: 8px;
+    }
+    .routing-log-card__sep { opacity: 0.6; }
+    .routing-log-card__model {
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .routing-log-card__preview {
+      margin: 0 0 10px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--foreground);
+      word-break: break-word;
+    }
+    .routing-log-card__preview-label {
+      color: var(--muted-foreground);
+      font-weight: 600;
+    }
+    .routing-log-card__tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .routing-log-card__reason-tag {
+      font-family: var(--mono);
+      font-size: 10px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .routing-log-card__expand { margin-top: 6px; }
+    .routing-log-card__toggle {
+      padding-left: 0;
+      font-size: 12px;
+    }
+    .routing-log-card__details {
+      list-style: none;
+      margin: 8px 0 0;
+      padding: 0;
+      border-top: 1px solid var(--divider);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .routing-log-card__details li {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 12px;
+    }
+    .routing-log-card__code {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--primary);
+      word-break: break-all;
+    }
+    .routing-log-card__explain {
+      color: var(--muted-foreground);
+      line-height: 1.45;
+    }
 
     /* ── Login (Flowy account) ── */
     html:not([data-auth="logged-in"]) #app { display: none !important; }

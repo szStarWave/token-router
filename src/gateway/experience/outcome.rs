@@ -73,6 +73,7 @@ mod tests {
             edge_ok_probability: None,
             classifier_features: None,
             casual_quality_fallback,
+            lexical_learn: Default::default(),
         }
     }
 

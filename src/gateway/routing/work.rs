@@ -189,8 +189,13 @@ mod tests {
             intent_easy: false,
             intent_plan: false,
             multimodal: false,
+            user_multimodal: false,
             consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
             user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
         }
     }
 

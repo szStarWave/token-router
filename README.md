@@ -209,9 +209,14 @@ src/
 | **轮次分析** | `n_tool_defs`、`n_turns`、`last_user_tok`、`loop_steps` |
 | **状态标记** | `pending_tool_calls`、`tool_arg_ready`、`last_role_tool`、`assistant_failed_recent`、`had_tool_roundtrip` |
 | **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`、`cron_background` |
-| **意图识别** | `intent_hard`（关键词: 分析/总结/对比/误解/修复/优化等）、`intent_easy`（你好/天气/谢谢/再讲等）、`intent_plan`（计划/方案/路线图等），中英文双语 |
-| **工具分析** | `risky_tool_tier1`（exec/write/browser/sessions_spawn 等）、`consecutive_tool_error_streak`（连续 2+ 条含错误关键词的 tool result） |
+| **意图识别** | `intent_hard` / `intent_easy` / `intent_plan`（**仅最新 user 消息**，关键词见 `routing/keywords.rs`） |
+| **词汇稀有度** | `rare_lexical`（统计：[tokenizers](https://github.com/huggingface/tokenizers) WordLevel 分词 + `wordfreq` 查频，词表存 SQLite `wordfreq.db`；OOV/低频 → 稀有）、`special_lexical`（领域专名关键词：GDPR/K8s/CVE 等）、`rare_token_ratio` |
+| **工具分析** | `risky_tool_tier1`（exec/write/browser/sessions_spawn 等）、`consecutive_tool_error_streak`（尾部连续含错误关键词的 tool result 条数；≥1 重分类为 `RecoveryAfterFailure` 并渐进升难，≥2 触发硬门控）、`tool_invocations_since_last_user`（自上次 user 以来的 tool result 条数；≥5 渐进升难） |
 | **多模态探测** | 检查 `content` 是否含 `image_url` 或 `data:image` |
+
+**关键词模块**（`routing/keywords.rs`）：集中管理 `tool_error`、`hard_intent`、`plan_intent`、`easy_intent`、`reject_intent`、`uncertainty`（cascade/verify 质量门）、`special_lexical` 七组词表；ASCII 词大小写不敏感，短词（≤4 字符）使用词边界匹配避免误伤。
+
+**统计稀有词**（`routing/lexical.rs` + `routing/lexical_tokenizer.rs` + `routing/wordfreq_store.rs`）：对最新 user 消息做 `whatlang` 语言检测（粤语 fallback 到 zh 词频表）→ 分词（英文用 [huggingface/tokenizers](https://github.com/huggingface/tokenizers) WordLevel + Whitespace；中日韩用词表最长匹配）→ 查 `{data_dir}/wordfreq.db` 词频。首次启动写入默认常见词（`wordfreq_seed.rs`，由 `scripts/gen_wordfreq_tables.js` 生成）；运行时可在 `easy_intent` 对话及 edge 成功的 DirectChat/HeartbeatAck 下持续学习并落盘（`wordfreq_learning_enabled`，默认 true）。满足任一即 `rare_lexical=true`：token 频率 < 1e-7、稀有 token ≥2、或稀有占比 ≥25%（总 token < 3 时不看占比）。命中 `easy_intent` 且无 `special_lexical` 时跳过稀有统计。
 
 **关键设计**：`tok_loop_delta` 通过 `SessionStore::get_last_tok_in()` 计算 `tok_total_in - last_tok_in`，用于检测 Agent 循环中是否出现大量新增 token（如从外部注入长上下文）。
 
@@ -228,7 +233,7 @@ src/
 | `ToolResultDigest` | `last_role_tool == true` | -0.45 | Work |
 | `InitialPlan` | `n_turns == 0 && !is_casual` | +0.35 | **云端** |
 | `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
-| `RecoveryAfterFailure` | `assistant_failed_recent == true` | +0.55 | **云端** |
+| `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 1` | +0.55 | **云端 / cascade** |
 | `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
 | `MemoryCompact` | `memory_compact_hint == true` | +0.20 | Work |
 | `CronBackground` | `cron_background == true` | -0.15 | Work |
@@ -249,7 +254,7 @@ src/
 | 门控 | 条件 | 路由结果 |
 |------|------|---------|
 | `GATE_EDGE_DOWN` | 端侧未配置或不可用 | **cloud**（或 503） |
-| `GATE_USER_REJECT` | 最新 user 否定上一轮 assistant（中/英/日/韩/粤关键词，见 `routing/reject_intent.rs`） | **cloud** |
+| `GATE_USER_REJECT` | 最新 user 否定上一轮 assistant（中/英/日/韩/粤关键词，见 `routing/keywords.rs` → `contains_reject_intent`） | **cloud** |
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
 | `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
@@ -263,18 +268,26 @@ src/
 `DifficultyScore::compute()` 使用 sigmoid 转换的加权线性公式：
 
 ```
-raw = 0.40 × ctx_ratio + 0.15 × tool_ratio + 0.25 × intent_hard
-      - 0.35 × intent_easy + 0.10 × multimodal + step_kind.bias() + experience_bias
+raw = 0.20 × ctx_ratio + 0.25 × user_ctx_ratio + 0.10 × tool_ratio
+      + 0.30 × intent_hard - 0.40 × intent_easy + 0.12 × user_multimodal
+      + step_kind.bias() + experience_bias
+      + assistant_failed_recent_bonus + tool_error_streak_bias + tool_loop_bias + lexical_rarity_bias
 
 d = 1.0 / (1.0 + e^(-raw))
 ```
 
 其中：
-- `ctx_ratio = tok_total_in / ctx_edge_max_tokens`（上下文饱和度）
-- `tool_ratio = n_tool_defs / 50`（工具定义密度，上限 1.0）
-- `intent_hard` / `intent_easy` 为 0 或 1
+- `ctx_ratio = tok_loop_delta / ctx_edge_max_tokens`（本轮上下文增量；**DirectChat/HeartbeatAck 用 `tok_rest` 对话 transcript**，不计 OpenClaw system/tools 静态开销）
+- `user_ctx_ratio = last_user_tok / ctx_edge_max_tokens`（**最新 user 消息**体量，权重最高之一）
+- `tool_ratio = n_tool_defs / 20`（工具定义密度，上限 1.0）
+- `intent_hard` / `intent_easy` / `intent_plan` 均来自**最新 user 消息**（0 或 1）
+- `user_multimodal`：仅当最新 user 消息含图片时为 1（全请求 `multimodal` 仍用于步态/门控）
 - `step_kind.bias()` 见上表
 - `experience_bias` 来自 `ExperienceStore::bias_for(step_kind)`
+- `assistant_failed_recent_bonus`：assistant turn 失败时 +0.15
+- `tool_error_streak_bias`：连续 tool 失败渐进加成 — streak 1 → +0.15，2 → +0.30，3+ → +0.40（封顶）
+- `tool_loop_bias`：自上次 user 以来 tool result 条数渐进加成 — 0–4 → 0，5–6 → +0.10，7 → +0.18，8+ → +0.25（封顶）
+- `lexical_rarity_bias`：词汇稀有度渐进加成（非硬门控）— 仅 rare → +0.08，仅 special → +0.12，两者皆有 → +0.18（封顶）；reason code：`LEXICAL_RARE` / `LEXICAL_SPECIAL` / `LEXICAL_BOTH`；分类器特征 bucket：`lexical:none|rare|special|both`
 
 ##### 1.5 策略映射（`routing/policy.rs`）
 

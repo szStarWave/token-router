@@ -20,6 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const DETACHED_PROCESS: u32 = 0x0000_0008;
+/// Tauri NSIS: silent in-place update and restart the app when finished.
+const NSIS_SILENT_UPDATE_ARGS: &[&str] = &["/S", "/UPDATE", "/R"];
 
 pub fn run_apply(target: &str, package: &str, temp_dir: &str) -> Result<(), String> {
     let target_abs = fs::canonicalize(target).map_err(|e| format!("resolve target: {e}"))?;
@@ -38,17 +40,7 @@ pub fn run_apply(target: &str, package: &str, temp_dir: &str) -> Result<(), Stri
         );
     }
 
-    match kill_processes_and_replace_exe(&target_abs, &package_abs, &temp_dir) {
-        Ok(()) => {}
-        Err(e) if is_access_denied(&e) => {
-            try_elevated_apply(&self_exe, &target_abs, &package_abs, &temp_dir, &e)?;
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    }
-
-    start_detached_exe_with_args(&target_abs, &["--ota-update"])?;
-    Ok(())
+    run_nsis_setup(&package_abs, &target_abs)
 }
 
 pub fn spawn_ota_apply_detached(
@@ -91,64 +83,39 @@ pub fn spawn_ota_apply_detached(
     }
 }
 
-fn kill_processes_and_replace_exe(
-    target_abs: &Path,
-    download_abs: &Path,
-    temp_dir: &Path,
-) -> Result<(), String> {
-    if !download_abs.is_file() {
-        return Err(format!("download file missing: {}", download_abs.display()));
+fn run_nsis_setup(setup_abs: &Path, target_abs: &Path) -> Result<(), String> {
+    if !setup_abs.is_file() {
+        return Err(format!("setup package missing: {}", setup_abs.display()));
     }
 
     if target_abs.is_file() {
-        let self_pid = std::process::id();
-        terminate_processes_with_image_path(target_abs, self_pid)?;
-        std::thread::sleep(Duration::from_millis(200));
+        terminate_processes_with_image_path(target_abs, std::process::id())?;
+        std::thread::sleep(Duration::from_millis(500));
     }
 
-    fs::create_dir_all(temp_dir).map_err(|e| format!("temp dir: {e}"))?;
-
-    let exe_name = target_abs
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("token-router-desktop.exe");
-    let ts = chrono_stamp();
-    let backup_exe = temp_dir.join(format!("{exe_name}.old.{ts}"));
-    let mut backup_done = false;
-
-    if target_abs.is_file() {
-        fs::rename(target_abs, &backup_exe).map_err(|e| format!("move current exe to backup: {e}"))?;
-        backup_done = true;
-    }
-
-    if let Err(e) = move_or_copy_file(download_abs, target_abs) {
-        if backup_done {
-            let _ = fs::rename(&backup_exe, target_abs);
+    match run_nsis_setup_process(setup_abs) {
+        Ok(()) => Ok(()),
+        Err(e) if is_access_denied(&e) => {
+            try_elevated_setup(setup_abs, &e)
         }
-        return Err(format!("install downloaded exe: {e}"));
+        Err(e) => Err(e),
     }
-
-    Ok(())
 }
 
-fn move_or_copy_file(src: &Path, dst: &Path) -> Result<(), String> {
-    if fs::rename(src, dst).is_ok() {
-        return Ok(());
+fn run_nsis_setup_process(setup_abs: &Path) -> Result<(), String> {
+    let status = Command::new(setup_abs)
+        .args(NSIS_SILENT_UPDATE_ARGS)
+        .status()
+        .map_err(|e| format!("launch setup installer: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("setup installer exited with {status}"))
     }
-    let mut in_file = fs::File::open(src).map_err(|e| e.to_string())?;
-    let mut out_file = fs::File::create(dst).map_err(|e| e.to_string())?;
-    std::io::copy(&mut in_file, &mut out_file).map_err(|e| e.to_string())?;
-    fs::remove_file(src).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
-fn start_detached_exe_with_args(exe: &Path, args: &[&str]) -> Result<(), String> {
-    Command::new(exe)
-        .args(args)
-        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+fn nsis_setup_args() -> Vec<String> {
+    NSIS_SILENT_UPDATE_ARGS.iter().map(|s| (*s).to_string()).collect()
 }
 
 fn copy_executable_file(src: &Path, dst: &Path) -> Result<(), String> {
@@ -235,25 +202,9 @@ fn is_access_denied(err: &str) -> bool {
         || err.to_lowercase().contains("eacces")
 }
 
-fn try_elevated_apply(
-    self_exe: &Path,
-    target_abs: &Path,
-    package_abs: &Path,
-    temp_dir: &Path,
-    orig: &str,
-) -> Result<(), String> {
-    let args = vec![
-        "ota".to_string(),
-        "apply".to_string(),
-        "--target".to_string(),
-        target_abs.to_string_lossy().into_owned(),
-        "--package".to_string(),
-        package_abs.to_string_lossy().into_owned(),
-        "--temp-dir".to_string(),
-        temp_dir.to_string_lossy().into_owned(),
-    ];
-    shell_execute_runas(self_exe, &args).map_err(|e| format!("{orig}; elevation relaunch failed: {e}"))?;
-    Ok(())
+fn try_elevated_setup(setup_abs: &Path, orig: &str) -> Result<(), String> {
+    shell_execute_runas(setup_abs, &nsis_setup_args())
+        .map_err(|e| format!("{orig}; elevation relaunch failed: {e}"))
 }
 
 fn try_elevated_spawn_message(
@@ -357,13 +308,6 @@ fn path_to_wide(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(Some(0))
         .collect()
-}
-
-fn chrono_stamp() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".into())
 }
 
 struct HandleGuard(HANDLE);

@@ -20,7 +20,7 @@ use crate::gateway::server::GatewayRuntime;
 use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::MultimodalStore;
-use crate::gateway::routing::AdaptiveTuner;
+use crate::gateway::routing::{AdaptiveTuner, WordFreqStore};
 use crate::gateway::session::SessionStore;
 use crate::gateway::stats::GatewayStats;
 use crate::gateway::upstream::UpstreamClient;
@@ -38,6 +38,7 @@ pub struct AppState {
     pub adaptive_tuner: Arc<AdaptiveTuner>,
     pub edge_load: Arc<EdgeInferenceTracker>,
     pub agent_usage: Arc<AgentCloudUsageStore>,
+    pub wordfreq: Arc<WordFreqStore>,
 }
 
 impl AppState {
@@ -51,6 +52,7 @@ impl AppState {
             .update_settings(config.experience.clone());
         self.classifier
             .update_settings(config.classifier.clone());
+        self.wordfreq.update_settings(config.wordfreq.clone());
         self.adaptive_tuner.recompute(config, self.experience.as_ref(), &self.stats);
     }
 }

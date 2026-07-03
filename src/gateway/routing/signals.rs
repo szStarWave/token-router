@@ -30,11 +30,22 @@ pub struct RequestSignals {
     pub intent_hard: bool,
     pub intent_easy: bool,
     pub intent_plan: bool,
+    /// Any message in the request carries image content.
     pub multimodal: bool,
+    /// Latest user message carries image content (highest weight for difficulty).
+    pub user_multimodal: bool,
     /// Trailing consecutive `role=tool` messages whose content matches error keywords.
     pub consecutive_tool_error_streak: u32,
+    /// `role=tool` messages after the last `role=user` in the transcript.
+    pub tool_invocations_since_last_user: u32,
     /// Latest user message rejects the immediately preceding assistant reply.
     pub user_rejects_answer: bool,
+    /// Statistical rare-word signal from the latest user message.
+    pub rare_lexical: bool,
+    /// Domain-specific lexical signal from keyword tables.
+    pub special_lexical: bool,
+    /// Ratio of rare tokens in the latest user message (0.0–1.0).
+    pub rare_token_ratio: f32,
 }
 
 /// Short, tool-loop-free turn (daily chat). Tool definitions in the request are ignored.
@@ -81,11 +92,12 @@ pub fn is_simple_multimodal(signals: &RequestSignals) -> bool {
     signals.multimodal && is_casual_chat(signals)
 }
 
-pub struct SignalExtractor {
+pub struct SignalExtractor<'a> {
     pub ctx_edge_max: u32,
+    pub wordfreq: &'a super::WordFreqStore,
 }
 
-impl SignalExtractor {
+impl SignalExtractor<'_> {
     pub fn extract(
         &self,
         req: &ChatCompletionRequest,
@@ -97,6 +109,7 @@ impl SignalExtractor {
         let mut n_turns = 0u32;
         let mut had_tool = false;
         let mut multimodal = false;
+        let mut user_multimodal = false;
 
         for (i, msg) in req.messages.iter().enumerate() {
             let t = estimate_message_tokens(msg);
@@ -113,6 +126,9 @@ impl SignalExtractor {
             }
             if message_has_image(msg) {
                 multimodal = true;
+                if msg.role == Role::User {
+                    user_multimodal = true;
+                }
             }
         }
 
@@ -193,26 +209,35 @@ impl SignalExtractor {
             .filter(|m| m.role == Role::Assistant)
             .count() as u32;
 
-        let intent_hard = last
-            .map(|m| message_text(m))
-            .is_some_and(|t| contains_hard_intent(&t));
-        let intent_easy = last
-            .map(|m| message_text(m))
-            .is_some_and(|t| contains_easy_intent(&t));
-        let intent_plan = last
-            .filter(|m| m.role == Role::User)
-            .map(|m| message_text(m))
-            .is_some_and(|t| contains_plan_intent(&t));
-
-        let last_user_tok = req
+        let last_user = req
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == Role::User)
+            .find(|m| m.role == Role::User);
+
+        let intent_hard = last_user
+            .map(|m| message_text(m))
+            .is_some_and(|t| super::keywords::contains_hard_intent(&t));
+        let intent_easy = last_user
+            .map(|m| message_text(m))
+            .is_some_and(|t| super::keywords::contains_easy_intent(&t));
+        let intent_plan = last_user
+            .map(|m| message_text(m))
+            .is_some_and(|t| super::keywords::contains_plan_intent(&t));
+
+        let last_user_text = last_user
+            .map(|m| message_text(m))
+            .unwrap_or_default();
+        let lexical = super::lexical::analyze_lexical(&last_user_text, self.wordfreq);
+
+        let last_user_tok = last_user
             .map(estimate_message_tokens)
             .unwrap_or(0);
 
         let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
+
+        let tool_invocations_since_last_user =
+            count_tool_invocations_since_last_user(&req.messages);
 
         let user_rejects_answer = req.messages.len() >= 2
             && req.messages[req.messages.len() - 1].role == Role::User
@@ -260,9 +285,28 @@ impl SignalExtractor {
             intent_easy,
             intent_plan,
             multimodal,
+            user_multimodal,
             consecutive_tool_error_streak,
+            tool_invocations_since_last_user,
             user_rejects_answer,
+            rare_lexical: lexical.rare_lexical,
+            special_lexical: lexical.special_lexical,
+            rare_token_ratio: lexical.rare_token_ratio,
         }
+    }
+}
+
+/// Count `role=tool` messages after the last `role=user` in the transcript.
+pub fn count_tool_invocations_since_last_user(messages: &[Message]) -> u32 {
+    match messages.iter().rposition(|m| m.role == Role::User) {
+        None => messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .count() as u32,
+        Some(i) => messages[i + 1..]
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .count() as u32,
     }
 }
 
@@ -273,7 +317,7 @@ pub fn consecutive_tool_error_tail(messages: &[Message]) -> u32 {
         if msg.role != Role::Tool {
             break;
         }
-        if tool_result_has_error(&message_text(msg)) {
+        if super::keywords::tool_result_has_error(&message_text(msg)) {
             count += 1;
         } else {
             break;
@@ -283,114 +327,7 @@ pub fn consecutive_tool_error_tail(messages: &[Message]) -> u32 {
 }
 
 pub fn tool_result_has_error(text: &str) -> bool {
-    const KWS: &[&str] = &[
-        "error",
-        "failed",
-        "failure",
-        "exception",
-        "traceback",
-        "errno",
-        "non-zero",
-        "nonzero",
-        "exit code 1",
-        "exit code: 1",
-        "exit status 1",
-        "command failed",
-        "command not found",
-        "permission denied",
-        "错误",
-        "失败",
-        "异常",
-    ];
-    let lower = text.to_ascii_lowercase();
-    KWS.iter().any(|k| lower.contains(k))
-}
-
-fn contains_hard_intent(text: &str) -> bool {
-    const KWS: &[&str] = &[
-        "架构",
-        "证明",
-        "refactor",
-        "distributed",
-        "legal",
-        "medical",
-        "跨仓库",
-        "修复",
-        "bug",
-        "fix",
-        "debug",
-    ];
-    let lower = text.to_ascii_lowercase();
-    KWS.iter().any(|k| lower.contains(k))
-}
-
-fn contains_plan_intent(text: &str) -> bool {
-    const KWS: &[&str] = &[
-        "规划",
-        "计划",
-        "方案",
-        "roadmap",
-        "planning",
-        " step plan",
-        "make a plan",
-        "制定计划",
-        "执行计划",
-        "任务拆解",
-        "拆解任务",
-        "分解任务",
-    ];
-    let lower = text.to_ascii_lowercase();
-    KWS.iter().any(|k| {
-        if k.is_ascii() {
-            lower.contains(k)
-        } else {
-            text.contains(k)
-        }
-    }) || {
-        let trimmed = lower.trim();
-        trimmed.starts_with("plan ") || trimmed == "plan"
-    }
-}
-
-fn contains_easy_intent(text: &str) -> bool {
-    const KWS: &[&str] = &[
-        "分类",
-        "提取",
-        "格式化",
-        "translate",
-        "yes/no",
-        "是否",
-        "你好",
-        "hello",
-        "hi",
-        "嗨",
-        "几点",
-        "what time",
-        "current time",
-        "现在几点",
-        "什么时间",
-        "天气",
-        "weather",
-        "笑话",
-        "joke",
-        "谢谢",
-        "thanks",
-        "再见",
-        "bye",
-        "聊聊",
-        "chat",
-        "介绍一下",
-        "是谁",
-        "什么意思",
-        "怎么样",
-        "可以吗",
-        "继续",
-        "还有吗",
-        "再说",
-        "再讲",
-    ];
-    let lower = text.to_ascii_lowercase();
-    KWS.iter().any(|k| lower.contains(k))
+    super::keywords::tool_result_has_error(text)
 }
 
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -420,6 +357,16 @@ fn estimate_message_tokens(msg: &Message) -> u32 {
         }
     }
     n
+}
+
+/// Latest user message text for lexical learning context.
+pub fn last_user_message_text(req: &ChatCompletionRequest) -> String {
+    req.messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .map(message_text)
+        .unwrap_or_default()
 }
 
 fn message_text(msg: &Message) -> String {
@@ -540,10 +487,99 @@ mod tests {
             intent_easy: true,
             intent_plan: false,
             multimodal: false,
+            user_multimodal: false,
             consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
             user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
         };
         assert!(is_casual_chat(&signals));
+    }
+
+    #[test]
+    fn tool_invocations_since_last_user_counts_after_user() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("go".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("a".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("b".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t2".into()),
+            },
+        ];
+        assert_eq!(count_tool_invocations_since_last_user(&messages), 2);
+    }
+
+    #[test]
+    fn tool_invocations_without_user_counts_all_tools() {
+        let messages = vec![
+            Message {
+                role: Role::Tool,
+                content: Some("a".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("b".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t2".into()),
+            },
+        ];
+        assert_eq!(count_tool_invocations_since_last_user(&messages), 2);
+    }
+
+    #[test]
+    fn tool_invocations_ignores_tools_before_last_user() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("first".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("old".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t0".into()),
+            },
+            Message {
+                role: Role::User,
+                content: Some("second".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("new".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+        ];
+        assert_eq!(count_tool_invocations_since_last_user(&messages), 1);
     }
 
     #[test]
@@ -576,8 +612,13 @@ mod tests {
             intent_easy: false,
             intent_plan: false,
             multimodal: false,
+            user_multimodal: false,
             consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
             user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
         };
         assert!(!is_casual_chat(&signals));
     }
@@ -612,12 +653,75 @@ mod tests {
             intent_easy: true,
             intent_plan: false,
             multimodal: false,
+            user_multimodal: false,
             consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
             user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
         };
         assert!(is_casual_chat(&signals));
         signals.intent_easy = false;
         assert!(!is_casual_chat(&signals));
+    }
+
+    #[test]
+    fn intent_keywords_only_from_last_user_message() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 65536,
+            wordfreq: &WF,
+        };
+        let neutral_user = ChatCompletionRequest {
+            model: "test".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("what about item two".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("debug this code and fix the bug".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("t1".into()),
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&neutral_user, None);
+        assert!(
+            !signals.intent_hard,
+            "hard intent must not come from tool result"
+        );
+        assert!(!signals.intent_easy);
+
+        let hard_user = ChatCompletionRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("please debug this module".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let hard_signals = extractor.extract(&hard_user, None);
+        assert!(hard_signals.intent_hard);
     }
 }
 

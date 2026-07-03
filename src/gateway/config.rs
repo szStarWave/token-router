@@ -7,7 +7,7 @@ use crate::config::{ensure_initialized, load_from_path, setup::endpoint_configur
 
 use crate::gateway::classifier::ClassifierSettings;
 use crate::gateway::experience::ExperienceSettings;
-use crate::gateway::routing::{Profile, RouteTier, RoutingMode};
+use crate::gateway::routing::{Profile, RouteTier, RoutingMode, WordFreqSettings};
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveRoutingSettings {
@@ -69,6 +69,7 @@ pub struct AppConfig {
     pub work_verify_sample_rate: f32,
     pub adaptive_routing: AdaptiveRoutingSettings,
     pub classifier: ClassifierSettings,
+    pub wordfreq: WordFreqSettings,
     pub agents: HashMap<String, AgentUpstreamConfig>,
     pub log_max_size_mb: u64,
     pub log_max_files: usize,
@@ -179,6 +180,12 @@ impl AppConfig {
                 decay_half_life_hours: file.gateway.classifier_decay_half_life_hours.max(0.0),
                 prior_from_heuristic: file.gateway.classifier_prior_from_heuristic,
                 min_feature_count: 0.5,
+            },
+            wordfreq: WordFreqSettings {
+                enabled: file.gateway.wordfreq_learning_enabled,
+                max_learned_per_lang: file.gateway.wordfreq_max_learned_per_lang.max(1),
+                min_seen_to_promote: file.gateway.wordfreq_min_seen_to_promote.max(1),
+                max_tokens_per_observation: file.gateway.wordfreq_max_tokens_per_observation.max(1),
             },
             agents: file
                 .agent

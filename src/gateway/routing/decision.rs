@@ -9,9 +9,10 @@ use crate::gateway::multimodal::{MultimodalStore, MultimodalStrategy};
 use super::conversation::conversation_key;
 use super::signals::is_simple_multimodal;
 use super::difficulty::DifficultyScore;
-use super::gates::check_hard_gates;
+use super::gates::{check_hard_gates, ctx_overflow_triggers};
 use super::policy::{self, Profile};
 use super::signals::SignalExtractor;
+use super::signals::last_user_message_text;
 use super::step_kind::{StepKind, resolve_step_kind};
 use super::edge_busy::apply_edge_busy_fallback;
 use super::upstream_availability::{cloud_configured, edge_configured, finalize_route};
@@ -79,6 +80,9 @@ pub struct RouteDecision {
     /// DirectChat/HeartbeatAck: try edge first, cloud on quality gate failure.
     #[serde(skip)]
     pub casual_quality_fallback: bool,
+    /// Context for wordfreq runtime learning after the request completes.
+    #[serde(skip)]
+    pub lexical_learn: super::LexicalLearnContext,
 }
 
 pub fn decide(
@@ -90,6 +94,7 @@ pub fn decide(
     routing: &EffectiveRouting,
     edge_load: Option<&EdgeInferenceTracker>,
     classifier: Option<&ClassifierStore>,
+    wordfreq: &super::WordFreqStore,
 ) -> RouteDecision {
     let profile = config.default_profile;
     let mode = config.routing_mode;
@@ -100,13 +105,43 @@ pub fn decide(
     let sticky_until = sessions.cloud_sticky_until(&conv_key);
     let extractor = SignalExtractor {
         ctx_edge_max: config.ctx_edge_max_tokens,
+        wordfreq,
     };
     let signals = extractor.extract(req, prev_tok);
+    let last_user_text = last_user_message_text(req);
     let step_kind = resolve_step_kind(req, &signals);
     let features = FeatureVector::from_signals(&signals, step_kind, config.ctx_edge_max_tokens);
 
     let mut reason_codes = Vec::new();
     reason_codes.push(format!("STEP_{}", step_kind_code(step_kind)));
+
+    if edge_ok
+        && cloud_configured(config)
+        && ctx_overflow_triggers(&signals, step_kind, config.ctx_edge_max_tokens)
+    {
+        reason_codes.push("GATE_CTX_OVERFLOW".to_string());
+        let route = finalize_route(RouteTier::Cloud, config, &mut reason_codes);
+        sessions.record_tokens(&conv_key, signals.tok_total_in);
+        let exp_bias = experience.map(|e| e.bias_for(step_kind)).unwrap_or(0.0);
+        return finish(
+            route,
+            profile,
+            mode,
+            step_kind,
+            &signals,
+            reason_codes,
+            0,
+            d_score_for_gate(&signals, step_kind, config.ctx_edge_max_tokens, exp_bias),
+            conv_key,
+            signals.assistant_failed_recent,
+            MultimodalStrategy::None,
+            WorkStrategy::None,
+            None,
+            Some(features),
+            &last_user_text,
+            config,
+        );
+    }
 
     if let Some(fixed) = config.fixed_route {
         reason_codes.push(format!("CONFIG_ROUTE_{}", tier_name(fixed)));
@@ -137,6 +172,7 @@ pub fn decide(
             work,
             None,
             Some(features),
+            &last_user_text,
             config,
         );
     }
@@ -167,6 +203,7 @@ pub fn decide(
             WorkStrategy::None,
             None,
             Some(features),
+            &last_user_text,
             config,
         );
     }
@@ -181,6 +218,25 @@ pub fn decide(
         config.ctx_edge_max_tokens,
         exp_bias,
     );
+    if signals.consecutive_tool_error_streak >= 1 {
+        reason_codes.push(format!(
+            "TOOL_ERROR_STREAK_{}",
+            signals.consecutive_tool_error_streak
+        ));
+    }
+    if signals.tool_invocations_since_last_user >= 5 {
+        reason_codes.push(format!(
+            "TOOL_LOOP_{}",
+            signals.tool_invocations_since_last_user
+        ));
+    }
+    if signals.rare_lexical && signals.special_lexical {
+        reason_codes.push("LEXICAL_BOTH".to_string());
+    } else if signals.special_lexical {
+        reason_codes.push("LEXICAL_SPECIAL".to_string());
+    } else if signals.rare_lexical {
+        reason_codes.push("LEXICAL_RARE".to_string());
+    }
     let (difficulty, edge_ok_probability) = apply_classifier(
         classifier,
         &features,
@@ -268,6 +324,7 @@ pub fn decide(
         work_strategy,
         edge_ok_probability,
         Some(features),
+        &last_user_text,
         config,
     )
 }
@@ -416,6 +473,7 @@ fn finish(
     work_strategy: WorkStrategy,
     edge_ok_probability: Option<f32>,
     classifier_features: Option<FeatureVector>,
+    last_user_text: &str,
     config: &AppConfig,
 ) -> RouteDecision {
     let force_cloud_sticky = reason_codes
@@ -446,6 +504,12 @@ fn finish(
         edge_ok_probability,
         classifier_features,
         casual_quality_fallback,
+        lexical_learn: super::LexicalLearnContext {
+            last_user_text: last_user_text.to_string(),
+            intent_easy: signals.intent_easy,
+            rare_lexical: signals.rare_lexical,
+            special_lexical: signals.special_lexical,
+        },
     }
 }
 

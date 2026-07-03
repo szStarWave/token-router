@@ -68,13 +68,17 @@ export function useBootstrap(enabled: boolean) {
   }, [qc, setConnected, setGatewayBase, setGlobalStats, setSetup, setStats, setStatus, setUptimeAnchor, showToast])
 
   const afterBoot = useCallback(async () => {
-    const setup = useSetupStore.getState().setup
     const connected = useAppStore.getState().connected
     const api = connected ? apiFetch : null
+    const setup = useSetupStore.getState().setup
     try {
+      const cloud = setup?.cloud
       const cloudResult = await ensureCloudUpstreamConfigured(api, {
-        currentModel: setup?.cloud?.model,
-        tokenBudget: setup?.cloud?.token_budget ?? undefined,
+        currentModel: cloud?.model,
+        tokenBudget:
+          cloud?.token_quota_enabled && cloud.token_budget != null
+            ? cloud.token_budget
+            : undefined,
         silent: true,
       })
       if (cloudResult.response && typeof cloudResult.response === 'object' && 'upstream' in cloudResult.response) {

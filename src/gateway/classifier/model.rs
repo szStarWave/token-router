@@ -286,6 +286,7 @@ mod tests {
                     edge_ok_probability: None,
                     classifier_features: None,
                     casual_quality_fallback: false,
+            lexical_learn: Default::default(),
                 },
                 true
             ),

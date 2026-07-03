@@ -4,6 +4,7 @@ import {
 } from './gateway-auth-keys'
 import { generateGatewayAuthKey } from './gateway'
 import {
+  checkAgentDeployed,
   checkAgentInitialized,
   configureClaudeCodeAgent,
   configureCodexAgent,
@@ -79,6 +80,15 @@ export async function resolveApiKey(agentName: AgentKind): Promise<string | null
 
   const created = await createGatewayAuthKey(agentName)
   return created.full_key
+}
+
+export async function getAgentDeployStatus(agent: AgentKind): Promise<boolean | null> {
+  try {
+    const status = await checkAgentDeployed(agent)
+    return status.deployed
+  } catch {
+    return null
+  }
 }
 
 async function ensureAgentInitialized(agent: AgentKind) {

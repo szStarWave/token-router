@@ -1,6 +1,6 @@
 [package]
 name = "token-router"
-version = "0.6.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 description = "Token Router — edge/cloud LLM routing gateway and CLI"
@@ -39,6 +39,10 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 file-rotate = "0.7"
 uuid = { version = "1", features = ["v4"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+wordfreq = "0.2"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ahash = "0.8"
+whatlang = "0.16"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

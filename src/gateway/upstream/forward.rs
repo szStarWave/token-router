@@ -2,6 +2,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use std::time::Instant;
 
+use crate::config::DEFAULT_CLOUD_BUDGET_AGENT_ID;
 use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::config::AppConfig;
@@ -63,18 +64,27 @@ impl UpstreamClient {
         self.cfg().edge_base_url.is_some()
     }
 
-    fn cloud_token_budget_ok(&self, agent_id: Option<&str>, tokens_in: u32) -> bool {
+    fn cloud_token_budget_limit(&self, agent_id: Option<&str>) -> Option<u64> {
         let c = self.cfg();
-        let limit = agent_id
-            .and_then(|id| c.agents.get(id))
-            .and_then(|a| a.cloud_token_budget);
-        self.agent_usage.check_budget(agent_id.unwrap_or("__default__"), limit, tokens_in)
+        let id = agent_id.unwrap_or(DEFAULT_CLOUD_BUDGET_AGENT_ID);
+        c.agents.get(id).and_then(|a| a.cloud_token_budget)
+    }
+
+    fn cloud_token_budget_ok(&self, agent_id: Option<&str>, tokens_in: u32) -> bool {
+        let id = agent_id.unwrap_or(DEFAULT_CLOUD_BUDGET_AGENT_ID);
+        let limit = self.cloud_token_budget_limit(agent_id);
+        self.agent_usage.check_budget(id, limit, tokens_in)
     }
 
     fn record_cloud_tokens_complete(&self, agent_id: Option<&str>, resp: &ChatCompletionResponse, prompt_fallback: u32) {
-        let Some(id) = agent_id else { return };
+        let id = agent_id.unwrap_or(DEFAULT_CLOUD_BUDGET_AGENT_ID);
         let c = self.cfg();
-        let has_budget = c.agents.get(id).and_then(|a| a.cloud_token_budget).unwrap_or(0) > 0;
+        let has_budget = c
+            .agents
+            .get(id)
+            .and_then(|a| a.cloud_token_budget)
+            .unwrap_or(0)
+            > 0;
         if !has_budget {
             return;
         }
@@ -94,10 +104,9 @@ impl UpstreamClient {
         }
 
         if decision.work_strategy == WorkStrategy::CachedEdge {
-            let resp = self
-                .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate, auth_key)
-                .await?;
-            return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+            return self
+                .complete_edge_with_context_fallback(req, decision, agent_id, auth_key)
+                .await;
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
@@ -110,10 +119,8 @@ impl UpstreamClient {
                     .await
             }
             RouteTier::Edge => {
-                let resp = self
-                    .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate, auth_key)
-                    .await?;
-                Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key))
+                self.complete_edge_with_context_fallback(req, decision, agent_id, auth_key)
+                    .await
             }
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
@@ -189,11 +196,9 @@ impl UpstreamClient {
         }
 
         if decision.work_strategy == WorkStrategy::CachedEdge {
-            let edge = self.target_edge(agent_id);
             return self
-                .stream_target(req, edge, decision, agent_id, auth_key)
-                .await
-                .map(|s| (s, false));
+                .stream_edge_with_context_fallback(req, decision, agent_id, auth_key)
+                .await;
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
@@ -205,9 +210,8 @@ impl UpstreamClient {
                 self.stream_cascade(req, decision, agent_id, auth_key).await
             }
             RouteTier::Edge => self
-                .stream_target(req, self.target_edge(agent_id), decision, agent_id, auth_key)
-                .await
-                .map(|s| (s, false)),
+                .stream_edge_with_context_fallback(req, decision, agent_id, auth_key)
+                .await,
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
                     self.stream_target(req, self.target_cloud(agent_id), decision, agent_id, auth_key)
@@ -575,13 +579,15 @@ impl UpstreamClient {
         );
         let tier_static = tier_static(tier);
         let cfg = self.cfg();
-        let stream_agent_id = agent_id.map(String::from);
+        let budget_agent_id = agent_id.unwrap_or(DEFAULT_CLOUD_BUDGET_AGENT_ID).to_string();
+        let stream_agent_id = Some(budget_agent_id.clone());
         let stream_agent_usage = {
-            let has_budget = stream_agent_id
-                .as_deref()
-                .and_then(|id| cfg.agents.get(id))
+            let has_budget = cfg
+                .agents
+                .get(budget_agent_id.as_str())
                 .and_then(|a| a.cloud_token_budget)
-                .unwrap_or(0) > 0;
+                .unwrap_or(0)
+                > 0;
             if tier_static == "cloud" && has_budget {
                 Some(self.agent_usage.clone())
             } else {
@@ -647,6 +653,72 @@ impl UpstreamClient {
         attach_meta(resp, decision, fallback)
     }
 
+    fn cloud_configured(&self) -> bool {
+        self.cfg().cloud_base_url.is_some()
+    }
+
+    async fn complete_edge_with_context_fallback(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<ChatCompletionResponse> {
+        let edge = self.target_edge(agent_id);
+        let edge_tried = edge.base_url.is_some();
+        if edge_tried {
+            match self
+                .call_target(req, edge, decision.tokens_in_estimate, auth_key)
+                .await
+            {
+                Ok(resp) => {
+                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+                }
+                Err(err) if is_context_overflow_upstream_error(&err) && self.cloud_configured() => {
+                    self.stats.record_cascade_fallback();
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            return Err(missing_upstream("edge"));
+        }
+
+        let cloud = self.target_cloud(agent_id);
+        let resp = self
+            .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
+            .await?;
+        Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id, auth_key))
+    }
+
+    async fn stream_edge_with_context_fallback(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<(SseStream, bool)> {
+        let edge = self.target_edge(agent_id);
+        let edge_tried = edge.base_url.is_some();
+        if edge_tried {
+            match self
+                .stream_target(req, edge, decision, agent_id, auth_key)
+                .await
+            {
+                Ok(stream) => return Ok((stream, false)),
+                Err(err) if is_context_overflow_upstream_error(&err) && self.cloud_configured() => {
+                    self.stats.record_cascade_fallback();
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            return Err(missing_upstream("edge"));
+        }
+
+        self.stream_target(req, self.target_cloud(agent_id), decision, agent_id, auth_key)
+            .await
+            .map(|s| (s, true))
+    }
+
     fn record_upstream_call(&self, tier: &str) {
         match tier {
             "edge" => self.stats.record_upstream_edge(),
@@ -709,6 +781,34 @@ fn attach_meta(
     resp
 }
 
+fn is_context_overflow_upstream_error(err: &AppError) -> bool {
+    let AppError::Upstream(msg) = err else {
+        return false;
+    };
+    let lower = msg.to_ascii_lowercase();
+    [
+        "context length",
+        "context window",
+        "context size",
+        "maximum context",
+        "max context",
+        "context overflow",
+        "too many tokens",
+        "token limit",
+        "exceeds the context",
+        "exceeds maximum",
+        "exceeds the maximum",
+        "input too long",
+        "prompt is too long",
+        "reduce the length",
+        "n_ctx",
+        "num_ctx",
+        "requested token",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 fn cascade_gate_pass(resp: &ChatCompletionResponse) -> bool {
     let Some(choice) = resp.choices.first() else {
         return false;
@@ -723,7 +823,9 @@ fn cascade_text_pass(choice: &crate::gateway::api::openai::Choice) -> bool {
     let Some(text) = choice.message.content.as_ref() else {
         return false;
     };
-    !text.is_empty() && !text.contains("不确定") && text.len() > 8
+    !text.is_empty()
+        && !crate::gateway::routing::response_has_uncertainty(text)
+        && text.len() > 8
 }
 
 fn cascade_tool_calls_pass(choice: &crate::gateway::api::openai::Choice) -> bool {
@@ -733,6 +835,24 @@ fn cascade_tool_calls_pass(choice: &crate::gateway::api::openai::Choice) -> bool
                 !c.function.name.trim().is_empty() && !c.function.arguments.trim().is_empty()
             })
     })
+}
+
+#[cfg(test)]
+mod context_overflow_error_tests {
+    use super::*;
+
+    #[test]
+    fn detects_common_context_overflow_messages() {
+        assert!(is_context_overflow_upstream_error(&AppError::Upstream(
+            "400 Bad Request: context length exceeded".into()
+        )));
+        assert!(is_context_overflow_upstream_error(&AppError::Upstream(
+            "maximum context length".into()
+        )));
+        assert!(!is_context_overflow_upstream_error(&AppError::Upstream(
+            "rate limit exceeded".into()
+        )));
+    }
 }
 
 #[cfg(test)]

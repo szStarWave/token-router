@@ -56,6 +56,7 @@ export function Sidebar() {
   const setup = useSetupStore((s) => s.setup)
   const herdsmanConnected = useEdgeStore((s) => s.herdsmanConnected)
   const edgeSelectedKey = useEdgeStore((s) => s.selectedKey)
+  const cachedModels = useEdgeStore((s) => s.cachedModels)
   const saveSetup = useSaveSetupMutation()
 
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -80,7 +81,9 @@ export function Sidebar() {
     return CREDIT_TYPE_ORDER.filter((type) => typeSet.has(type)).map((type) => {
       const item = list.find((i) => i.type === type)
       const remaining = typeof item?.remaining === 'number' && item.remaining >= 0 ? item.remaining : 0
-      const label = item?.title?.trim() || t(`creditType.${type}`)
+      const i18nKey = `creditType.${type}`
+      const translated = t(i18nKey)
+      const label = translated !== i18nKey ? translated : (item?.title?.trim() || type)
       return { type, label, remaining }
     })
   }, [usageQuery.data, t])
@@ -92,7 +95,11 @@ export function Sidebar() {
   const shares = sidebarTokenShares(tb)
   const edgeConfigured = useMemo(
     () => isEdgeUpstreamConfigured(setup?.edge),
-    [setup?.edge, herdsmanConnected, edgeSelectedKey],
+    [setup?.edge, herdsmanConnected, edgeSelectedKey, cachedModels],
+  )
+  const edgeModelLabel = useMemo(
+    () => resolveEdgeModelLabel(setup?.edge),
+    [setup?.edge, herdsmanConnected, edgeSelectedKey, cachedModels],
   )
   const cloudConfigured = setup?.cloud?.configured || status?.cloud_configured
   const autoLabel = t('cloudModel.auto')
@@ -213,7 +220,7 @@ export function Sidebar() {
               </span>
               <div className="nav-card-expand">
                 <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={savedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} autoLabel={autoLabel} t={t} locale={locale} />
-                <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} t={t} locale={locale} />
+                <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} t={t} locale={locale} />
               </div>
             </Link>
           )
@@ -399,7 +406,7 @@ function NavCardBody({
 }
 
 function NavCardFoot({
-  navId, status, sidebarStats, edgeConfigured: _edgeConfigured, cloudConfigured: _cloudConfigured, setup, profileLabel, routeTab: _routeTab, t, locale: _locale,
+  navId, status, sidebarStats, edgeConfigured: _edgeConfigured, cloudConfigured: _cloudConfigured, setup, profileLabel, routeTab: _routeTab, edgeModelLabel, t, locale: _locale,
 }: {
   navId: string
   status: ReturnType<typeof useAppStore.getState>['status']
@@ -409,6 +416,7 @@ function NavCardFoot({
   setup: ReturnType<typeof useSetupStore.getState>['setup']
   profileLabel: string
   routeTab: string
+  edgeModelLabel: string
   t: (k: string, v?: Record<string, string | number>) => string
   locale: string
 }) {
@@ -426,7 +434,7 @@ function NavCardFoot({
         <span className="tag bordered" id="card-req-total">{t('requests', { n: sidebarStats?.requests_total ?? 0 })}</span>
       )}
       {navId === 'edge' && (
-        <span className="nav-card-meta" id="card-edge-model">{resolveEdgeModelLabel(setup?.edge)}</span>
+        <span className="nav-card-meta" id="card-edge-model">{edgeModelLabel}</span>
       )}
       {navId === 'cloud' && (
         <span className="nav-card-meta" id="card-cloud-model">

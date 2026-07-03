@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useSaveSetupMutation } from '../queries/gateway'
 import { useCloudModelsQuery } from '../queries/flowy'
@@ -30,8 +30,15 @@ import {
   type ManualEdgeEntry,
 } from '../lib/edge-upstream'
 import { fmtNum, fmtPct } from '../lib/stats-utils'
+import type { UpstreamSetupView } from '../types/gateway'
 import { DEFAULT_CLOUD_TOKEN_BUDGET, CLOUD_BUDGET_MIN, CLOUD_BUDGET_MAX } from '../constants/defaults'
 import { formatCompactNum } from '../lib/format-number'
+
+function cloudQuotaFromSetup(cloud: UpstreamSetupView['cloud']) {
+  const budget = cloud?.token_budget ?? 0
+  const enabled = cloud?.token_quota_enabled ?? budget > 0
+  return { budget, enabled }
+}
 
 export function UpstreamPage() {
   const { navId = 'edge' } = useParams({ strict: false })
@@ -44,12 +51,13 @@ export function UpstreamPage() {
   const herdsmanInstalled = useEdgeStore((s) => s.herdsmanInstalled)
   const manualEntries = useEdgeStore((s) => s.manualEntries)
   const selectedKey = useEdgeStore((s) => s.selectedKey)
+  const cachedModels = useEdgeStore((s) => s.cachedModels)
   const saveSetup = useSaveSetupMutation()
   const modelsQuery = useCloudModelsQuery()
 
   const edgeConfigured = useMemo(
     () => isEdgeUpstreamConfigured(setup?.edge),
-    [setup?.edge, herdsmanConnected, selectedKey],
+    [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
 
   const autoLabel = t('cloudModel.auto')
@@ -58,18 +66,26 @@ export function UpstreamPage() {
     [modelsQuery.data, autoLabel],
   )
 
+  const initialCloudQuota = cloudQuotaFromSetup(setup?.cloud)
   const [cloudModel, setCloudModel] = useState(setup?.cloud?.model ?? AUTO_MODEL_ID)
-  const [quotaEnabled, setQuotaEnabled] = useState(() => (setup?.cloud?.token_budget ?? 0) > 0)
-  const [budgetSlider, setBudgetSlider] = useState(() => sliderFromCloudBudget(setup?.cloud?.token_budget ?? DEFAULT_CLOUD_TOKEN_BUDGET))
+  const [quotaEnabled, setQuotaEnabled] = useState(initialCloudQuota.enabled)
+  const [budgetSlider, setBudgetSlider] = useState(() =>
+    sliderFromCloudBudget(initialCloudQuota.budget > 0 ? initialCloudQuota.budget : DEFAULT_CLOUD_TOKEN_BUDGET),
+  )
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingEntry, setEditingEntry] = useState<ManualEdgeEntry | null>(null)
-  const [dialogForm, setDialogForm] = useState({ name: '', url: '', model: '', key: '' })
+  const [dialogForm, setDialogForm] = useState({ name: '', url: '', model: '', key: '', context_window: '' })
+  const quotaEditingRef = useRef(false)
+  const cloudSaveGenRef = useRef(0)
 
   useEffect(() => {
+    if (quotaEditingRef.current) return
     setCloudModel(setup?.cloud?.model ?? AUTO_MODEL_ID)
-    const budget = setup?.cloud?.token_budget ?? 0
-    setQuotaEnabled(budget > 0)
-    setBudgetSlider(sliderFromCloudBudget(budget > 0 ? budget : DEFAULT_CLOUD_TOKEN_BUDGET))
+    const { budget, enabled } = cloudQuotaFromSetup(setup?.cloud)
+    setQuotaEnabled(enabled)
+    if (budget > 0) {
+      setBudgetSlider(sliderFromCloudBudget(budget))
+    }
   }, [setup?.cloud])
 
   useEffect(() => {
@@ -85,11 +101,30 @@ export function UpstreamPage() {
   const herdsmanItems = displayItems.filter((i) => i.type === 'herdsman')
   const customItems = displayItems.filter((i) => i.type === 'manual')
 
+  const applyCloudQuotaFromSetup = (cloud: UpstreamSetupView['cloud']) => {
+    const { budget, enabled } = cloudQuotaFromSetup(cloud)
+    setQuotaEnabled(enabled)
+    if (budget > 0) {
+      setBudgetSlider(sliderFromCloudBudget(budget))
+    }
+  }
+
   const saveCloud = (model: string, slider: number, quota: boolean) => {
     if (!connected) return
+    quotaEditingRef.current = true
+    const saveGen = ++cloudSaveGenRef.current
     const budget = quota ? budgetFromSlider(slider) : 0
     const cloud = buildCloudSavePayload(model, budget)
-    saveSetup.mutate({ cloud })
+    saveSetup.mutate({ cloud }, {
+      onSuccess: (res) => {
+        if (saveGen !== cloudSaveGenRef.current) return
+        applyCloudQuotaFromSetup(res.upstream?.cloud)
+        quotaEditingRef.current = false
+      },
+      onError: () => {
+        if (saveGen === cloudSaveGenRef.current) quotaEditingRef.current = false
+      },
+    })
   }
 
   const saveEdge = () => {
@@ -103,25 +138,31 @@ export function UpstreamPage() {
       url: entry?.base_url ?? '',
       model: entry?.model ?? '',
       key: '',
+      context_window: entry?.context_window != null ? String(entry.context_window) : '',
     })
     setDialogOpen(true)
   }
 
   const saveDialog = () => {
     const id = editingEntry?.id ?? `manual-${Date.now()}`
+    const contextRaw = dialogForm.context_window.trim()
     upsertManualEntry({
       id,
       name: dialogForm.name.trim() || dialogForm.model.trim(),
       base_url: dialogForm.url.trim(),
       model: dialogForm.model.trim(),
       api_key: dialogForm.key.trim() || editingEntry?.api_key,
+      context_window: contextRaw ? Number(contextRaw) : undefined,
     })
     setDialogOpen(false)
     saveEdge()
   }
 
   const budgetValue = budgetFromSlider(budgetSlider)
-  const edgeModelLabel = getEdgeModelDisplayName(setup?.edge)
+  const edgeModelLabel = useMemo(
+    () => getEdgeModelDisplayName(setup?.edge),
+    [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
+  )
 
   return (
     <section className="page active" id="page-upstream">
@@ -280,21 +321,22 @@ export function UpstreamPage() {
           <div className="upstream-form-grid">
             <div className="upstream-form-col">
               <div className="switch-row">
-                <label htmlFor="cloud_quota_enabled">{t('field.cloudQuotaEnabled')}</label>
-                <label className="switch" aria-hidden="true">
+                <span className="switch-row-label">{t('field.cloudQuotaEnabled')}</span>
+                <label className="switch">
                   <input
                     type="checkbox"
                     id="cloud_quota_enabled"
                     checked={quotaEnabled}
                     onChange={(e) => {
-                      setQuotaEnabled(e.target.checked)
-                      saveCloud(cloudModel, budgetSlider, e.target.checked)
+                      const enabled = e.target.checked
+                      setQuotaEnabled(enabled)
+                      saveCloud(cloudModel, budgetSlider, enabled)
                     }}
                   />
                   <span className="switch-slider" />
                 </label>
               </div>
-              <div id="cloud-quota-fields">
+              <div id="cloud-quota-fields" className={quotaEnabled ? '' : 'is-disabled'}>
                 <label id="cloud_token_budget_label">{t('field.tokenBudget')}</label>
                 <div className="budget-dragger">
                   <input type="hidden" id="cloud_token_budget" value={budgetValue} readOnly />
@@ -306,10 +348,20 @@ export function UpstreamPage() {
                     step={1}
                     value={budgetSlider}
                     aria-labelledby="cloud_token_budget_label"
+                    onPointerDown={() => {
+                      quotaEditingRef.current = true
+                    }}
                     onChange={(e) => {
                       const v = Number(e.target.value)
                       setBudgetSlider(v)
-                      saveCloud(cloudModel, v, quotaEnabled)
+                    }}
+                    onPointerUp={(e) => {
+                      saveCloud(cloudModel, Number(e.currentTarget.value), quotaEnabled)
+                    }}
+                    onKeyUp={(e) => {
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+                        saveCloud(cloudModel, Number(e.currentTarget.value), quotaEnabled)
+                      }
                     }}
                   />
                   <span className="budget-dragger-value" id="cloud_token_budget_value" aria-live="polite">
@@ -343,6 +395,20 @@ export function UpstreamPage() {
             <div>
               <label>{t('field.model')}</label>
               <input id="edge_dialog_model" placeholder={t('ph.edgeModel')} value={dialogForm.model} onChange={(e) => setDialogForm((f) => ({ ...f, model: e.target.value }))} />
+            </div>
+            <div>
+              <label>{t('field.maxContextWindow')}</label>
+              <input
+                id="edge_dialog_context_window"
+                type="number"
+                min={4096}
+                max={2000000}
+                step={1024}
+                placeholder={t('ph.edgeContextWindow')}
+                value={dialogForm.context_window}
+                onChange={(e) => setDialogForm((f) => ({ ...f, context_window: e.target.value }))}
+              />
+              <p className="hint">{t('upstream.edgeContextHint')}</p>
             </div>
             <div>
               <label>{t('field.apiKey')}</label>

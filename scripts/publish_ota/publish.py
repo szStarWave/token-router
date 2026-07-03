@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OTA publish script — upload Token Router Windows builds to ModelScope dataset.
+OTA publish script — upload Token Router Windows NSIS setup to ModelScope dataset.
 """
 
 import argparse
@@ -26,7 +26,14 @@ def parse_args():
     parser.add_argument("--region-scope", type=str, default="CN", help="Region scope (CN/INTL)")
     parser.add_argument("--version", type=str, required=True, help="Version tag")
     parser.add_argument("--enable-account-system", type=str, default="true", help="true/false")
-    parser.add_argument("--exe-path", type=str, required=True, help="Path to release exe")
+    parser.add_argument(
+        "--setup-path",
+        "--exe-path",
+        dest="setup_path",
+        type=str,
+        required=True,
+        help="Path to NSIS setup installer (legacy alias: --exe-path)",
+    )
     parser.add_argument(
         "--release-notes-file",
         type=str,
@@ -118,10 +125,10 @@ def load_release_notes(path: str, version: str) -> dict:
     return normalized
 
 
-def create_latest_json(version: str, exe_filename: str, release_notes: dict) -> str:
+def create_latest_json(version: str, setup_filename: str, release_notes: dict) -> str:
     latest_json = {
         "version": version if version.startswith("v") else f"v{version}",
-        "file": exe_filename,
+        "file": setup_filename,
         "release_notes": release_notes,
     }
     fd, path = tempfile.mkstemp(suffix=".json", prefix="latest_")
@@ -133,18 +140,18 @@ def create_latest_json(version: str, exe_filename: str, release_notes: dict) -> 
 def main() -> None:
     args = parse_args()
 
-    if not os.path.exists(args.exe_path):
-        print(f"错误: exe 文件不存在: {args.exe_path}", file=sys.stderr)
+    if not os.path.exists(args.setup_path):
+        print(f"错误: setup 安装包不存在: {args.setup_path}", file=sys.stderr)
         sys.exit(1)
 
-    exe_filename = os.path.basename(args.exe_path)
+    setup_filename = os.path.basename(args.setup_path)
     print("开始发布 Token Router OTA 更新...")
     print(f"Channel: {args.channel}")
     print(f"RegionScope: {args.region_scope}")
     print(f"Version: {args.version}")
     print(f"EnableAccountSystem: {args.enable_account_system}")
-    print(f"ExePath: {args.exe_path}")
-    print(f"ExeFilename: {exe_filename}")
+    print(f"SetupPath: {args.setup_path}")
+    print(f"SetupFilename: {setup_filename}")
     print(f"ReleaseNotesFile: {args.release_notes_file}")
 
     try:
@@ -161,11 +168,11 @@ def main() -> None:
 
     account_dir = "with_account" if args.enable_account_system == "true" else "without_account"
 
-    path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}/{exe_filename}"
-    upload_file(api, args.exe_path, path_in_repo, repo_id)
+    path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}/{setup_filename}"
+    upload_file(api, args.setup_path, path_in_repo, repo_id)
 
     manifest_version = args.version if args.version.startswith("v") else f"v{args.version}"
-    latest_json_path = create_latest_json(manifest_version, exe_filename, release_notes)
+    latest_json_path = create_latest_json(manifest_version, setup_filename, release_notes)
     try:
         latest_path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}/latest.json"
         upload_file(api, latest_json_path, latest_path_in_repo, repo_id)

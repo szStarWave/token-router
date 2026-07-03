@@ -2,7 +2,8 @@ use axum::http::{HeaderMap, HeaderValue};
 
 use crate::gateway::api::openai::{ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::stats::metrics::tokens_from_response;
-use crate::gateway::routing::{Profile, RouteDecision, RouteTier, StepKind};
+use crate::gateway::multimodal::MultimodalStrategy;
+use crate::gateway::routing::{Profile, RouteDecision, RouteTier, RoutingMode, StepKind, WorkStrategy};
 
 pub fn build_token_router_meta(
     decision: &RouteDecision,
@@ -91,18 +92,107 @@ pub fn served_tier_name(decision: &RouteDecision, fallback: bool) -> &'static st
     }
 }
 
-pub fn log_route_decision(decision: &RouteDecision, stream: bool, agent_id: Option<&str>) {
+/// Human-readable summary of why this route was chosen (gates, work, policy, etc.).
+pub fn summarize_route_reasons(decision: &RouteDecision) -> String {
+    let codes = &decision.reason_codes;
+    let mut parts: Vec<String> = codes
+        .iter()
+        .filter(|c| is_decisive_reason_code(c))
+        .cloned()
+        .collect();
+
+    if parts.is_empty() {
+        if decision.profile == Profile::Privacy {
+            parts.push("privacy_profile".into());
+        } else if let Some(d) = codes.iter().find(|c| c.starts_with("DIFFICULTY_")) {
+            parts.push(format!(
+                "policy {d} → {}",
+                tier_name(decision.route)
+            ));
+        }
+    }
+
+    if let Some(theta) = codes.iter().find(|c| c.starts_with("ADAPTIVE_THETA")) {
+        parts.push(theta.clone());
+    }
+
+    if parts.is_empty() {
+        codes.join(", ")
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn is_decisive_reason_code(code: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "GATE_",
+        "CONFIG_ROUTE_",
+        "UPSTREAM_",
+        "PLAN_",
+        "INITIAL_PLAN_",
+        "MULTIMODAL_",
+        "WORK_",
+        "STICKY_",
+        "CASUAL_",
+        "LEXICAL_",
+        "BAYES_",
+        "EXP_BIAS_",
+        "TOOL_ERROR_STREAK_",
+        "TOOL_LOOP_",
+    ];
+    PREFIXES.iter().any(|p| code.starts_with(p))
+}
+
+const LOG_USER_PREVIEW_MAX: usize = 120;
+
+/// Collapse whitespace and cap length for structured log fields.
+pub fn truncate_user_preview_for_log(text: &str) -> String {
+    let collapsed: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let trimmed = collapsed.trim();
+    let char_count = trimmed.chars().count();
+    if char_count <= LOG_USER_PREVIEW_MAX {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(LOG_USER_PREVIEW_MAX).collect();
+    out.push('…');
+    out
+}
+
+pub fn log_route_decision(
+    decision: &RouteDecision,
+    model: &str,
+    user_preview: &str,
+    stream: bool,
+    agent_id: Option<&str>,
+) {
+    let summary = summarize_route_reasons(decision);
+    let user_preview = truncate_user_preview_for_log(user_preview);
+    let message = format!(
+        "routing: {} → {} | {}",
+        step_kind_name(decision.step_kind),
+        tier_name(decision.route),
+        summary,
+    );
     tracing::info!(
         agent_id = agent_id.unwrap_or("default"),
+        model,
         route = tier_name(decision.route),
         step_kind = step_kind_name(decision.step_kind),
         profile = profile_name(decision.profile),
+        mode = routing_mode_name(decision.mode),
         difficulty = decision.difficulty,
         stream,
         tok_in = decision.tokens_in_estimate,
+        work = work_strategy_name(decision.work_strategy),
+        multimodal = multimodal_strategy_name(decision.multimodal_strategy),
         casual_quality_fallback = decision.casual_quality_fallback,
-        reasons = %decision.reason_codes.join(","),
-        "route decision"
+        edge_prob = ?decision.edge_ok_probability,
+        reason_codes = %decision.reason_codes.join(","),
+        user_preview = %user_preview,
+        "{message}"
     );
 }
 
@@ -113,6 +203,17 @@ pub fn log_upstream_served(
     stream: bool,
     agent_id: Option<&str>,
 ) {
+    let summary = summarize_route_reasons(decision);
+    let message = if fallback {
+        format!(
+            "served: {} (fallback from {}) | {}",
+            served_tier,
+            tier_name(decision.route),
+            summary,
+        )
+    } else {
+        format!("served: {} | {}", served_tier, summary)
+    };
     tracing::info!(
         agent_id = agent_id.unwrap_or("default"),
         route = tier_name(decision.route),
@@ -120,7 +221,8 @@ pub fn log_upstream_served(
         fallback,
         stream,
         step_kind = step_kind_name(decision.step_kind),
-        "upstream served"
+        reason_codes = %decision.reason_codes.join(","),
+        "{message}"
     );
 }
 
@@ -149,6 +251,32 @@ pub fn profile_name(p: Profile) -> &'static str {
     }
 }
 
+pub fn routing_mode_name(m: RoutingMode) -> &'static str {
+    match m {
+        RoutingMode::Single => "single",
+        RoutingMode::Cascade => "cascade",
+        RoutingMode::Split => "split",
+    }
+}
+
+pub fn work_strategy_name(w: WorkStrategy) -> &'static str {
+    match w {
+        WorkStrategy::None => "none",
+        WorkStrategy::CachedEdge => "cached_edge",
+        WorkStrategy::Verify => "verify",
+    }
+}
+
+pub fn multimodal_strategy_name(m: MultimodalStrategy) -> &'static str {
+    match m {
+        MultimodalStrategy::None => "none",
+        MultimodalStrategy::Probe => "probe",
+        MultimodalStrategy::CachedEdge => "cached_edge",
+        MultimodalStrategy::CachedCloud => "cached_cloud",
+        MultimodalStrategy::CachedEdgeFallback => "cached_edge_fallback",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +302,7 @@ mod tests {
             edge_ok_probability: None,
             classifier_features: None,
             casual_quality_fallback: true,
+            lexical_learn: Default::default(),
         }
     }
 
@@ -193,6 +322,45 @@ mod tests {
     fn served_tier_cloud_direct() {
         let d = sample_decision(RouteTier::Cloud);
         assert_eq!(served_tier_name(&d, false), "cloud");
+    }
+
+    #[test]
+    fn summarize_gate_reasons() {
+        let mut d = sample_decision(RouteTier::Cloud);
+        d.reason_codes = vec![
+            "STEP_DIRECT_CHAT".into(),
+            "GATE_CTX_OVERFLOW".into(),
+            "DIFFICULTY_0.90".into(),
+        ];
+        let summary = summarize_route_reasons(&d);
+        assert!(summary.contains("GATE_CTX_OVERFLOW"));
+        assert!(!summary.contains("STEP_DIRECT_CHAT"));
+    }
+
+    #[test]
+    fn summarize_policy_reasons() {
+        let mut d = sample_decision(RouteTier::Edge);
+        d.reason_codes = vec![
+            "STEP_DIRECT_CHAT".into(),
+            "DIFFICULTY_0.20".into(),
+            "TOK_IN_120".into(),
+        ];
+        let summary = summarize_route_reasons(&d);
+        assert!(summary.contains("policy DIFFICULTY_0.20"));
+        assert!(summary.contains("edge"));
+    }
+
+    #[test]
+    fn truncate_user_preview_collapses_and_caps() {
+        assert_eq!(truncate_user_preview_for_log("  hello  "), "hello");
+        assert_eq!(
+            truncate_user_preview_for_log("line1\nline2"),
+            "line1 line2"
+        );
+        let long = "a".repeat(150);
+        let out = truncate_user_preview_for_log(&long);
+        assert_eq!(out.chars().count(), LOG_USER_PREVIEW_MAX + 1);
+        assert!(out.ends_with('…'));
     }
 }
 

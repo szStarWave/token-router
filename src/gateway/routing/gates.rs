@@ -57,14 +57,22 @@ pub fn check_hard_gates(
     None
 }
 
-/// Daily/heartbeat steps use transcript size only; other steps use full prompt (incl. system + tools).
-fn ctx_overflow_triggers(signals: &RequestSignals, step_kind: StepKind, ctx_edge_max: u32) -> bool {
-    let threshold = (ctx_edge_max as f64 * 0.8) as u32;
-    let tok = match step_kind {
-        StepKind::HeartbeatAck | StepKind::DirectChat => signals.tok_rest,
+/// Token budget for overflow gate. Casual turns ignore static OpenClaw system + tool schema.
+pub(crate) fn ctx_overflow_tokens(signals: &RequestSignals, step_kind: StepKind) -> u32 {
+    match step_kind {
+        StepKind::DirectChat | StepKind::HeartbeatAck => signals.tok_rest,
         _ => signals.tok_total_in,
-    };
-    tok > threshold
+    }
+}
+
+/// Returns true when estimated prompt tokens exceed ~80% of the configured edge context budget.
+pub(crate) fn ctx_overflow_triggers(
+    signals: &RequestSignals,
+    step_kind: StepKind,
+    ctx_edge_max: u32,
+) -> bool {
+    let threshold = (ctx_edge_max as f64 * 0.8) as u32;
+    ctx_overflow_tokens(signals, step_kind) > threshold
 }
 
 #[cfg(test)]
@@ -101,8 +109,13 @@ mod tests {
             intent_easy: false,
             intent_plan: false,
             multimodal: false,
+            user_multimodal: false,
             consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
             user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
         }
     }
 
@@ -120,11 +133,39 @@ mod tests {
     }
 
     #[test]
-    fn ctx_overflow_uses_transcript_for_direct_chat() {
+    fn single_tool_error_does_not_trigger_gate() {
         let mut signals = empty_signals();
+        signals.consecutive_tool_error_streak = 1;
+        assert!(check_hard_gates(
+            &signals,
+            StepKind::RecoveryAfterFailure,
+            65536,
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn ctx_overflow_direct_chat_ignores_system_and_tool_schema() {
+        let mut signals = empty_signals();
+        signals.tok_system = 50_000;
+        signals.tok_tools_schema = 10_000;
         signals.tok_rest = 100;
-        signals.tok_total_in = 60_000;
-        assert!(check_hard_gates(&signals, StepKind::DirectChat, 65536, true).is_none());
+        signals.tok_total_in = 60_100;
+        assert!(check_hard_gates(&signals, StepKind::DirectChat, 55_000, true).is_none());
+    }
+
+    #[test]
+    fn ctx_overflow_direct_chat_when_transcript_large() {
+        let mut signals = empty_signals();
+        signals.tok_rest = 60_000;
+        signals.tok_total_in = 120_000;
+        assert_eq!(
+            check_hard_gates(&signals, StepKind::DirectChat, 55_000, true)
+                .unwrap()
+                .code,
+            "GATE_CTX_OVERFLOW"
+        );
     }
 
     #[test]
@@ -133,7 +174,7 @@ mod tests {
         signals.tok_rest = 100;
         signals.tok_total_in = 60_000;
         assert_eq!(
-            check_hard_gates(&signals, StepKind::ToolSelect, 65536, true)
+            check_hard_gates(&signals, StepKind::ToolSelect, 55_000, true)
                 .unwrap()
                 .code,
             "GATE_CTX_OVERFLOW"

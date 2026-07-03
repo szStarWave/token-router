@@ -2,6 +2,8 @@ use super::file::{ConfigFile, GatewaySection, UpstreamEndpoint, UpstreamSection}
 use serde::{Deserialize, Serialize};
 
 pub const CLOUD_MODEL_AUTO: &str = "auto";
+/// Agent id used for global (non-agent) cloud token budget in config `[agent]`.
+pub const DEFAULT_CLOUD_BUDGET_AGENT_ID: &str = "__default__";
 
 /// Gateway routing / experience / adaptive settings (hot-updatable via `/v1/admin/setup`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +126,9 @@ pub struct UpstreamEndpointView {
     pub api_key_set: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
+    /// Whether the configured `token_budget` limit is actively enforced.
+    #[serde(default)]
+    pub token_quota_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -207,39 +212,83 @@ fn is_wildcard_bind_host(host: &str) -> bool {
     matches!(host.trim(), "0.0.0.0" | "::" | "[::]")
 }
 
+fn ensure_http_scheme(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    }
+}
+
+fn parse_http_authority(url: &str) -> Option<(String, String, String, String)> {
+    let with_scheme = ensure_http_scheme(url);
+    if with_scheme.is_empty() {
+        return None;
+    }
+    let (scheme, rest) = with_scheme.split_once("://")?;
+    let (authority, path_and_query) = match rest.split_once('/') {
+        Some((auth, path)) => (auth.to_string(), format!("/{path}")),
+        None => (rest.to_string(), String::new()),
+    };
+
+    let (host, port_suffix) = if let Some((bracket_host, port)) = authority.rsplit_once("]:") {
+        let host = bracket_host.trim_start_matches('[').to_string();
+        (host, format!(":{port}"))
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.contains('.') || host.contains(':') {
+            (host.to_string(), format!(":{port}"))
+        } else {
+            (authority.clone(), String::new())
+        }
+    } else {
+        (authority.clone(), String::new())
+    };
+
+    Some((scheme.to_string(), host, port_suffix, path_and_query))
+}
+
+fn should_map_local_service_host_to_loopback(host: &str) -> bool {
+    if is_wildcard_bind_host(host) {
+        return true;
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    if let Some(lan) = primary_lan_ipv4() {
+        if host == lan {
+            return true;
+        }
+    }
+    use std::net::IpAddr;
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_link_local(),
+        Ok(IpAddr::V6(v6)) if v6.is_loopback() => false,
+        Ok(IpAddr::V6(_)) => false,
+        Err(_) => false,
+    }
+}
+
 /// Normalize an HTTP(S) URL for local client access.
-/// Wildcard bind hosts (`0.0.0.0`, `::`) cannot be used as HTTP destinations.
+/// Wildcard bind hosts and local LAN addresses are mapped to loopback.
 pub fn normalize_client_http_url(url: &str) -> String {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return url.to_string();
     }
 
-    let (scheme, rest) = match trimmed.split_once("://") {
-        Some(parts) => parts,
-        None => return url.to_string(),
-    };
-
-    let (authority, path_and_query) = match rest.split_once('/') {
-        Some((auth, path)) => (auth, format!("/{path}")),
-        None => (rest, String::new()),
-    };
-
-    let (host, port_suffix) = if let Some((bracket_host, port)) = authority.rsplit_once("]:") {
-        let host = bracket_host.trim_start_matches('[');
-        (host, format!(":{port}"))
-    } else if let Some((host, port)) = authority.rsplit_once(':') {
-        if host.contains('.') {
-            (host, format!(":{port}"))
-        } else {
-            (authority, String::new())
-        }
-    } else {
-        (authority, String::new())
-    };
-
-    if !is_wildcard_bind_host(host) {
+    let Some((scheme, host, port_suffix, path_and_query)) = parse_http_authority(trimmed) else {
         return url.to_string();
+    };
+
+    if !should_map_local_service_host_to_loopback(&host) {
+        if trimmed.contains("://") {
+            return trimmed.to_string();
+        }
+        return ensure_http_scheme(trimmed);
     }
 
     format!("{scheme}://127.0.0.1{port_suffix}{path_and_query}")
@@ -292,17 +341,26 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
 }
 
 pub fn view_from_config(file: &ConfigFile) -> UpstreamSetupView {
+    let agent_cfg = file.agent.get(DEFAULT_CLOUD_BUDGET_AGENT_ID);
+    let token_quota_enabled = agent_cfg.map(cloud_token_quota_enabled).unwrap_or(false);
+    let cloud_budget = agent_cfg.and_then(cloud_token_budget_display);
     UpstreamSetupView {
         gateway: gateway_view_from_section(&file.gateway),
         edge: file.upstream.edge.as_ref().map(endpoint_view),
-        cloud: file.upstream.cloud.as_ref().map(endpoint_view),
+        cloud: file.upstream.cloud.as_ref().map(|ep| {
+            let mut view = endpoint_view(ep);
+            view.token_budget = cloud_budget;
+            view.token_quota_enabled = token_quota_enabled;
+            view
+        }),
         agent_id: None,
     }
 }
 
 pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> UpstreamSetupView {
     let agent_cfg = file.agent.get(agent_id);
-    let budget = agent_cfg.and_then(|a| a.cloud_token_budget);
+    let budget = agent_cfg.and_then(cloud_token_budget_display);
+    let token_quota_enabled = agent_cfg.map(cloud_token_quota_enabled).unwrap_or(false);
     UpstreamSetupView {
         gateway: gateway_view_from_section(&file.gateway),
         edge: agent_cfg
@@ -312,13 +370,14 @@ pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> Upstream
             .and_then(|a| a.upstream.cloud.as_ref())
             .map(endpoint_view)
             .or_else(|| {
-                if budget.is_some() {
+                if budget.is_some() || token_quota_enabled {
                     Some(UpstreamEndpointView {
                         configured: false,
                         base_url: String::new(),
                         model: None,
                         api_key_set: false,
                         token_budget: budget,
+                        token_quota_enabled,
                     })
                 } else {
                     None
@@ -326,6 +385,7 @@ pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> Upstream
             })
             .map(|mut v| {
                 v.token_budget = budget;
+                v.token_quota_enabled = token_quota_enabled;
                 v
             }),
         agent_id: Some(agent_id.to_string()),
@@ -355,6 +415,67 @@ pub fn is_setup_validation_error(msg: &str) -> bool {
         || msg.contains("listen_port")
 }
 
+fn cloud_token_budget_display(agent: &super::file::AgentConfig) -> Option<u64> {
+    match agent.cloud_token_budget {
+        Some(n) if n > 0 => Some(n),
+        _ => agent.cloud_token_budget_saved.filter(|&n| n > 0),
+    }
+}
+
+fn cloud_token_quota_enabled(agent: &super::file::AgentConfig) -> bool {
+    agent.cloud_token_budget.unwrap_or(0) > 0
+}
+
+fn apply_cloud_token_budget(agent: &mut super::file::AgentConfig, budget: Option<u64>) {
+    match budget {
+        Some(0) => {
+            if agent.cloud_token_budget.unwrap_or(0) > 0 {
+                agent.cloud_token_budget_saved = agent.cloud_token_budget;
+            }
+            agent.cloud_token_budget = Some(0);
+        }
+        Some(n) => {
+            agent.cloud_token_budget = Some(n);
+            agent.cloud_token_budget_saved = Some(n);
+        }
+        None => {
+            agent.cloud_token_budget = None;
+            agent.cloud_token_budget_saved = None;
+        }
+    }
+}
+
+fn agent_has_budget_data(agent: &super::file::AgentConfig) -> bool {
+    agent.cloud_token_budget.is_some() || agent.cloud_token_budget_saved.is_some()
+}
+
+fn apply_global_cloud_token_budget(file: &mut ConfigFile, patch: &Option<UpstreamEndpointPatch>) {
+    let Some(cloud_patch) = patch else {
+        return;
+    };
+    let Some(budget) = cloud_patch.token_budget else {
+        return;
+    };
+    let agent = file
+        .agent
+        .entry(DEFAULT_CLOUD_BUDGET_AGENT_ID.to_string())
+        .or_default();
+    apply_cloud_token_budget(agent, budget);
+    prune_agent_if_empty(file, DEFAULT_CLOUD_BUDGET_AGENT_ID);
+}
+
+fn prune_agent_if_empty(file: &mut ConfigFile, agent_id: &str) {
+    let Some(agent) = file.agent.get(agent_id) else {
+        return;
+    };
+    if agent.upstream.edge.is_none()
+        && agent.upstream.cloud.is_none()
+        && !agent_has_budget_data(agent)
+    {
+        file.agent.remove(agent_id);
+    }
+}
+
 fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
     UpstreamEndpointView {
         configured: endpoint_configured(ep),
@@ -365,6 +486,7 @@ fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
             .as_ref()
             .is_some_and(|k| !k.trim().is_empty()),
         token_budget: None,
+        token_quota_enabled: false,
     }
 }
 
@@ -391,17 +513,21 @@ pub fn apply_setup_patch(file: &mut ConfigFile, patch: &UpstreamSetupUpdate) -> 
         if agent_id.is_empty() {
             apply_tier_patch_section(&mut file.upstream.edge, &patch.edge);
             apply_tier_patch_section(&mut file.upstream.cloud, &patch.cloud);
+            apply_global_cloud_token_budget(file, &patch.cloud);
         } else {
             if let Some(ref cloud_patch) = patch.cloud {
                 if let Some(budget) = cloud_patch.token_budget {
                     let agent = file.agent.entry(agent_id.to_string()).or_default();
-                    agent.cloud_token_budget = budget;
+                    apply_cloud_token_budget(agent, budget);
                 }
             }
             let agent = file.agent.entry(agent_id.to_string()).or_default();
             apply_tier_patch_section(&mut agent.upstream.edge, &patch.edge);
             apply_tier_patch_section(&mut agent.upstream.cloud, &patch.cloud);
-            if agent.upstream.edge.is_none() && agent.upstream.cloud.is_none() && agent.cloud_token_budget.is_none() {
+            if agent.upstream.edge.is_none()
+                && agent.upstream.cloud.is_none()
+                && !agent_has_budget_data(agent)
+            {
                 file.agent.remove(agent_id);
             }
         }
@@ -412,6 +538,7 @@ pub fn apply_setup_patch(file: &mut ConfigFile, patch: &UpstreamSetupUpdate) -> 
         if let Some(cloud) = &patch.cloud {
             apply_tier_patch(&mut file.upstream.cloud, cloud);
         }
+        apply_global_cloud_token_budget(file, &patch.cloud);
     }
     Ok(())
 }
@@ -661,6 +788,66 @@ mod tests {
     }
 
     #[test]
+    fn patch_cloud_token_budget_global() {
+        let mut file = ConfigFile::default();
+        apply_default_upstream(&mut file);
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                cloud: Some(UpstreamEndpointPatch {
+                    token_budget: Some(Some(500_000)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            file.agent
+                .get(DEFAULT_CLOUD_BUDGET_AGENT_ID)
+                .and_then(|a| a.cloud_token_budget),
+            Some(500_000)
+        );
+        let view = view_from_config(&file);
+        assert_eq!(view.cloud.as_ref().unwrap().token_budget, Some(500_000));
+        assert!(view.cloud.as_ref().unwrap().token_quota_enabled);
+
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                cloud: Some(UpstreamEndpointPatch {
+                    token_budget: Some(Some(0)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let agent = file.agent.get(DEFAULT_CLOUD_BUDGET_AGENT_ID).unwrap();
+        assert_eq!(agent.cloud_token_budget, Some(0));
+        assert_eq!(agent.cloud_token_budget_saved, Some(500_000));
+        let view = view_from_config(&file);
+        assert_eq!(view.cloud.as_ref().unwrap().token_budget, Some(500_000));
+        assert!(!view.cloud.as_ref().unwrap().token_quota_enabled);
+
+        apply_setup_patch(
+            &mut file,
+            &UpstreamSetupUpdate {
+                cloud: Some(UpstreamEndpointPatch {
+                    token_budget: Some(None),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!file.agent.contains_key(DEFAULT_CLOUD_BUDGET_AGENT_ID));
+        let view = view_from_config(&file);
+        assert_eq!(view.cloud.as_ref().unwrap().token_budget, None);
+        assert!(!view.cloud.as_ref().unwrap().token_quota_enabled);
+    }
+
+    #[test]
     fn patch_cloud_url() {
         let mut file = ConfigFile::default();
         apply_default_upstream(&mut file);
@@ -736,7 +923,15 @@ mod tests {
             "http://127.0.0.1:8080/v1"
         );
         assert_eq!(
+            normalize_client_http_url("0.0.0.0:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+        assert_eq!(
             normalize_client_http_url("http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+        assert_eq!(
+            normalize_client_http_url("http://192.168.1.42:8080/v1"),
             "http://127.0.0.1:8080/v1"
         );
     }

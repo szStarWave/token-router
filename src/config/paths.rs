@@ -47,6 +47,10 @@ pub fn stats_db() -> anyhow::Result<PathBuf> {
     Ok(app_dir()?.join("stats.db"))
 }
 
+pub fn wordfreq_db() -> anyhow::Result<PathBuf> {
+    Ok(app_dir()?.join("wordfreq.db"))
+}
+
 /// `{app_dir}/callme` — absolute path to the executable that can start Token Router.
 pub fn callme_file() -> anyhow::Result<PathBuf> {
     Ok(app_dir()?.join("callme"))

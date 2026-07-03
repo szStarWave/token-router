@@ -4,12 +4,16 @@ import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
 import { gatewayOpenLogsDir } from '../lib/tauri'
 import { LOG_MAX_LINES, LOG_SCROLL_LOAD_THRESHOLD } from '../constants/defaults'
+import { isRoutingLogLine, parseRoutingLogLines } from '../lib/routing-log'
+import { RoutingLogCard } from '../components/logs/RoutingLogCard'
 
 interface LogEntry {
   id: number
   level: string
   msg: string
 }
+
+type LogView = 'routing' | 'other'
 
 let nextLogId = 0
 
@@ -39,6 +43,7 @@ export function LogsPage() {
   const { t } = useI18n()
   const connected = useAppStore((s) => s.connected)
   const showToast = useAppStore((s) => s.showToast)
+  const [logView, setLogView] = useState<LogView>('routing')
   const [tailOffset, setTailOffset] = useState<number | null>(null)
   const [headOffset, setHeadOffset] = useState(0)
   const [hasOlder, setHasOlder] = useState(false)
@@ -52,6 +57,12 @@ export function LogsPage() {
   const headOffsetRef = useRef(0)
 
   const logsQuery = useGatewayLogsQuery(tailOffset, true)
+
+  const routingEntries = useMemo(() => parseRoutingLogLines(lines), [lines])
+  const otherLines = useMemo(
+    () => lines.filter((line) => !isRoutingLogLine(line.msg)),
+    [lines],
+  )
 
   useEffect(() => {
     headOffsetRef.current = headOffset
@@ -91,8 +102,23 @@ export function LogsPage() {
     if (logsQuery.isError) return t('logs.loadFail', { msg: logsQuery.error?.message ?? '' })
     if (logsQuery.isLoading && !lines.length) return t('logs.loading')
     if (!lines.length) return t('logs.waiting')
+    if (logView === 'routing' && !routingEntries.length) return t('logs.routingEmpty')
+    if (logView === 'other' && !otherLines.length) return t('logs.empty')
     return ''
-  }, [connected, logsQuery.isError, logsQuery.isLoading, logsQuery.error, lines.length, t])
+  }, [
+    connected,
+    logView,
+    logsQuery.isError,
+    logsQuery.isLoading,
+    logsQuery.error,
+    lines.length,
+    routingEntries.length,
+    otherLines.length,
+    t,
+  ])
+
+  const scrollContentKey =
+    logView === 'routing' ? routingEntries.map((e) => e.id).join(',') : otherLines.map((l) => l.id).join(',')
 
   useLayoutEffect(() => {
     const view = viewRef.current
@@ -105,9 +131,9 @@ export function LogsPage() {
       return
     }
 
-    if (!lines.length || !stickToBottomRef.current) return
+    if (!scrollContentKey || !stickToBottomRef.current) return
     view.scrollTop = view.scrollHeight
-  }, [lines])
+  }, [scrollContentKey, logView])
 
   const loadOlder = async () => {
     const before = headOffsetRef.current
@@ -171,6 +197,9 @@ export function LogsPage() {
     }
   }
 
+  const showEmpty =
+    logView === 'routing' ? !routingEntries.length : !otherLines.length
+
   return (
     <section className="page active" id="page-logs">
       <div className="panel">
@@ -180,6 +209,32 @@ export function LogsPage() {
             {loadingOlder && (
               <span className="log-loading-hint">{t('logs.loadingOlder')}</span>
             )}
+            <div className="log-view-toggle" role="tablist" aria-label={t('logs.title')}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={logView === 'routing'}
+                className={`log-view-toggle__btn${logView === 'routing' ? ' active' : ''}`}
+                onClick={() => {
+                  stickToBottomRef.current = true
+                  setLogView('routing')
+                }}
+              >
+                {t('logs.tabRouting')}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={logView === 'other'}
+                className={`log-view-toggle__btn${logView === 'other' ? ' active' : ''}`}
+                onClick={() => {
+                  stickToBottomRef.current = true
+                  setLogView('other')
+                }}
+              >
+                {t('logs.tabOther')}
+              </button>
+            </div>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void openLogsDir()}>
               {t('action.openLogsDir')}
             </button>
@@ -193,11 +248,18 @@ export function LogsPage() {
             </button>
           </div>
         </div>
-        <div className="log-view" id="log-view" ref={viewRef} onScroll={onScroll}>
-          {emptyMessage && !lines.length ? (
+        <div
+          className={logView === 'routing' ? 'routing-log-list' : 'log-view'}
+          id="log-view"
+          ref={viewRef}
+          onScroll={onScroll}
+        >
+          {emptyMessage && showEmpty ? (
             <div className="log-line info">{emptyMessage}</div>
+          ) : logView === 'routing' ? (
+            routingEntries.map((entry) => <RoutingLogCard key={entry.id} entry={entry} />)
           ) : (
-            lines.map((line) => (
+            otherLines.map((line) => (
               <div key={line.id} className={`log-line ${line.level}`}>
                 {line.msg}
               </div>

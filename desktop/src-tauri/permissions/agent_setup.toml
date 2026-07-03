@@ -32,3 +32,8 @@ commands.allow = ["read_inbound_auth_key_cmd"]
 identifier = "allow-check-agent-initialized"
 description = "Checks whether OpenClaw or Hermes config has been initialized."
 commands.allow = ["check_agent_initialized"]
+
+[[permission]]
+identifier = "allow-check-agent-deployed"
+description = "Checks whether Token Router has been written into an agent config."
+commands.allow = ["check_agent_deployed"]

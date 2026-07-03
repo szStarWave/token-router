@@ -63,7 +63,7 @@ export function OverviewPage() {
   }
 
   const endpoints = [
-    { id: 'openai', labelKey: 'overview.endpointOpenAi' as const, path: '/v1/chat/completions' },
+    { id: 'openai', labelKey: 'overview.endpointOpenAi' as const, path: '/v1' },
     { id: 'responses', labelKey: 'overview.endpointResponses' as const, path: '/v1/responses' },
     { id: 'anthropic', labelKey: 'overview.endpointAnthropic' as const, path: '/anthropic' },
   ]

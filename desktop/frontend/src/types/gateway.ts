@@ -53,6 +53,7 @@ export interface UpstreamEndpointView {
   model?: string | null
   api_key_set?: boolean
   token_budget?: number | null
+  token_quota_enabled?: boolean
 }
 
 export interface UpstreamSetupView {

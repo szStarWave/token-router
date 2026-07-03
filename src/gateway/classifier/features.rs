@@ -16,6 +16,15 @@ impl FeatureVector {
         keys.push(format!("loop_bucket:{}", loop_bucket(signals.loop_steps)));
         keys.push(format!("turn_bucket:{}", turn_bucket(signals.n_turns)));
         keys.push(format!("intent:{}", intent_bucket(signals)));
+        keys.push(format!(
+            "tool_error_streak:{}",
+            tool_error_streak_bucket(signals.consecutive_tool_error_streak)
+        ));
+        keys.push(format!(
+            "tool_loop:{}",
+            tool_loop_bucket(signals.tool_invocations_since_last_user)
+        ));
+        keys.push(format!("lexical:{}", lexical_bucket(signals)));
 
         push_flag(&mut keys, "multimodal", signals.multimodal);
         push_flag(&mut keys, "risky_tool_tier1", signals.risky_tool_tier1);
@@ -105,14 +114,46 @@ fn intent_bucket(signals: &RequestSignals) -> &'static str {
     }
 }
 
+fn tool_error_streak_bucket(streak: u32) -> &'static str {
+    match streak {
+        0 => "none",
+        1 => "one",
+        _ => "multi",
+    }
+}
+
+fn tool_loop_bucket(n: u32) -> &'static str {
+    match n {
+        0..=4 => "none",
+        5..=6 => "short",
+        7 => "mid",
+        _ => "long",
+    }
+}
+
+fn lexical_bucket(signals: &RequestSignals) -> &'static str {
+    match (signals.rare_lexical, signals.special_lexical) {
+        (true, true) => "both",
+        (false, true) => "special",
+        (true, false) => "rare",
+        (false, false) => "none",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::routing::SignalExtractor;
+    use crate::gateway::routing::{SignalExtractor, WordFreqStore};
+
+    fn test_wordfreq() -> WordFreqStore {
+        WordFreqStore::open_in_memory().expect("test wordfreq store")
+    }
 
     fn signals_with_delta(delta: u32, ctx_max: u32) -> (RequestSignals, u32) {
+        let wordfreq = test_wordfreq();
         let extractor = SignalExtractor {
             ctx_edge_max: ctx_max,
+            wordfreq: &wordfreq,
         };
         let req = crate::gateway::api::openai::ChatCompletionRequest {
             model: "test".into(),
@@ -147,5 +188,41 @@ mod tests {
         let (signals, max) = signals_with_delta(0, 65536);
         let fv = FeatureVector::from_signals(&signals, StepKind::DirectChat, max);
         assert!(fv.keys.iter().any(|k| k == "step_kind:direct_chat"));
+    }
+
+    #[test]
+    fn feature_vector_includes_tool_error_streak_bucket() {
+        let (mut signals, max) = signals_with_delta(0, 65536);
+        signals.consecutive_tool_error_streak = 1;
+        let fv = FeatureVector::from_signals(&signals, StepKind::RecoveryAfterFailure, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_error_streak:one"));
+        signals.consecutive_tool_error_streak = 2;
+        let fv = FeatureVector::from_signals(&signals, StepKind::RecoveryAfterFailure, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_error_streak:multi"));
+    }
+
+    #[test]
+    fn feature_vector_includes_tool_loop_bucket() {
+        let (mut signals, max) = signals_with_delta(0, 65536);
+        signals.tool_invocations_since_last_user = 5;
+        let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_loop:short"));
+        signals.tool_invocations_since_last_user = 7;
+        let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_loop:mid"));
+        signals.tool_invocations_since_last_user = 8;
+        let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_loop:long"));
+    }
+
+    #[test]
+    fn feature_vector_includes_lexical_bucket() {
+        let (mut signals, max) = signals_with_delta(0, 65536);
+        signals.rare_lexical = true;
+        let fv = FeatureVector::from_signals(&signals, StepKind::DirectChat, max);
+        assert!(fv.keys.iter().any(|k| k == "lexical:rare"));
+        signals.special_lexical = true;
+        let fv = FeatureVector::from_signals(&signals, StepKind::DirectChat, max);
+        assert!(fv.keys.iter().any(|k| k == "lexical:both"));
     }
 }

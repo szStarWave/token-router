@@ -7,8 +7,10 @@ use token_router::config::auth_keys::collect_inbound_api_keys;
 use token_router::config::{ensure_initialized, load_from_path};
 use token_router::gateway::AppConfig;
 
-const OPENCLAW_PROVIDER: &str = "flowy";
+const OPENCLAW_PROVIDER: &str = "token-router";
 const OPENCLAW_MODEL_DISPLAY: &str = "Token Router Auto Route";
+const OPENCLAW_CONTEXT_WINDOW: u64 = 1_000_000;
+const OPENCLAW_TIMEOUT_SECONDS: u64 = 300;
 const CODEX_PROVIDER: &str = "token_router";
 const CODEX_PROVIDER_NAME: &str = "Token Router";
 const DEFAULT_MODEL: &str = "auto";
@@ -18,6 +20,14 @@ pub const ERR_AGENT_NOT_INITIALIZED: &str = "agent_not_initialized";
 #[serde(rename_all = "camelCase")]
 pub struct AgentInitStatus {
     pub initialized: bool,
+    pub config_path: String,
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDeployStatus {
+    pub deployed: bool,
     pub config_path: String,
     pub agent: String,
 }
@@ -221,7 +231,7 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(path, pretty + "\n").map_err(|e| e.to_string())
 }
 
-fn upsert_model_entry(models: &mut Value, model_id: &str, display_name: &str) {
+fn upsert_model_entry(models: &mut Value, model_id: &str, display_name: &str, context_window: Option<u64>) {
     if !models.is_array() {
         *models = json!([]);
     }
@@ -235,14 +245,24 @@ fn upsert_model_entry(models: &mut Value, model_id: &str, display_name: &str) {
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("id".to_string(), json!(model_id));
             obj.insert("name".to_string(), json!(display_name));
+            if let Some(cw) = context_window {
+                obj.insert("contextWindow".to_string(), json!(cw));
+            }
         }
         return;
     }
 
-    arr.push(json!({
+    let mut entry = json!({
         "id": model_id,
         "name": display_name,
-    }));
+    });
+    if let Some(cw) = context_window {
+        entry
+            .as_object_mut()
+            .unwrap()
+            .insert("contextWindow".to_string(), json!(cw));
+    }
+    arr.push(entry);
 }
 
 fn merge_openclaw_config(existing: &mut Value, base_url: &str, model_id: &str, api_key: &str) {
@@ -275,11 +295,17 @@ fn merge_openclaw_config(existing: &mut Value, base_url: &str, model_id: &str, a
     let flowy_obj = flowy.as_object_mut().unwrap();
     flowy_obj.insert("baseUrl".to_string(), json!(base_url));
     flowy_obj.insert("apiKey".to_string(), json!(api_key));
+    flowy_obj.insert("timeoutSeconds".to_string(), json!(OPENCLAW_TIMEOUT_SECONDS));
 
     let model_list = flowy_obj
         .entry("models")
         .or_insert_with(|| json!([]));
-    upsert_model_entry(model_list, model_id, OPENCLAW_MODEL_DISPLAY);
+    upsert_model_entry(
+        model_list,
+        model_id,
+        OPENCLAW_MODEL_DISPLAY,
+        Some(OPENCLAW_CONTEXT_WINDOW),
+    );
 
     let agents = root.entry("agents").or_insert_with(|| json!({}));
     if !agents.is_object() {
@@ -448,7 +474,7 @@ fn configure_openclaw(api_key: Option<String>) -> Result<AgentSetupResult, Strin
     let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("openclaw")?;
     let base_url = gateway_agent_base_url(&config);
-    let model = resolved_model(&config);
+    let model = DEFAULT_MODEL.to_string();
     let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
 
     let mut doc = read_json_file(&path)?;
@@ -518,9 +544,118 @@ fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> 
     })
 }
 
+fn non_empty_str(value: Option<&str>) -> bool {
+    value.is_some_and(|s| !s.trim().is_empty())
+}
+
+fn openclaw_has_token_router(path: &Path) -> Result<bool, String> {
+    let doc = read_json_file(path)?;
+    let provider = doc
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.get(OPENCLAW_PROVIDER));
+    let has_provider = provider
+        .and_then(|f| f.get("baseUrl"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    let primary = doc
+        .get("agents")
+        .and_then(|a| a.get("defaults"))
+        .and_then(|d| d.get("model"))
+        .and_then(|m| m.get("primary"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.starts_with(&format!("{OPENCLAW_PROVIDER}/")))
+        .unwrap_or(false);
+    Ok(has_provider || primary)
+}
+
+fn hermes_has_token_router(path: &Path) -> Result<bool, String> {
+    let doc = read_yaml_file(path)?;
+    let model = doc.get("model");
+    Ok(non_empty_str(
+        model
+            .and_then(|m| m.get("base_url"))
+            .and_then(|v| v.as_str()),
+    ) && non_empty_str(
+        model
+            .and_then(|m| m.get("api_key"))
+            .and_then(|v| v.as_str()),
+    ))
+}
+
+fn claude_code_has_token_router(path: &Path) -> Result<bool, String> {
+    let doc = read_json_file(path)?;
+    Ok(non_empty_str(
+        doc.get("env")
+            .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str()),
+    ) && non_empty_str(
+        doc.get("env")
+            .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
+            .and_then(|v| v.as_str()),
+    ))
+}
+
+fn codex_has_token_router(path: &Path) -> Result<bool, String> {
+    let doc = read_toml_file(path)?;
+    let model_provider = doc
+        .get("model_provider")
+        .and_then(|v| v.as_str());
+    let has_provider = doc
+        .get("model_providers")
+        .and_then(|p| p.get(CODEX_PROVIDER))
+        .and_then(|p| p.get("base_url"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    Ok(model_provider == Some(CODEX_PROVIDER) && has_provider)
+}
+
+fn claude_code_deployed() -> Result<bool, String> {
+    let settings = claude_code_settings_path()?;
+    if settings.is_file() && claude_code_has_token_router(&settings)? {
+        return Ok(true);
+    }
+    let legacy = home_dir()?.join(".claude.json");
+    if legacy.is_file() {
+        return claude_code_has_token_router(&legacy);
+    }
+    Ok(false)
+}
+
+fn agent_deploy_state(agent: &str) -> Result<AgentDeployStatus, String> {
+    let (initialized, path) = agent_init_state(agent)?;
+    let config_path = path.display().to_string();
+    if !initialized {
+        return Ok(AgentDeployStatus {
+            deployed: false,
+            config_path,
+            agent: agent.to_string(),
+        });
+    }
+
+    let deployed = match agent {
+        "openclaw" => openclaw_has_token_router(&path)?,
+        "hermes" | "hermes-flash" => hermes_has_token_router(&path)?,
+        "claude-code" => claude_code_deployed()?,
+        "codex" => codex_has_token_router(&path)?,
+        _ => return Err(format!("unknown agent: {agent}")),
+    };
+
+    Ok(AgentDeployStatus {
+        deployed,
+        config_path,
+        agent: agent.to_string(),
+    })
+}
+
 #[tauri::command]
 pub fn check_agent_initialized(agent: String) -> Result<AgentInitStatus, String> {
     agent_init_status(agent.trim())
+}
+
+#[tauri::command]
+pub fn check_agent_deployed(agent: String) -> Result<AgentDeployStatus, String> {
+    agent_deploy_state(agent.trim())
 }
 
 #[tauri::command]
@@ -569,8 +704,19 @@ mod tests {
         merge_openclaw_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
         let providers = &doc["models"]["providers"];
         assert!(providers.get("anthropic").is_some());
-        assert_eq!(providers["flowy"]["baseUrl"], "http://127.0.0.1:11080/v1");
-        assert_eq!(doc["agents"]["defaults"]["model"]["primary"], "flowy/auto");
+        assert_eq!(providers["token-router"]["baseUrl"], "http://127.0.0.1:11080/v1");
+        assert_eq!(
+            providers["token-router"]["models"][0]["contextWindow"],
+            1_000_000
+        );
+        assert_eq!(providers["token-router"]["timeoutSeconds"], 300);
+        assert_eq!(doc["agents"]["defaults"]["model"]["primary"], "token-router/auto");
+        let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openclaw.json");
+        write_json_file(&path, &doc).unwrap();
+        assert!(openclaw_has_token_router(&path).unwrap());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
