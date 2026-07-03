@@ -192,11 +192,7 @@ impl SignalExtractor<'_> {
                         .any(|c| c.function.name == "sessions_spawn")
                 });
 
-        let memory_compact_hint = tok_system > 0
-            && req.messages.iter().any(|m| {
-                let t = message_text(m);
-                t.contains("Dynamic Project Context") || t.contains("compaction")
-            });
+        let memory_compact_hint = memory_compact_in_transcript(req);
 
         let cron_background = req.messages.iter().any(|m| {
             let t = message_text(m).to_ascii_lowercase();
@@ -384,6 +380,19 @@ fn message_text(msg: &Message) -> String {
                 .join("\n")
         })
         .unwrap_or_default()
+}
+
+/// True when the live transcript (not static system prompt) indicates memory compaction.
+fn memory_compact_in_transcript(req: &ChatCompletionRequest) -> bool {
+    req.messages.iter().any(|m| {
+        if m.role == Role::System {
+            return false;
+        }
+        let lower = message_text(m).to_ascii_lowercase();
+        lower.contains("[openclaw memory compact]")
+            || (matches!(m.role, Role::User | Role::Assistant)
+                && (lower.contains("memory compaction") || lower.contains("compaction")))
+    })
 }
 
 /// True when the live transcript (not system prompt docs) indicates sub-agent work.
@@ -722,6 +731,78 @@ mod tests {
         };
         let hard_signals = extractor.extract(&hard_user, None);
         assert!(hard_signals.intent_hard);
+    }
+
+    #[test]
+    fn dynamic_project_context_in_system_is_not_memory_compact() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 262_144,
+            wordfreq: &WF,
+        };
+        let req = ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: Some(
+                        "OpenClaw agent.\n# Dynamic Project Context\nHEARTBEAT.md content".into(),
+                    ),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("你好".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert!(
+            !signals.memory_compact_hint,
+            "static OpenClaw cache marker must not imply memory compact"
+        );
+    }
+
+    #[test]
+    fn memory_compact_marker_in_user_message_is_detected() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 262_144,
+            wordfreq: &WF,
+        };
+        let req = ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("[OpenClaw memory compact] summarize session".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert!(signals.memory_compact_hint);
     }
 }
 

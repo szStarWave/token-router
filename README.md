@@ -208,7 +208,7 @@ src/
 | **Token 估算** | `tok_system`、`tok_tools_schema`、`tok_rest`（transcript）、`tok_total_in`、`tok_loop_delta`（本轮新增）、`tok_out_estimate` |
 | **轮次分析** | `n_tool_defs`、`n_turns`、`last_user_tok`、`loop_steps` |
 | **状态标记** | `pending_tool_calls`、`tool_arg_ready`、`last_role_tool`、`assistant_failed_recent`、`had_tool_roundtrip` |
-| **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`、`cron_background` |
+| **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`（**仅 transcript**：`[OpenClaw memory compact]` / user·assistant 中的 memory compaction）、`cron_background` |
 | **意图识别** | `intent_hard` / `intent_easy` / `intent_plan`（**仅最新 user 消息**，关键词见 `routing/keywords.rs`） |
 | **词汇稀有度** | `rare_lexical`（统计：[tokenizers](https://github.com/huggingface/tokenizers) WordLevel 分词 + `wordfreq` 查频，词表存 SQLite `wordfreq.db`；OOV/低频 → 稀有）、`special_lexical`（领域专名关键词：GDPR/K8s/CVE 等）、`rare_token_ratio` |
 | **工具分析** | `risky_tool_tier1`（exec/write/browser/sessions_spawn 等）、`consecutive_tool_error_streak`（尾部连续含错误关键词的 tool result 条数；≥1 重分类为 `RecoveryAfterFailure` 并渐进升难，≥2 触发硬门控）、`tool_invocations_since_last_user`（自上次 user 以来的 tool result 条数；≥5 渐进升难） |
@@ -235,7 +235,7 @@ src/
 | `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
 | `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 1` | +0.55 | **云端 / cascade** |
 | `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
-| `MemoryCompact` | `memory_compact_hint == true` | +0.20 | Work |
+| `MemoryCompact` | transcript 含真实压缩标记（**不含** system 里的 `# Dynamic Project Context` 缓存边界） | +0.20 | Work |
 | `CronBackground` | `cron_background == true` | -0.15 | Work |
 
 `is_casual_chat()` 的实现要点：
@@ -259,7 +259,7 @@ src/
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
 | `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
 | `GATE_RISKY_TOOL` | Tier-1 工具（`exec`/`write`/`edit`/`browser`/`sessions_spawn`/`message`） | **cloud** |
-| `GATE_OPENCLAW_COMPACT` | `MEMORY_COMPACT` 提示且上下文 > 12K token | **cloud** |
+| `GATE_OPENCLAW_COMPACT` | `MemoryCompact` 且 `tok_total_in > 80% × ctx_edge_max_tokens` | **cloud** |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
 | `MULTIMODAL_COMPLEX_CLOUD` | 非 `DirectChat` 的多模态（含图片 + 内容或 tools） | **cloud** |
 
@@ -1190,7 +1190,9 @@ adaptive_routing_enabled = true
 
 用户用中/英/日/韩/粤说「不对/错了/wrong/違う/틀렸어」等纠正上一轮 assistant 时，当轮 `GATE_USER_REJECT` 升云；下一轮正常跟帖仍按 DirectChat 规则重判。
 
-Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casual 溢出门控只计 `tok_rest`）。
+Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casual 溢出门控只计 `tok_rest`）。`GATE_OPENCLAW_COMPACT` 同样跟随 `ctx_edge_max_tokens`（80% 阈值，计 `tok_total_in`）；短问候（`DirectChat`）不受 MemoryCompact 步态覆盖。
+
+**OpenClaw 短问候误标 `memory_compact` / 误走云** — system 里的 `# Dynamic Project Context` 是 OpenClaw 正常缓存边界，**不代表**记忆压缩步。若日志出现 `STEP_MEMORY_COMPACT` + `GATE_OPENCLAW_COMPACT` 而 user 只是「你好」，说明 Gateway 版本过旧；升级后应变为 `STEP_DIRECT_CHAT` + edge（在 Auto 路由且端侧可用时）。首次工作区若 system 含 `Bootstrap Pending`，assistant 会按 `BOOTSTRAP.md` 做自我介绍，与路由无关。
 
 **日常 meta 显示 edge 但答案来自云** — 见上第 3 点：`route=edge` + `fallback=true` 表示端侧质量门失败后升云，非决策错误。
 
@@ -1235,7 +1237,7 @@ make check
 ### OpenClaw system 分段标记（实现参考）
 
 ```
-STATIC_END_MARKER = "# Dynamic Project Context"
+STATIC_END_MARKER = "# Dynamic Project Context"   # OpenClaw 缓存边界；非 memory_compact 信号
 INBOUND_MARKER    = "## Inbound Context"
 RUNTIME_MARKER    = "## Runtime"
 HEARTBEAT_USER    = /^\[OpenClaw heartbeat poll\]/

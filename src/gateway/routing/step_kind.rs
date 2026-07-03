@@ -72,6 +72,13 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::SubagentSpawn;
     }
 
+    if !signals.pending_tool_calls
+        && !signals.last_role_tool
+        && is_casual_chat(signals)
+    {
+        return StepKind::DirectChat;
+    }
+
     if signals.memory_compact_hint {
         return StepKind::MemoryCompact;
     }
@@ -169,6 +176,48 @@ mod tests {
             resolve_step_kind(&req, &signals),
             StepKind::ToolResultDigest
         );
+    }
+
+    #[test]
+    fn casual_greeting_wins_over_memory_compact_hint() {
+        let req = ChatCompletionRequest::default();
+        let signals = RequestSignals {
+            tok_system: 40_000,
+            tok_tools_schema: 20_000,
+            tok_rest: 20,
+            tok_total_in: 60_020,
+            tok_loop_delta: 0,
+            tok_out_estimate: 0,
+            n_tool_defs: 3,
+            n_turns: 1,
+            last_user_tok: 5,
+            loop_steps: 0,
+            pending_tool_calls: false,
+            tool_arg_ready: false,
+            last_role_tool: false,
+            synthetic_tool_result: false,
+            assistant_failed_recent: false,
+            is_heartbeat_poll: false,
+            voice_repair_loop: false,
+            subagent_spawn_hint: false,
+            memory_compact_hint: true,
+            cron_background: false,
+            tools_enabled: true,
+            had_tool_roundtrip: false,
+            risky_tool_tier1: false,
+            intent_hard: false,
+            intent_easy: true,
+            intent_plan: false,
+            multimodal: false,
+            user_multimodal: false,
+            consecutive_tool_error_streak: 0,
+            tool_invocations_since_last_user: 0,
+            user_rejects_answer: false,
+            rare_lexical: false,
+            special_lexical: false,
+            rare_token_ratio: 0.0,
+        };
+        assert_eq!(resolve_step_kind(&req, &signals), StepKind::DirectChat);
     }
 }
 

@@ -24,6 +24,14 @@ pub fn check_hard_gates(
         });
     }
 
+    if step_kind == StepKind::MemoryCompact
+        && ctx_overflow_triggers(signals, step_kind, ctx_edge_max)
+    {
+        return Some(HardGate {
+            code: "GATE_OPENCLAW_COMPACT",
+        });
+    }
+
     if ctx_overflow_triggers(signals, step_kind, ctx_edge_max) {
         return Some(HardGate {
             code: "GATE_CTX_OVERFLOW",
@@ -45,12 +53,6 @@ pub fn check_hard_gates(
     if signals.risky_tool_tier1 {
         return Some(HardGate {
             code: "GATE_RISKY_TOOL",
-        });
-    }
-
-    if step_kind == StepKind::MemoryCompact && signals.tok_total_in > 12_000 {
-        return Some(HardGate {
-            code: "GATE_OPENCLAW_COMPACT",
         });
     }
 
@@ -179,5 +181,19 @@ mod tests {
                 .code,
             "GATE_CTX_OVERFLOW"
         );
+    }
+
+    #[test]
+    fn openclaw_compact_gate_follows_ctx_edge_max() {
+        let mut signals = empty_signals();
+        signals.tok_total_in = 50_000;
+        assert!(check_hard_gates(&signals, StepKind::MemoryCompact, 262_144, true).is_none());
+        assert_eq!(
+            check_hard_gates(&signals, StepKind::MemoryCompact, 55_000, true)
+                .unwrap()
+                .code,
+            "GATE_OPENCLAW_COMPACT"
+        );
+        assert!(check_hard_gates(&signals, StepKind::DirectChat, 55_000, true).is_none());
     }
 }

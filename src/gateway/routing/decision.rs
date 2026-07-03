@@ -117,6 +117,7 @@ pub fn decide(
 
     if edge_ok
         && cloud_configured(config)
+        && step_kind != StepKind::MemoryCompact
         && ctx_overflow_triggers(&signals, step_kind, config.ctx_edge_max_tokens)
     {
         reason_codes.push("GATE_CTX_OVERFLOW".to_string());

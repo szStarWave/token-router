@@ -487,6 +487,121 @@ mod tests {
             "single greeting with huge OpenClaw bootstrap: {:?}",
             decision
         );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_OPENCLAW_COMPACT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    fn openclaw_dynamic_project_context_greeting_request() -> ChatCompletionRequest {
+        let mut req = openclaw_large_prompt_greeting_request();
+        if let Some(system) = req.messages.iter_mut().find(|m| m.role == Role::System) {
+            system.content = Some(format!(
+                "{}\n# Dynamic Project Context\nThe following frequently-changing project context files are kept below the cache boundary when possible:",
+                system.content.as_deref().unwrap_or("")
+            ));
+        }
+        req
+    }
+
+    #[test]
+    fn openclaw_dynamic_project_context_greeting_stays_edge() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_dynamic_project_context_greeting_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(
+            decision.step_kind,
+            StepKind::DirectChat,
+            "Dynamic Project Context marker must not force MemoryCompact: {:?}",
+            decision
+        );
+        assert!(
+            casual_routes_edge(decision.route),
+            "short greeting should stay edge with 256K budget: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_OPENCLAW_COMPACT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    fn openclaw_memory_compact_work_request() -> ChatCompletionRequest {
+        let mut req = openclaw_large_prompt_daily_request();
+        if let Some(user) = req.messages.iter_mut().find(|m| m.role == Role::User) {
+            user.content = Some("[OpenClaw memory compact] summarize and prune old notes".into());
+        }
+        req
+    }
+
+    #[test]
+    fn openclaw_memory_compact_stays_edge_under_ctx_budget() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_memory_compact_work_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(
+            decision.step_kind,
+            StepKind::MemoryCompact,
+            "{:?}",
+            decision
+        );
+        assert_ne!(
+            decision.route,
+            RouteTier::Cloud,
+            "compact step within 256K budget should not force cloud: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_OPENCLAW_COMPACT" || c == "GATE_CTX_OVERFLOW"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn openclaw_memory_compact_overflows_to_cloud() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_memory_compact_work_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::MemoryCompact);
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_OPENCLAW_COMPACT"),
+            "{:?}",
+            decision.reason_codes
+        );
     }
 
     #[test]
