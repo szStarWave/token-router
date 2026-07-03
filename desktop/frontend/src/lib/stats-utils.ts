@@ -48,15 +48,14 @@ export function formatSavedCreditsAmount(
   savedPoints: number | null | undefined,
   locale?: string,
 ): string {
-  if (savedPoints == null || Number.isNaN(savedPoints)) return '—'
-  return Math.round(savedPoints).toLocaleString(locale)
+  const n = savedPoints == null || Number.isNaN(savedPoints) ? 0 : savedPoints
+  return Math.round(n).toLocaleString(locale)
 }
 
 export function formatSavedCredits(
   savedPoints: number | null | undefined,
   t: (k: string, v?: Record<string, string | number>) => string,
 ): string {
-  if (savedPoints == null || Number.isNaN(savedPoints)) return '—'
   return t('routeStats.savedCredits', { n: formatSavedCreditsAmount(savedPoints) })
 }
 
