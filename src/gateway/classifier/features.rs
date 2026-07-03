@@ -27,7 +27,8 @@ impl FeatureVector {
         keys.push(format!("lexical:{}", lexical_bucket(signals)));
 
         push_flag(&mut keys, "multimodal", signals.multimodal);
-        push_flag(&mut keys, "risky_tool_tier1", signals.risky_tool_tier1);
+        push_flag(&mut keys, "risky_tool_hard", signals.risky_tool_hard);
+        push_flag(&mut keys, "risky_tool_soft", signals.risky_tool_soft);
         push_flag(&mut keys, "pending_tool_calls", signals.pending_tool_calls);
         push_flag(
             &mut keys,

@@ -29,6 +29,7 @@
     "allow-gateway-read-logs",
     "allow-gateway-open-logs-dir",
     "allow-show-main-window",
+    "allow-hide-main-window",
     "allow-herdsman-open",
     "allow-herdsman-status",
     "allow-herdsman-start",

@@ -211,7 +211,7 @@ src/
 | **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`（**仅 transcript**：`[OpenClaw memory compact]` / user·assistant 中的 memory compaction）、`cron_background` |
 | **意图识别** | `intent_hard` / `intent_easy` / `intent_plan`（**仅最新 user 消息**，关键词见 `routing/keywords.rs`） |
 | **词汇稀有度** | `rare_lexical`（统计：[tokenizers](https://github.com/huggingface/tokenizers) WordLevel 分词 + `wordfreq` 查频，词表存 SQLite `wordfreq.db`；OOV/低频 → 稀有）、`special_lexical`（领域专名关键词：GDPR/K8s/CVE 等）、`rare_token_ratio` |
-| **工具分析** | `risky_tool_tier1`（exec/write/browser/sessions_spawn 等）、`consecutive_tool_error_streak`（尾部连续含错误关键词的 tool result 条数；≥1 重分类为 `RecoveryAfterFailure` 并渐进升难，≥2 触发硬门控）、`tool_invocations_since_last_user`（自上次 user 以来的 tool result 条数；≥5 渐进升难） |
+| **工具分析** | `risky_tool_hard` / `risky_tool_soft` / `risky_tool_names`（见 `routing/tool_risk.rs`：**Hard**=删除/移动文件（`Delete` 工具、`exec` 中 `rm`/`mv` 等）；**Soft**=`browser`/`sessions_spawn`/`message`；`write`/`edit`/普通 `exec` 无影响）、`consecutive_tool_error_streak`… |
 | **多模态探测** | 检查 `content` 是否含 `image_url` 或 `data:image` |
 
 **关键词模块**（`routing/keywords.rs`）：集中管理 `tool_error`、`hard_intent`、`plan_intent`、`easy_intent`、`reject_intent`、`uncertainty`（cascade/verify 质量门）、`special_lexical` 七组词表；ASCII 词大小写不敏感，短词（≤4 字符）使用词边界匹配避免误伤。
@@ -258,7 +258,7 @@ src/
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
 | `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
-| `GATE_RISKY_TOOL` | Tier-1 工具（`exec`/`write`/`edit`/`browser`/`sessions_spawn`/`message`） | **cloud** |
+| `GATE_RISKY_TOOL` | 删除/移动文件（`Delete` 工具或 `exec` 中 `rm`/`mv`/`git mv` 等）且步态为 `ToolSelect`/`ToolArgFill`、尚无 tool result；reason 附带 `GATE_RISKY_TOOL:exec,delete` | **cloud** |
 | `GATE_OPENCLAW_COMPACT` | `MemoryCompact` 且 `tok_total_in > 80% × ctx_edge_max_tokens` | **cloud** |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
 | `MULTIMODAL_COMPLEX_CLOUD` | 非 `DirectChat` 的多模态（含图片 + 内容或 tools） | **cloud** |
@@ -271,7 +271,7 @@ src/
 raw = 0.20 × ctx_ratio + 0.25 × user_ctx_ratio + 0.10 × tool_ratio
       + 0.30 × intent_hard - 0.40 × intent_easy + 0.12 × user_multimodal
       + step_kind.bias() + experience_bias
-      + assistant_failed_recent_bonus + tool_error_streak_bias + tool_loop_bias + lexical_rarity_bias
+      + assistant_failed_recent_bonus + tool_error_streak_bias + tool_loop_bias + lexical_rarity_bias + risky_tool_soft_bias
 
 d = 1.0 / (1.0 + e^(-raw))
 ```
@@ -287,6 +287,7 @@ d = 1.0 / (1.0 + e^(-raw))
 - `assistant_failed_recent_bonus`：assistant turn 失败时 +0.15
 - `tool_error_streak_bias`：连续 tool 失败渐进加成 — streak 1 → +0.15，2 → +0.30，3+ → +0.40（封顶）
 - `tool_loop_bias`：自上次 user 以来 tool result 条数渐进加成 — 0–4 → 0，5–6 → +0.10，7 → +0.18，8+ → +0.25（封顶）
+- `risky_tool_soft_bias`：Soft 工具（`browser`/`message`/`sessions_spawn`）→ +0.22；reason code：`RISKY_TOOL_SOFT:browser,...`
 - `lexical_rarity_bias`：词汇稀有度渐进加成（非硬门控）— 仅 rare → +0.08，仅 special → +0.12，两者皆有 → +0.18（封顶）；reason code：`LEXICAL_RARE` / `LEXICAL_SPECIAL` / `LEXICAL_BOTH`；分类器特征 bucket：`lexical:none|rare|special|both`
 
 ##### 1.5 策略映射（`routing/policy.rs`）
@@ -347,7 +348,7 @@ Agent 循环中的执行步态（`ToolSelect`/`ToolResultDigest`/`FinalReply` �
 **特征工程**（`features.rs`）：
 - `step_kind:<type>`、`ctx_bucket:<low|mid|high>`、`tool_bucket:<none|few|many>`
 - `loop_bucket:<none|short|long>`、`turn_bucket:<short|long>`、`intent:<easy|hard|plan|neutral>`
-- 布尔标记：`multimodal`、`risky_tool_tier1`、`pending_tool_calls`、`assistant_failed_recent`、`is_heartbeat_poll`、`had_tool_roundtrip`、`tools_enabled`
+- 布尔标记：`multimodal`、`risky_tool_hard`、`risky_tool_soft`、`pending_tool_calls`、`assistant_failed_recent`、`is_heartbeat_poll`、`had_tool_roundtrip`、`tools_enabled`
 
 **推理**（`model.rs`）：
 - 对数空间朴素贝叶斯 + Laplace 平滑：`P(edge_ok | features) ∝ log prior + Σ log P(f_i | edge_ok)`

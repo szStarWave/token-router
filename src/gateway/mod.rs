@@ -10,6 +10,7 @@ pub mod experience;
 pub mod logging;
 pub mod multimodal;
 pub mod routing;
+pub mod routing_log;
 pub mod server;
 pub mod session;
 pub mod stats;

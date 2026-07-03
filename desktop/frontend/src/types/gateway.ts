@@ -180,6 +180,21 @@ export interface LogsResponse {
   lines: Array<{ level: string; text?: string; msg?: string }>
 }
 
+export interface RoutingLogApiEntry {
+  id: number
+  timestamp: string
+  route: string
+  step_kind: string
+  model: string
+  user_preview: string
+  reason_codes: string[]
+}
+
+export interface RoutingLogsResponse {
+  entries: RoutingLogApiEntry[]
+  has_older: boolean
+}
+
 export interface LogLine {
   level: string
   msg: string

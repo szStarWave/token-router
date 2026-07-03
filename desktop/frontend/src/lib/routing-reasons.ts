@@ -80,6 +80,16 @@ function explainDynamicCode(code: string, t: TFn): string | null {
   if (code.startsWith('WORK_SAMPLE_SKIP(p=') && code.endsWith(')')) {
     return t('routing.reason.WORK_SAMPLE_SKIP', { p: code.slice('WORK_SAMPLE_SKIP(p='.length, -1) })
   }
+  if (code.startsWith('GATE_RISKY_TOOL:')) {
+    return t('routing.reason.GATE_RISKY_TOOL_NAMED', {
+      tools: code.slice('GATE_RISKY_TOOL:'.length),
+    })
+  }
+  if (code.startsWith('RISKY_TOOL_SOFT:')) {
+    return t('routing.reason.RISKY_TOOL_SOFT_NAMED', {
+      tools: code.slice('RISKY_TOOL_SOFT:'.length),
+    })
+  }
   if (code.startsWith('CONFIG_ROUTE_')) {
     const tier = code.slice('CONFIG_ROUTE_'.length).toLowerCase()
     const key = `routing.reason.CONFIG_ROUTE_${tier}`

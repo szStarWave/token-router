@@ -411,10 +411,16 @@
           "markdownDescription": "Enables the gateway_open_logs_dir command."
         },
         {
-          "description": "Enables the gateway_read_logs command.",
+          "description": "Enables gateway log read commands.",
           "type": "string",
           "const": "allow-gateway-read-logs",
-          "markdownDescription": "Enables the gateway_read_logs command."
+          "markdownDescription": "Enables gateway log read commands."
+        },
+        {
+          "description": "Enables the gateway_read_routing_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gateway-read-routing-logs",
+          "markdownDescription": "Enables the gateway_read_routing_logs command without any pre-configured scope."
         },
         {
           "description": "Enables the gateway_restart command.",
@@ -475,6 +481,12 @@
           "type": "string",
           "const": "allow-herdsman-status",
           "markdownDescription": "Enables the herdsman_get_status command."
+        },
+        {
+          "description": "Enables the hide_main_window command.",
+          "type": "string",
+          "const": "allow-hide-main-window",
+          "markdownDescription": "Enables the hide_main_window command."
         },
         {
           "description": "Returns the desktop app version for OTA.",
@@ -549,6 +561,12 @@
           "markdownDescription": "Denies the gateway_read_logs command without any pre-configured scope."
         },
         {
+          "description": "Denies the gateway_read_routing_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-read-routing-logs",
+          "markdownDescription": "Denies the gateway_read_routing_logs command without any pre-configured scope."
+        },
+        {
           "description": "Denies the gateway_restart command without any pre-configured scope.",
           "type": "string",
           "const": "deny-gateway-restart",
@@ -595,6 +613,12 @@
           "type": "string",
           "const": "deny-herdsman-start",
           "markdownDescription": "Denies the herdsman_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the hide_main_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-hide-main-window",
+          "markdownDescription": "Denies the hide_main_window command without any pre-configured scope."
         },
         {
           "description": "Denies the ota_app_version command without any pre-configured scope.",

@@ -7,6 +7,7 @@ use axum::{
 use crate::gateway::api::anthropic::{chat_json_to_anthropic, AnthropicSseTransform};
 use crate::gateway::api::auth::require_gateway_api_key;
 use crate::gateway::api::meta::{build_token_router_meta, log_route_decision, token_router_meta_headers};
+use crate::gateway::routing::last_message_text;
 use crate::gateway::api::openai::ChatCompletionRequest;
 use crate::gateway::api::responses::{chat_response_to_responses, ResponsesSseTransform};
 use crate::gateway::api::routes::AppState;
@@ -93,9 +94,10 @@ pub async fn chat_completions_core(
     let assistant_failed = decision.assistant_failed_recent;
 
     log_route_decision(
+        Some(state.routing_logs.as_ref()),
         &decision,
         &req.model,
-        &decision.lexical_learn.last_user_text,
+        &last_message_text(&req),
         stream,
         agent_id.as_deref(),
     );

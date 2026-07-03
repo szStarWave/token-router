@@ -3,8 +3,10 @@ import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
 import { StatsChart, StatsChartRange, type ChartRange } from '../components/stats/StatsChart'
 import { AuthKeyStatsPanel } from '../components/stats/AuthKeyStatsPanel'
-import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierTokenSummary, tokenSummary, tokenTableRows, topStepKinds } from '../lib/stats-utils'
+import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierMaxPerRequest, tierTokenSummary, tokenSummary, tokenTableRows, topStepKinds } from '../lib/stats-utils'
+import { syncLocalUsageFromStats } from '../hooks/useLocalUsageSync'
 import { apiFetch } from '../lib/gateway'
+import { useSetupStore } from '../stores/setupStore'
 import type { StatsScope, StatsSnapshot } from '../types/gateway'
 
 export function StatsPage() {
@@ -12,7 +14,9 @@ export function StatsPage() {
   const scope = useAppStore((s) => s.scope)
   const setScope = useAppStore((s) => s.setScope)
   const stats = useAppStore((s) => s.stats)
-  const savedPoints = useAppStore((s) => s.savedPoints)
+  const sessionSavedPoints = useAppStore((s) => s.sessionSavedPoints)
+  const globalSavedPoints = useAppStore((s) => s.globalSavedPoints)
+  const savedPoints = scope === 'session' ? sessionSavedPoints : globalSavedPoints
   const [chartRange, setChartRange] = useState<ChartRange>('h24')
 
   const routing = stats?.routing
@@ -27,6 +31,8 @@ export function StatsPage() {
   const tokenTotals = tokenSummary(tb)
   const edgeTokens = tierTokenSummary(tb?.edge as Record<string, unknown> | undefined)
   const cloudTokens = tierTokenSummary(tb?.cloud as Record<string, unknown> | undefined)
+  const edgeMaxTokens = tierMaxPerRequest(tb?.edge as Record<string, unknown> | undefined)
+  const cloudMaxTokens = tierMaxPerRequest(tb?.cloud as Record<string, unknown> | undefined)
   const p95 = latency?.p95_ms
   const p99 = latency?.p99_ms
   const classifierFeatures = (classifier?.top_cloud_features as Array<{
@@ -43,10 +49,15 @@ export function StatsPage() {
 
   useEffect(() => {
     if (!connected) return
+    const modelId = useSetupStore.getState().setup?.edge?.model?.trim() || undefined
     void apiFetch<StatsSnapshot>(`/v1/admin/stats?scope=${scope}`).then((s) => {
       setStats(s)
+      void syncLocalUsageFromStats(s, { scope, modelId })
       if (scope === 'session') {
-        void apiFetch<StatsSnapshot>('/v1/admin/stats?scope=global').then(setGlobalStats)
+        void apiFetch<StatsSnapshot>('/v1/admin/stats?scope=global').then((global) => {
+          setGlobalStats(global)
+          void syncLocalUsageFromStats(global, { scope: 'global', modelId })
+        })
       } else {
         setGlobalStats(s)
       }
@@ -84,6 +95,11 @@ export function StatsPage() {
 
       <div className="stat-grid">
         <div className="stat-box">
+          <div className="label">{t('stat.savedPrefix')}</div>
+          <div className="value" id="stat-saved">{formatSavedCreditsAmount(savedPoints, locale)}</div>
+          <div className="sub">{t('stat.creditsUnit')}</div>
+        </div>
+        <div className="stat-box">
           <div className="label">{t('stat.totalReq')}</div>
           <div className="value" id="stat-req">{fmtNum(stats?.requests_total, locale)}</div>
           <div className="sub" id="stat-rpm">{stats?.requests_per_minute != null ? t('stat.reqPerMin', { n: Math.round(stats.requests_per_minute) }) : '—'}</div>
@@ -93,24 +109,19 @@ export function StatsPage() {
           <div className="value" id="stat-tokens">{tokenTotals.total > 0 ? fmtNum(tokenTotals.total, locale) : '—'}</div>
           <div className="sub" id="stat-token-io">{t('stat.tokenInOut', { input: fmtNum(tokenTotals.input, locale), output: fmtNum(tokenTotals.output, locale) })}</div>
         </div>
-        <div className="stat-box saved">
-          <div className="label">{t('stat.savedPrefix')}</div>
-          <div className="value" id="stat-saved">{formatSavedCreditsAmount(savedPoints, locale)}</div>
-          <div className="sub">{t('stat.creditsUnit')}</div>
+        <div className="stat-box">
+          <div className="label">{t('stat.p95')}</div>
+          <div className="value" id="stat-p95">{p95 != null && p95 > 0 ? fmtMs(p95, t) : '—'}</div>
+          <div className="sub" id="stat-p99">{p99 != null && p99 > 0 ? t('stat.p99Sub', { n: Math.round(p99) }) : '—'}</div>
         </div>
-        <div className="stat-box edge">
-          <div className="label">{t('stat.edgeRoute')}</div>
-          <div className="value" id="stat-edge-pct">{routing ? fmtPct(routing.edge_pct) : '—'}</div>
-          <div className="sub" id="stat-edge-n">{routing ? t('times', { n: routing.edge }) : '—'}</div>
+        <div className="stat-box">
+          <div className="label">{t('stat.avgTtft')}</div>
+          <div className="value" id="stat-ttft">{fmtMs(latency?.avg_ttft_ms, t)}</div>
+          <div className="sub">{t('stat.ttftSub')}</div>
         </div>
-        <div className="stat-box edge">
-          <div className="label">{t('stat.edgeTokens')}</div>
-          <div className="value" id="stat-edge-tokens">{edgeTokens.total > 0 ? fmtNum(edgeTokens.total, locale) : '—'}</div>
-          <div className="sub" id="stat-edge-token-io">{t('stat.tokenInOut', { input: fmtNum(edgeTokens.input, locale), output: fmtNum(edgeTokens.output, locale) })}</div>
-        </div>
-        <div className="stat-box edge">
-          <div className="label">{t('stat.edgeTps')}</div>
-          <div className="value" id="stat-edge-tps">{fmtTps(latency?.edge_tps)}</div>
+        <div className="stat-box">
+          <div className="label">{t('stat.avgTps')}</div>
+          <div className="value" id="stat-avg-tps">{fmtTps(latency?.avg_tps)}</div>
           <div className="sub">{t('stat.tpsUnit')}</div>
         </div>
         <div className="stat-box cloud">
@@ -128,20 +139,40 @@ export function StatsPage() {
           <div className="value" id="stat-cloud-tps">{fmtTps(latency?.cloud_tps)}</div>
           <div className="sub">{t('stat.tpsUnit')}</div>
         </div>
-        <div className="stat-box">
-          <div className="label">{t('stat.p95')}</div>
-          <div className="value" id="stat-p95">{p95 != null && p95 > 0 ? fmtMs(p95, t) : '—'}</div>
-          <div className="sub" id="stat-p99">{p99 != null && p99 > 0 ? t('stat.p99Sub', { n: Math.round(p99) }) : '—'}</div>
+        <div className="stat-box cloud">
+          <div className="label">{t('stat.cloudMaxOutputPerReq')}</div>
+          <div className="value" id="stat-cloud-max-out">{cloudMaxTokens.output > 0 ? fmtNum(cloudMaxTokens.output, locale) : '—'}</div>
+          <div className="sub" id="stat-cloud-max-out-foot">{cloudMaxTokens.output > 0 ? t('stat.maxOutputReqFoot', { total: fmtNum(cloudMaxTokens.atMaxOutput.total, locale), input: fmtNum(cloudMaxTokens.atMaxOutput.input, locale) }) : '—'}</div>
         </div>
-        <div className="stat-box">
-          <div className="label">{t('stat.avgTtft')}</div>
-          <div className="value" id="stat-ttft">{fmtMs(latency?.avg_ttft_ms, t)}</div>
-          <div className="sub">{t('stat.ttftSub')}</div>
+        <div className="stat-box cloud">
+          <div className="label">{t('stat.cloudMaxInputPerReq')}</div>
+          <div className="value" id="stat-cloud-max-in">{cloudMaxTokens.input > 0 ? fmtNum(cloudMaxTokens.input, locale) : '—'}</div>
+          <div className="sub" id="stat-cloud-max-in-foot">{cloudMaxTokens.input > 0 ? t('stat.maxInputReqFoot', { total: fmtNum(cloudMaxTokens.atMaxInput.total, locale), output: fmtNum(cloudMaxTokens.atMaxInput.output, locale) }) : '—'}</div>
         </div>
-        <div className="stat-box">
-          <div className="label">{t('stat.avgTps')}</div>
-          <div className="value" id="stat-avg-tps">{fmtTps(latency?.avg_tps)}</div>
+        <div className="stat-box edge">
+          <div className="label">{t('stat.edgeRoute')}</div>
+          <div className="value" id="stat-edge-pct">{routing ? fmtPct(routing.edge_pct) : '—'}</div>
+          <div className="sub" id="stat-edge-n">{routing ? t('times', { n: routing.edge }) : '—'}</div>
+        </div>
+        <div className="stat-box edge">
+          <div className="label">{t('stat.edgeTokens')}</div>
+          <div className="value" id="stat-edge-tokens">{edgeTokens.total > 0 ? fmtNum(edgeTokens.total, locale) : '—'}</div>
+          <div className="sub" id="stat-edge-token-io">{t('stat.tokenInOut', { input: fmtNum(edgeTokens.input, locale), output: fmtNum(edgeTokens.output, locale) })}</div>
+        </div>
+        <div className="stat-box edge">
+          <div className="label">{t('stat.edgeTps')}</div>
+          <div className="value" id="stat-edge-tps">{fmtTps(latency?.edge_tps)}</div>
           <div className="sub">{t('stat.tpsUnit')}</div>
+        </div>
+        <div className="stat-box edge">
+          <div className="label">{t('stat.edgeMaxOutputPerReq')}</div>
+          <div className="value" id="stat-edge-max-out">{edgeMaxTokens.output > 0 ? fmtNum(edgeMaxTokens.output, locale) : '—'}</div>
+          <div className="sub" id="stat-edge-max-out-foot">{edgeMaxTokens.output > 0 ? t('stat.maxOutputReqFoot', { total: fmtNum(edgeMaxTokens.atMaxOutput.total, locale), input: fmtNum(edgeMaxTokens.atMaxOutput.input, locale) }) : '—'}</div>
+        </div>
+        <div className="stat-box edge">
+          <div className="label">{t('stat.edgeMaxInputPerReq')}</div>
+          <div className="value" id="stat-edge-max-in">{edgeMaxTokens.input > 0 ? fmtNum(edgeMaxTokens.input, locale) : '—'}</div>
+          <div className="sub" id="stat-edge-max-in-foot">{edgeMaxTokens.input > 0 ? t('stat.maxInputReqFoot', { total: fmtNum(edgeMaxTokens.atMaxInput.total, locale), output: fmtNum(edgeMaxTokens.atMaxInput.output, locale) }) : '—'}</div>
         </div>
       </div>
 

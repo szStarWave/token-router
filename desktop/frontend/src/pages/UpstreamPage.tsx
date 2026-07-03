@@ -9,6 +9,7 @@ import { useI18n } from '../hooks/useI18n'
 import { ModelSelect } from '../components/upstream/ModelSelect'
 import { EdgeModelListItem } from '../components/upstream/EdgeModelListItem'
 import { HerdsmanSetupBanner } from '../components/upstream/HerdsmanSetupBanner'
+import { HerdsmanNoModelsBanner } from '../components/upstream/HerdsmanNoModelsBanner'
 import {
   AUTO_MODEL_ID,
   budgetFromSlider,
@@ -215,7 +216,7 @@ export function UpstreamPage() {
               {!herdsmanConnected ? (
                 <HerdsmanSetupBanner installed={herdsmanInstalled} />
               ) : !herdsmanItems.length ? (
-                <div className="edge-model-list-empty">{t('edgeModel.herdsmanEmpty')}</div>
+                <HerdsmanNoModelsBanner />
               ) : (
                 herdsmanItems.map((item) => (
                   <EdgeModelListItem

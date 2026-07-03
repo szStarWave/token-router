@@ -893,7 +893,6 @@
     .stat-box .sub { font-size: 11px; color: var(--default-400); margin-top: 2px; }
     .stat-box.edge .value { color: var(--edge); }
     .stat-box.cloud .value { color: var(--cloud); }
-    .stat-box.saved .value { color: var(--success); }
 
     .auth-key-stats-table-wrap {
       overflow-x: auto;
@@ -1513,10 +1512,38 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .routing-log-card__expand { margin-top: 6px; }
+    .routing-log-card__expand { margin-top: 8px; }
     .routing-log-card__toggle {
-      padding-left: 0;
+      height: 28px;
+      padding: 0 8px;
+      margin: 0 -8px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--primary);
       font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .routing-log-card__toggle:hover {
+      background: var(--primary-30);
+    }
+    .routing-log-card__toggle:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+    .routing-log-card__toggle-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      transition: transform 0.15s;
+    }
+    .routing-log-card__toggle.expanded .routing-log-card__toggle-icon {
+      transform: rotate(180deg);
     }
     .routing-log-card__details {
       list-style: none;

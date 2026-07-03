@@ -162,6 +162,7 @@ pub fn truncate_user_preview_for_log(text: &str) -> String {
 }
 
 pub fn log_route_decision(
+    store: Option<&crate::gateway::routing_log::RoutingLogStore>,
     decision: &RouteDecision,
     model: &str,
     user_preview: &str,
@@ -194,6 +195,12 @@ pub fn log_route_decision(
         user_preview = %user_preview,
         "{message}"
     );
+    if let Some(store) = store {
+        if let Err(e) = store.record_decision(decision, model, user_preview.as_str(), stream, agent_id)
+        {
+            tracing::warn!(error = %e, "routing log db write failed");
+        }
+    }
 }
 
 pub fn log_upstream_served(

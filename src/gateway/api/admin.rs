@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::daemon_ctl;
 use crate::gateway::api::routes::AppState;
 use crate::gateway::logging::{self, LogsTail};
+use crate::gateway::routing_log::{RoutingLogsQuery, RoutingLogsResponse};
 use crate::gateway::stats::AgentBudgetSnapshot;
 use crate::gateway::routing::Profile;
 
@@ -204,6 +205,44 @@ pub async fn logs(
         )
             .into_response()),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoutingLogsHttpQuery {
+    #[serde(default)]
+    pub after_id: Option<i64>,
+    #[serde(default)]
+    pub before_id: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+pub async fn routing_logs(
+    State(state): State<AppState>,
+    Query(query): Query<RoutingLogsHttpQuery>,
+) -> Result<Json<RoutingLogsResponse>, axum::response::Response> {
+    if query.after_id.is_some() && query.before_id.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "use either after_id or before_id, not both"})),
+        )
+            .into_response());
+    }
+    state
+        .routing_logs
+        .query(RoutingLogsQuery {
+            after_id: query.after_id,
+            before_id: query.before_id,
+            limit: query.limit,
+        })
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        })
 }
 
 pub async fn restart(

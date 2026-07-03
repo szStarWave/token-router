@@ -11,8 +11,7 @@ use super::signals::is_simple_multimodal;
 use super::difficulty::DifficultyScore;
 use super::gates::{check_hard_gates, ctx_overflow_triggers};
 use super::policy::{self, Profile};
-use super::signals::SignalExtractor;
-use super::signals::last_user_message_text;
+use super::signals::{last_user_message_text, RequestSignals, SignalExtractor};
 use super::step_kind::{StepKind, resolve_step_kind};
 use super::edge_busy::apply_edge_busy_fallback;
 use super::upstream_availability::{cloud_configured, edge_configured, finalize_route};
@@ -185,6 +184,9 @@ pub fn decide(
         edge_ok,
     ) {
         reason_codes.push(gate.code.to_string());
+        if gate.code == "GATE_RISKY_TOOL" {
+            push_risky_tool_hard_reason(&signals, &mut reason_codes);
+        }
         let mut route = RouteTier::Cloud;
         route = finalize_route(route, config, &mut reason_codes);
         sessions.record_tokens(&conv_key, signals.tok_total_in);
@@ -238,6 +240,7 @@ pub fn decide(
     } else if signals.rare_lexical {
         reason_codes.push("LEXICAL_RARE".to_string());
     }
+    push_risky_tool_soft_reason(&signals, &mut reason_codes);
     let (difficulty, edge_ok_probability) = apply_classifier(
         classifier,
         &features,
@@ -512,6 +515,26 @@ fn finish(
             special_lexical: signals.special_lexical,
         },
     }
+}
+
+fn push_risky_tool_hard_reason(signals: &RequestSignals, reason_codes: &mut Vec<String>) {
+    if signals.risky_tool_hard_names.is_empty() {
+        return;
+    }
+    reason_codes.push(format!(
+        "GATE_RISKY_TOOL:{}",
+        signals.risky_tool_hard_names.join(",")
+    ));
+}
+
+fn push_risky_tool_soft_reason(signals: &RequestSignals, reason_codes: &mut Vec<String>) {
+    if !signals.risky_tool_soft || signals.risky_tool_soft_names.is_empty() {
+        return;
+    }
+    reason_codes.push(format!(
+        "RISKY_TOOL_SOFT:{}",
+        signals.risky_tool_soft_names.join(",")
+    ));
 }
 
 fn step_kind_code(k: StepKind) -> &'static str {

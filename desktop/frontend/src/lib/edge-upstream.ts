@@ -64,6 +64,7 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 export const HERDSMAN_INSTALL_URL = 'https://flowyaipc.cn/#ai-engine'
 const EDGE_USER_CONFIGURED_KEY = 'tr-edge-user-configured'
 const EDGE_MANUAL_ENTRIES_KEY = 'tr-edge-manual-entries'
+const HERDSMAN_CONNECTION_POLL_MS = 12_000
 
 function loadManualEntriesFromStorage(): ManualEdgeEntry[] {
   try {
@@ -95,6 +96,7 @@ function persistManualEntries(entries: ManualEdgeEntry[]): void {
 
 let listenersInstalled = false
 let unlistenFns: UnlistenFn[] = []
+let connectionPollInterval: ReturnType<typeof setInterval> | null = null
 
 const modelChangeListeners = new Set<EdgeModelChangeCallback>()
 const uiChangeListeners = new Set<EdgeUiChangeCallback>()
@@ -110,6 +112,26 @@ function markEdgeUserConfigured(): void {
 
 function clearEdgeUserConfigured(): void {
   localStorage.removeItem(EDGE_USER_CONFIGURED_KEY)
+}
+
+function updateHerdsmanConnectionPoll(): void {
+  const state = getEdgeStoreState()
+  const shouldPoll = isTauri() && state.herdsmanInstalled && !state.herdsmanConnected
+  if (shouldPoll && !connectionPollInterval) {
+    connectionPollInterval = setInterval(() => {
+      void refreshHerdsmanStatus()
+    }, HERDSMAN_CONNECTION_POLL_MS)
+  } else if (!shouldPoll && connectionPollInterval) {
+    clearInterval(connectionPollInterval)
+    connectionPollInterval = null
+  }
+}
+
+function stopHerdsmanConnectionPoll(): void {
+  if (connectionPollInterval) {
+    clearInterval(connectionPollInterval)
+    connectionPollInterval = null
+  }
 }
 
 function notifyModelChange(): void {
@@ -808,6 +830,7 @@ export function updateHerdsmanConnectionUi(connected: boolean): void {
   if (!connected && state.selectedKey?.startsWith('herdsman:')) {
     state.setSelectedKey(null)
   }
+  updateHerdsmanConnectionPoll()
   notifyUiChange()
 }
 
@@ -1022,6 +1045,7 @@ export async function listenHerdsmanEvents(): Promise<void> {
       const payload = event.payload
       if (!payload || typeof payload !== 'object') return
       getEdgeStoreState().setHerdsmanInstalled(!!payload.installed)
+      updateHerdsmanConnectionPoll()
       void bootstrapHerdsmanStatus()
     }),
   )
@@ -1031,6 +1055,7 @@ export async function unlistenHerdsmanEvents(): Promise<void> {
   await Promise.all(unlistenFns.map((unlisten) => unlisten()))
   unlistenFns = []
   listenersInstalled = false
+  stopHerdsmanConnectionPoll()
 }
 
 export async function bootstrapHerdsmanStatus(): Promise<void> {
@@ -1073,6 +1098,7 @@ export async function initEdgeUpstream(): Promise<void> {
   }
   await listenHerdsmanEvents()
   await bootstrapHerdsmanStatus()
+  updateHerdsmanConnectionPoll()
   syncEdgeFromSetup(useSetupStore.getState().setup?.edge)
   initEdgeModelSelect()
 }

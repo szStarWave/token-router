@@ -43,6 +43,7 @@ const DECISIVE_PREFIXES = [
   'EXP_BIAS_',
   'TOOL_ERROR_STREAK_',
   'TOOL_LOOP_',
+  'RISKY_TOOL_',
 ] as const
 
 export function isRoutingLogLine(msg: string): boolean {
@@ -59,6 +60,29 @@ export function formatTimeLabel(iso: string): string {
   const match = iso.match(/T(\d{2}):(\d{2}):(\d{2})/)
   if (!match) return iso
   return `${match[1]}:${match[2]}:${match[3]}`
+}
+
+export function mapApiRoutingEntry(entry: {
+  id: number
+  timestamp: string
+  route: string
+  step_kind: string
+  model: string
+  user_preview: string
+  reason_codes: string[]
+}): RoutingLogEntry {
+  return {
+    id: entry.id,
+    timestamp: entry.timestamp,
+    timeLabel: formatTimeLabel(entry.timestamp),
+    route: entry.route as RouteTier,
+    stepKind: entry.step_kind,
+    model: entry.model,
+    userPreview: entry.user_preview,
+    hasUserPreview: entry.user_preview.length > 0,
+    reasonCodes: entry.reason_codes,
+    raw: '',
+  }
 }
 
 export function isDecisiveReasonCode(code: string): boolean {

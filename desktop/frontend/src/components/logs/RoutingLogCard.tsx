@@ -24,7 +24,7 @@ export function RoutingLogCard({ entry }: Props) {
   const [expanded, setExpanded] = useState(false)
   const previewText = entry.hasUserPreview
     ? truncatePreview(entry.userPreview)
-    : t('logs.noUserPreview')
+    : t('logs.noMessagePreview')
   const previewTitle = entry.hasUserPreview ? entry.userPreview : undefined
   const { shown: reasonTags, overflow } = pickDisplayReasonCodes(entry.reasonCodes)
 
@@ -40,7 +40,7 @@ export function RoutingLogCard({ entry }: Props) {
         )}
       </div>
       <p className="routing-log-card__preview" title={previewTitle}>
-        <span className="routing-log-card__preview-label">{t('logs.userMessage')}:</span>{' '}
+        <span className="routing-log-card__preview-label">{t('logs.messagePreview')}:</span>{' '}
         {previewText}
       </p>
       <div className="routing-log-card__tags">
@@ -59,11 +59,14 @@ export function RoutingLogCard({ entry }: Props) {
         <div className="routing-log-card__expand">
           <button
             type="button"
-            className="btn btn-ghost btn-sm routing-log-card__toggle"
+            className={`routing-log-card__toggle${expanded ? ' expanded' : ''}`}
             aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
           >
             {expanded ? t('logs.hideReasons') : t('logs.showReasons')}
+            <svg className="routing-log-card__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" />
+            </svg>
           </button>
           {expanded && (
             <ul className="routing-log-card__details">

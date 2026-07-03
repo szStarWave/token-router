@@ -14,8 +14,10 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const MODEL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DISCOVER_INTERVAL: Duration = Duration::from_secs(30);
 const DEFAULT_INSTALL_URL: &str = "https://flowyaipc.cn/#ai-engine";
+const DEFAULT_HTTP_PORTS: &[u16] = &[8080, 11434, 8081, 8000];
 
 static SERVICE_RUNNING: AtomicBool = AtomicBool::new(false);
+static PROBE_NOW: AtomicBool = AtomicBool::new(false);
 static RUNTIME_STATE: OnceLock<Arc<Mutex<HerdsmanRuntimeState>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Default)]
@@ -362,6 +364,21 @@ fn close_pipe(handle: PipeHandle) {
     }
 }
 
+#[cfg(windows)]
+fn pipe_is_available() -> bool {
+    if let Some(handle) = connect_pipe() {
+        close_pipe(handle);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn pipe_is_available() -> bool {
+    false
+}
+
 fn read_status_from_pipe() -> Option<HerdsmanStatus> {
     #[cfg(windows)]
     {
@@ -530,11 +547,187 @@ fn emit_install_detected(app: &AppHandle, installed: bool, launcher_path: Option
     );
 }
 
+fn request_immediate_probe() {
+    PROBE_NOW.store(true, Ordering::SeqCst);
+}
+
 fn sleep_interruptible(duration: Duration) {
     let until = std::time::Instant::now() + duration;
     while SERVICE_RUNNING.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        if PROBE_NOW.swap(false, Ordering::SeqCst) {
+            break;
+        }
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+fn derive_openai_endpoint(base: &str) -> String {
+    let trimmed = base.trim().trim_end_matches('/');
+    let with_v1 = if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    };
+    normalize_client_http_url(&with_v1)
+}
+
+#[cfg(windows)]
+fn read_herdsman_config_candidates(candidates: &mut Vec<String>) {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let profile = match env::var("USERPROFILE") {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let dir = PathBuf::from(profile).join(".herdsman");
+    if !dir.is_dir() {
+        return;
+    }
+
+    for name in ["config.json", "settings.json", "status.json"] {
+        let path = dir.join(name);
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        if let Some(ep) = json.get("endpoint").and_then(|v| v.as_str()) {
+            push_api_base_candidate(candidates, ep);
+        }
+        if let Some(ep) = json.get("openai_endpoint").and_then(|v| v.as_str()) {
+            push_api_base_candidate(candidates, ep);
+        }
+        if let Some(port) = json.get("port").and_then(|v| v.as_u64()) {
+            push_api_base_candidate(candidates, &format!("http://127.0.0.1:{port}"));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn read_herdsman_config_candidates(_candidates: &mut Vec<String>) {}
+
+fn collect_http_probe_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Ok(guard) = runtime_state().lock() {
+        if let Some(ref ep) = guard.endpoint {
+            push_api_base_candidate(&mut candidates, ep);
+        }
+        if let Some(ref ep) = guard.openai_endpoint {
+            push_api_base_candidate(&mut candidates, ep);
+        }
+    }
+
+    read_herdsman_config_candidates(&mut candidates);
+
+    for port in DEFAULT_HTTP_PORTS {
+        push_api_base_candidate(&mut candidates, &format!("http://127.0.0.1:{port}"));
+    }
+
+    candidates
+}
+
+struct HttpProbeResult {
+    base: String,
+    openai_endpoint: String,
+    models: Vec<HerdsmanModelInfo>,
+}
+
+fn probe_http_status() -> Option<HttpProbeResult> {
+    let candidates = collect_http_probe_candidates();
+    for base in candidates {
+        let openai_endpoint = derive_openai_endpoint(&base);
+        if let Some(models) = try_fetch_models(&base, &openai_endpoint) {
+            herdsman_info(format!(
+                "http probe ok: base={base} openai_endpoint={openai_endpoint}"
+            ));
+            return Some(HttpProbeResult {
+                base,
+                openai_endpoint,
+                models,
+            });
+        }
+    }
+    None
+}
+
+fn http_still_reachable(base: &str, openai_endpoint: &str) -> bool {
+    try_fetch_models(base, openai_endpoint).is_some()
+}
+
+fn apply_connected_state(
+    app: &AppHandle,
+    endpoint: String,
+    openai_endpoint: String,
+    models: Vec<HerdsmanModelInfo>,
+    via: &str,
+) {
+    herdsman_info(format!("connected via {via}"));
+    log_running_models(&models);
+    emit_connected(app, true);
+    emit_models(app, &models);
+    update_runtime_state(|state| {
+        state.connected = true;
+        state.endpoint = Some(endpoint);
+        state.openai_endpoint = Some(openai_endpoint);
+        state.models = models;
+    });
+}
+
+fn clear_connected_state(app: &AppHandle) {
+    let was_connected = runtime_state()
+        .lock()
+        .map(|state| state.connected)
+        .unwrap_or(false);
+    if !was_connected {
+        return;
+    }
+    herdsman_info("disconnected from herdsman");
+    emit_connected(app, false);
+    emit_models(app, &[]);
+    update_runtime_state(|state| {
+        state.connected = false;
+        state.endpoint = None;
+        state.openai_endpoint = None;
+        state.models.clear();
+    });
+}
+
+fn probe_and_update(app: &AppHandle) -> HerdsmanStatusSnapshot {
+    #[cfg(windows)]
+    {
+        if let Some(status) = read_status_from_pipe() {
+            let client_endpoint = normalize_client_http_url(&status.endpoint);
+            let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
+            let models = fetch_models_from_status(&status);
+            apply_connected_state(
+                app,
+                client_endpoint,
+                client_openai_endpoint,
+                models,
+                "pipe",
+            );
+            return herdsman_get_status();
+        }
+
+        if let Some(result) = probe_http_status() {
+            apply_connected_state(
+                app,
+                normalize_client_http_url(&result.base),
+                result.openai_endpoint,
+                result.models,
+                "http",
+            );
+            return herdsman_get_status();
+        }
+
+        clear_connected_state(app);
+    }
+
+    herdsman_get_status()
 }
 
 fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
@@ -612,18 +805,12 @@ fn poll_models_during_session(
 #[cfg(windows)]
 fn run_connection_session(app: &AppHandle) -> bool {
     let Some(handle) = connect_pipe() else {
-        return true;
+        return false;
     };
-
-    // FlowyClaw: connected as soon as the status pipe is reachable.
-    herdsman_info("connected to status pipe");
-    emit_connected(app, true);
-    update_runtime_state(|state| {
-        state.connected = true;
-    });
 
     let mut endpoint = None;
     let mut openai_endpoint = None;
+    let mut models = Vec::new();
 
     if let Some(response) = read_pipe_message(handle) {
         if let Ok(status) = serde_json::from_str::<HerdsmanStatus>(&response) {
@@ -631,8 +818,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
             let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
             endpoint = Some(client_endpoint.clone());
             openai_endpoint = Some(client_openai_endpoint.clone());
-
-            let models = fetch_models_from_status(&status);
+            models = fetch_models_from_status(&status);
             herdsman_info(format!(
                 "status received: endpoint={}, openai_endpoint={} (client: {}, {})",
                 status.endpoint,
@@ -640,22 +826,20 @@ fn run_connection_session(app: &AppHandle) -> bool {
                 client_endpoint,
                 client_openai_endpoint,
             ));
-            log_running_models(&models);
-            emit_models(app, &models);
-            emit_connected(app, true);
-
-            update_runtime_state(|state| {
-                state.connected = true;
-                state.endpoint = Some(client_endpoint);
-                state.openai_endpoint = Some(client_openai_endpoint);
-                state.models = models;
-            });
         } else {
             herdsman_warn("failed to parse status pipe response");
         }
     } else {
         herdsman_warn("empty status pipe response");
     }
+
+    apply_connected_state(
+        app,
+        endpoint.clone().unwrap_or_default(),
+        openai_endpoint.clone().unwrap_or_default(),
+        models,
+        "pipe",
+    );
 
     let pipe_alive = Arc::new(AtomicBool::new(true));
     if let Some(watch_handle) = duplicate_pipe_handle(handle) {
@@ -674,17 +858,50 @@ fn run_connection_session(app: &AppHandle) -> bool {
 
     close_pipe(handle);
     pipe_alive.store(false, Ordering::SeqCst);
-
-    herdsman_info("disconnected from status pipe");
-    emit_connected(app, false);
-    emit_models(app, &[]);
-    update_runtime_state(|state| {
-        state.connected = false;
-        state.endpoint = None;
-        state.openai_endpoint = None;
-        state.models.clear();
-    });
+    clear_connected_state(app);
     true
+}
+
+#[cfg(windows)]
+fn run_http_session(app: &AppHandle) {
+    let Some(result) = probe_http_status() else {
+        clear_connected_state(app);
+        return;
+    };
+
+    let endpoint = normalize_client_http_url(&result.base);
+    let openai_endpoint = result.openai_endpoint.clone();
+    apply_connected_state(app, endpoint.clone(), openai_endpoint.clone(), result.models, "http");
+
+    while SERVICE_RUNNING.load(Ordering::SeqCst) {
+        sleep_interruptible(MODEL_POLL_INTERVAL);
+        if !SERVICE_RUNNING.load(Ordering::SeqCst) {
+            break;
+        }
+        if pipe_is_available() {
+            herdsman_info("status pipe available; switching from http session");
+            break;
+        }
+        if !http_still_reachable(&endpoint, &openai_endpoint) {
+            herdsman_info("http session unreachable");
+            break;
+        }
+        let models = fetch_models(&endpoint, &openai_endpoint);
+        let previous = runtime_state()
+            .lock()
+            .map(|state| models_signature(&state.models))
+            .unwrap_or_default();
+        let current = models_signature(&models);
+        if current != previous {
+            log_running_models(&models);
+        }
+        emit_models(app, &models);
+        update_runtime_state(|state| {
+            state.models = models;
+        });
+    }
+
+    clear_connected_state(app);
 }
 
 #[cfg(not(windows))]
@@ -696,8 +913,10 @@ fn service_loop(app: AppHandle) {
     while SERVICE_RUNNING.load(Ordering::SeqCst) {
         #[cfg(windows)]
         {
-            if !run_connection_session(&app) {
-                break;
+            if run_connection_session(&app) {
+                // pipe session completed
+            } else {
+                run_http_session(&app);
             }
         }
         #[cfg(not(windows))]
@@ -712,14 +931,7 @@ fn service_loop(app: AppHandle) {
         }
     }
 
-    emit_connected(&app, false);
-    emit_models(&app, &[]);
-    update_runtime_state(|state| {
-        state.connected = false;
-        state.endpoint = None;
-        state.openai_endpoint = None;
-        state.models.clear();
-    });
+    clear_connected_state(&app);
 }
 
 pub fn start_herdsman_service(app: AppHandle) {
@@ -748,8 +960,16 @@ pub fn herdsman_get_status() -> HerdsmanStatusSnapshot {
 #[tauri::command]
 pub fn herdsman_refresh_status(app: tauri::AppHandle) -> HerdsmanStatusSnapshot {
     #[cfg(windows)]
-    run_discovery(&app);
-    herdsman_get_status()
+    {
+        run_discovery(&app);
+        request_immediate_probe();
+        return probe_and_update(&app);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        herdsman_get_status()
+    }
 }
 
 #[cfg(windows)]
@@ -1163,6 +1383,7 @@ pub fn herdsman_start() -> Result<HerdsmanOpenResult, String> {
     let launcher = cached_launcher_or_discover()
         .ok_or_else(|| "Herdsman is not installed".to_string())?;
     spawn_herdsman(&launcher)?;
+    request_immediate_probe();
     Ok(HerdsmanOpenResult {
         opened: "started".into(),
         target: launcher,

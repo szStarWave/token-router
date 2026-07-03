@@ -24,7 +24,8 @@ interface AppState {
   scope: 'session' | 'global'
   uptimeAnchor: { secs: number; at: number } | null
   gatewayAuthKeyPending: string | null
-  savedPoints: number | null
+  sessionSavedPoints: number | null
+  globalSavedPoints: number | null
   activePage: string
   activeNavId: string
   routeTab: string
@@ -44,7 +45,7 @@ interface AppState {
   setScope: (scope: 'session' | 'global') => void
   setUptimeAnchor: (anchor: { secs: number; at: number } | null) => void
   setGatewayAuthKeyPending: (key: string | null) => void
-  setSavedPoints: (n: number | null) => void
+  setSavedPoints: (scope: 'session' | 'global', n: number | null) => void
   setActiveNav: (page: string, navId: string) => void
   setRouteTab: (route: string) => void
   setIsTauriApp: (v: boolean) => void
@@ -66,7 +67,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   scope: 'global',
   uptimeAnchor: null,
   gatewayAuthKeyPending: null,
-  savedPoints: null,
+  sessionSavedPoints: null,
+  globalSavedPoints: null,
   activePage: 'overview',
   activeNavId: 'overview',
   routeTab: 'auto',
@@ -90,7 +92,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setScope: (scope) => set({ scope }),
   setUptimeAnchor: (anchor) => set({ uptimeAnchor: anchor }),
   setGatewayAuthKeyPending: (key) => set({ gatewayAuthKeyPending: key }),
-  setSavedPoints: (n) => set({ savedPoints: n }),
+  setSavedPoints: (scope, n) =>
+    set(scope === 'session' ? { sessionSavedPoints: n } : { globalSavedPoints: n }),
   setActiveNav: (page, navId) => set({ activePage: page, activeNavId: navId }),
   setRouteTab: (route) => set({ routeTab: route }),
   setIsTauriApp: (v) => set({ isTauriApp: v }),

@@ -1,9 +1,10 @@
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 use token_router::embedded;
+use token_router::gateway::AppConfig;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\Token-Router-status";
 const APP_NAME: &str = "Token Router";
@@ -29,6 +30,7 @@ struct ServerStatus<'a> {
     chat_endpoint: &'a str,
     responses_endpoint: &'a str,
     anthropic_endpoint: &'a str,
+    token: &'a str,
     timestamp: String,
 }
 
@@ -48,6 +50,8 @@ struct PipeService {
 }
 
 static SERVICE: OnceLock<Mutex<Option<PipeService>>> = OnceLock::new();
+#[cfg(windows)]
+static ACTIVE_PIPE: AtomicIsize = AtomicIsize::new(0);
 
 fn service_slot() -> &'static Mutex<Option<PipeService>> {
     SERVICE.get_or_init(|| Mutex::new(None))
@@ -83,8 +87,13 @@ pub fn stop() {
         let mut guard = service_slot().lock().expect("status pipe mutex poisoned");
         if let Some(mut service) = guard.take() {
             service.server_running.store(false, Ordering::SeqCst);
+            interrupt_active_pipe();
             if let Some(thread) = service.thread.take() {
-                let _ = thread.join();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(thread.join());
+                });
+                let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
             }
         }
     }
@@ -159,6 +168,13 @@ fn empty_endpoint_urls() -> EndpointUrls {
     }
 }
 
+fn resolve_status_token() -> String {
+    AppConfig::load()
+        .ok()
+        .and_then(|config| config.api_key)
+        .unwrap_or_default()
+}
+
 fn rfc3339_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -173,6 +189,12 @@ pub fn build_status_response(state: &PipeState) -> String {
         build_endpoint_urls(&state.gateway_base)
     } else {
         empty_endpoint_urls()
+    };
+
+    let token = if state.gateway_running {
+        resolve_status_token()
+    } else {
+        String::new()
     };
 
     let status = ServerStatus {
@@ -194,12 +216,53 @@ pub fn build_status_response(state: &PipeState) -> String {
         chat_endpoint: &urls.chat_endpoint,
         responses_endpoint: &urls.responses_endpoint,
         anthropic_endpoint: &urls.anthropic_endpoint,
+        token: &token,
         timestamp: rfc3339_now(),
     };
 
     serde_json::to_string_pretty(&status).unwrap_or_else(|_| {
         r#"{"error":"failed to marshal status"}"#.to_string()
     })
+}
+
+#[cfg(windows)]
+fn store_active_pipe(handle: windows::Win32::Foundation::HANDLE) {
+    ACTIVE_PIPE.store(handle.0 as isize, Ordering::SeqCst);
+}
+
+#[cfg(windows)]
+fn take_active_pipe() -> Option<windows::Win32::Foundation::HANDLE> {
+    let raw = ACTIVE_PIPE.swap(0, Ordering::SeqCst);
+    if raw == 0 {
+        None
+    } else {
+        Some(windows::Win32::Foundation::HANDLE(
+            raw as *mut core::ffi::c_void,
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn interrupt_active_pipe() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Pipes::DisconnectNamedPipe;
+
+    if let Some(handle) = take_active_pipe() {
+        unsafe {
+            let _ = DisconnectNamedPipe(handle);
+            let _ = CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct ActiveConnectionGuard;
+
+#[cfg(windows)]
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        interrupt_active_pipe();
+    }
 }
 
 #[cfg(windows)]
@@ -284,6 +347,9 @@ fn handle_connection(
         return Err("CreateNamedPipeW failed".to_string());
     }
 
+    store_active_pipe(handle);
+    let _connection_guard = ActiveConnectionGuard;
+
     unsafe {
         if let Err(e) = ConnectNamedPipe(handle, None) {
             let code = e.code().0 as u32;
@@ -349,11 +415,6 @@ fn handle_connection(
         }
     }
 
-    unsafe {
-        let _ = DisconnectNamedPipe(handle);
-        let _ = CloseHandle(handle);
-    }
-
     Ok(())
 }
 
@@ -383,6 +444,7 @@ mod tests {
             r#""anthropic_endpoint": "http://127.0.0.1:11080/anthropic""#
         ));
         assert!(json.contains(r#""webui_url": "http://127.0.0.1:11080/setup""#));
+        assert!(json.contains(r#""token""#));
         assert!(json.contains(r#""running": true"#));
     }
 
@@ -395,6 +457,7 @@ mod tests {
         assert!(json.contains(r#""chat_endpoint": """#));
         assert!(json.contains(r#""responses_endpoint": """#));
         assert!(json.contains(r#""anthropic_endpoint": """#));
+        assert!(json.contains(r#""token": """#));
     }
 
     #[test]

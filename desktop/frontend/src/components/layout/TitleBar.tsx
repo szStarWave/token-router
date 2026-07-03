@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { isTauri } from '../../lib/tauri'
+import { isTauri, hideMainWindow } from '../../lib/tauri'
 import { useI18n } from '../../hooks/useI18n'
 import { FeedbackModal } from '../feedback/FeedbackModal'
 
@@ -98,7 +98,7 @@ export function TitleBar({ prefix = '', className = 'window-controls' }: TitleBa
           type="button"
           aria-label={t('window.close')}
           title={t('window.close')}
-          onClick={() => void win.close()}
+          onClick={() => void hideMainWindow()}
         >
           <span className="window-ctrl-icon">
             <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">

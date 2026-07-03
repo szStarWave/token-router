@@ -20,8 +20,8 @@ commands.allow = ["gateway_is_running", "gateway_url", "gateway_status"]
 
 [[permission]]
 identifier = "allow-gateway-read-logs"
-description = "Enables the gateway_read_logs command."
-commands.allow = ["gateway_read_logs"]
+description = "Enables gateway log read commands."
+commands.allow = ["gateway_read_logs", "gateway_read_routing_logs"]
 
 [[permission]]
 identifier = "allow-gateway-open-logs-dir"
@@ -32,6 +32,11 @@ commands.allow = ["gateway_open_logs_dir"]
 identifier = "allow-show-main-window"
 description = "Enables the show_main_window command."
 commands.allow = ["show_main_window"]
+
+[[permission]]
+identifier = "allow-hide-main-window"
+description = "Enables the hide_main_window command."
+commands.allow = ["hide_main_window"]
 
 [[permission]]
 identifier = "allow-herdsman-open"

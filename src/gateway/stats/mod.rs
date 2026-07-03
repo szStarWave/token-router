@@ -19,6 +19,92 @@ use crate::gateway::experience::ExperienceSnapshot;
 use crate::gateway::routing::RouteDecision;
 use crate::config::auth_keys::GatewayAuthKeyView;
 
+#[derive(Debug, Default, Clone)]
+struct PerRequestTokenMax {
+    edge_max_input: u64,
+    edge_max_output: u64,
+    edge_at_max_input_output: u64,
+    edge_at_max_input_total: u64,
+    edge_at_max_output_input: u64,
+    edge_at_max_output_total: u64,
+    cloud_max_input: u64,
+    cloud_max_output: u64,
+    cloud_at_max_input_output: u64,
+    cloud_at_max_input_total: u64,
+    cloud_at_max_output_input: u64,
+    cloud_at_max_output_total: u64,
+}
+
+impl PerRequestTokenMax {
+    fn observe(&mut self, m: &UpstreamCallMetrics) {
+        let prompt = m.prompt_tokens as u64;
+        let completion = m.completion_tokens as u64;
+        match m.tier {
+            "edge" => Self::observe_tier(
+                &mut self.edge_max_input,
+                &mut self.edge_at_max_input_output,
+                &mut self.edge_at_max_input_total,
+                &mut self.edge_max_output,
+                &mut self.edge_at_max_output_input,
+                &mut self.edge_at_max_output_total,
+                prompt,
+                completion,
+            ),
+            "cloud" => Self::observe_tier(
+                &mut self.cloud_max_input,
+                &mut self.cloud_at_max_input_output,
+                &mut self.cloud_at_max_input_total,
+                &mut self.cloud_max_output,
+                &mut self.cloud_at_max_output_input,
+                &mut self.cloud_at_max_output_total,
+                prompt,
+                completion,
+            ),
+            _ => {}
+        }
+    }
+
+    fn observe_tier(
+        max_input: &mut u64,
+        at_max_input_output: &mut u64,
+        at_max_input_total: &mut u64,
+        max_output: &mut u64,
+        at_max_output_input: &mut u64,
+        at_max_output_total: &mut u64,
+        prompt: u64,
+        completion: u64,
+    ) {
+        let total = prompt.saturating_add(completion);
+        if prompt > *max_input {
+            *max_input = prompt;
+            *at_max_input_output = completion;
+            *at_max_input_total = total;
+        }
+        if completion > *max_output {
+            *max_output = completion;
+            *at_max_output_input = prompt;
+            *at_max_output_total = total;
+        }
+    }
+}
+
+fn apply_per_request_max(breakdown: &mut TokenBreakdown, max: &PerRequestTokenMax) {
+    breakdown.edge.max_input = max.edge_max_input;
+    breakdown.edge.max_output = max.edge_max_output;
+    breakdown.edge.max_input_request_output = max.edge_at_max_input_output;
+    breakdown.edge.max_input_request_total = max.edge_at_max_input_total;
+    breakdown.edge.max_output_request_input = max.edge_at_max_output_input;
+    breakdown.edge.max_output_request_total = max.edge_at_max_output_total;
+    breakdown.cloud.max_input = max.cloud_max_input;
+    breakdown.cloud.max_output = max.cloud_max_output;
+    breakdown.cloud.max_input_request_output = max.cloud_at_max_input_output;
+    breakdown.cloud.max_input_request_total = max.cloud_at_max_input_total;
+    breakdown.cloud.max_output_request_input = max.cloud_at_max_output_input;
+    breakdown.cloud.max_output_request_total = max.cloud_at_max_output_total;
+    breakdown.total.max_input = max.edge_max_input.max(max.cloud_max_input);
+    breakdown.total.max_output = max.edge_max_output.max(max.cloud_max_output);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsScope {
     Session,
@@ -55,6 +141,8 @@ pub struct GatewayStats {
     db: StatsDb,
     stats_json_path: PathBuf,
     pending_latency_ms: Mutex<Option<u64>>,
+    session_max_tokens: Mutex<PerRequestTokenMax>,
+    global_max_tokens: Mutex<PerRequestTokenMax>,
     session_started: Instant,
 }
 
@@ -66,6 +154,8 @@ impl GatewayStats {
             db,
             stats_json_path,
             pending_latency_ms: Mutex::new(None),
+            session_max_tokens: Mutex::new(PerRequestTokenMax::default()),
+            global_max_tokens: Mutex::new(PerRequestTokenMax::default()),
             session_started: Instant::now(),
         }))
     }
@@ -108,6 +198,12 @@ impl GatewayStats {
                 Some(metrics.latency_ms);
         }
         self.with_mut(|d| d.record_upstream_metrics(metrics));
+        if let Ok(mut session_max) = self.session_max_tokens.lock() {
+            session_max.observe(metrics);
+        }
+        if let Ok(mut global_max) = self.global_max_tokens.lock() {
+            global_max.observe(metrics);
+        }
         if let Some(ctx) = auth_key {
             self.auth_key_with_mut(ctx, |d| d.record_upstream_metrics(metrics));
         }
@@ -253,6 +349,19 @@ impl GatewayStats {
         snap.latency.p95_ms = p95_ms;
         snap.latency.p99_ms = p99_ms;
         snap.auth_key_stats = self.build_auth_key_stats(scope, config_auth_keys);
+        let per_request_max = match scope {
+            StatsScope::Session => self
+                .session_max_tokens
+                .lock()
+                .map(|m| m.clone())
+                .unwrap_or_default(),
+            StatsScope::Global => self
+                .global_max_tokens
+                .lock()
+                .map(|m| m.clone())
+                .unwrap_or_default(),
+        };
+        apply_per_request_max(&mut snap.token_breakdown, &per_request_max);
         snap
     }
 
@@ -629,6 +738,12 @@ fn tier_token_stats(input: u64, output: u64, cached: u64) -> TierTokenStats {
         input,
         output,
         cached,
+        max_input: 0,
+        max_output: 0,
+        max_input_request_output: 0,
+        max_input_request_total: 0,
+        max_output_request_input: 0,
+        max_output_request_total: 0,
         input_pct: 0.0,
         output_pct: 0.0,
     }
@@ -795,6 +910,12 @@ pub struct TierTokenStats {
     pub input: u64,
     pub output: u64,
     pub cached: u64,
+    pub max_input: u64,
+    pub max_output: u64,
+    pub max_input_request_output: u64,
+    pub max_input_request_total: u64,
+    pub max_output_request_input: u64,
+    pub max_output_request_total: u64,
     pub input_pct: f64,
     pub output_pct: f64,
 }
@@ -927,6 +1048,18 @@ mod tests {
         assert!(snap.latency.avg_ttft_ms > 0.0);
         assert!(snap.latency.edge_tps > 0.0);
         assert!(snap.latency.cloud_tps > 0.0);
+        assert_eq!(snap.token_breakdown.edge.max_input, 100);
+        assert_eq!(snap.token_breakdown.edge.max_output, 50);
+        assert_eq!(snap.token_breakdown.edge.max_input_request_output, 50);
+        assert_eq!(snap.token_breakdown.edge.max_input_request_total, 150);
+        assert_eq!(snap.token_breakdown.edge.max_output_request_input, 100);
+        assert_eq!(snap.token_breakdown.edge.max_output_request_total, 150);
+        assert_eq!(snap.token_breakdown.cloud.max_input, 200);
+        assert_eq!(snap.token_breakdown.cloud.max_output, 100);
+        assert_eq!(snap.token_breakdown.cloud.max_input_request_output, 100);
+        assert_eq!(snap.token_breakdown.cloud.max_input_request_total, 300);
+        assert_eq!(snap.token_breakdown.cloud.max_output_request_input, 200);
+        assert_eq!(snap.token_breakdown.cloud.max_output_request_total, 300);
         assert!(snap.latency.p95_ms >= 200.0);
         assert!(snap.latency.p99_ms >= snap.latency.p95_ms);
         assert_eq!(snap.served.edge, 1);

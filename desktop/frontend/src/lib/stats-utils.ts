@@ -114,6 +114,21 @@ export function tierTokenSummary(tier: Record<string, unknown> | undefined) {
   return { input, output, total: tierTokenTotal(tier) }
 }
 
+export function tierMaxPerRequest(tier: Record<string, unknown> | undefined) {
+  return {
+    input: Number(tier?.max_input) || 0,
+    output: Number(tier?.max_output) || 0,
+    atMaxInput: {
+      total: Number(tier?.max_input_request_total) || 0,
+      output: Number(tier?.max_input_request_output) || 0,
+    },
+    atMaxOutput: {
+      total: Number(tier?.max_output_request_total) || 0,
+      input: Number(tier?.max_output_request_input) || 0,
+    },
+  }
+}
+
 export function classifierPriorEdgePct(clf: { prior?: { edge_ok?: number; cloud_needed?: number } } | null | undefined): number | null {
   const edge = clf?.prior?.edge_ok ?? 0
   const cloud = clf?.prior?.cloud_needed ?? 0

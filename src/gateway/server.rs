@@ -26,6 +26,7 @@ use crate::gateway::session::SessionStore;
 use crate::gateway::stats::GatewayStats;
 use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::routing::{AdaptiveTuner, compute_effective_routing, WordFreqStore};
+use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::upstream::UpstreamClient;
 
 pub struct GatewayRuntime {
@@ -120,6 +121,8 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let wordfreq = WordFreqStore::open(&config.data_dir, config.wordfreq.clone())?;
     wordfreq.spawn_flush_task();
 
+    let routing_logs = RoutingLogStore::open(&config.data_dir)?;
+
     let sessions_for_shutdown = sessions.clone();
     let experience_for_shutdown = experience.clone();
     let classifier_for_shutdown = classifier.clone();
@@ -153,6 +156,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
         edge_load,
         agent_usage,
         wordfreq,
+        routing_logs,
     };
 
     let app = router(state)

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gateway-read-routing-logs"
+description = "Enables the gateway_read_routing_logs command without any pre-configured scope."
+commands.allow = ["gateway_read_routing_logs"]
+
+[[permission]]
+identifier = "deny-gateway-read-routing-logs"
+description = "Denies the gateway_read_routing_logs command without any pre-configured scope."
+commands.deny = ["gateway_read_routing_logs"]

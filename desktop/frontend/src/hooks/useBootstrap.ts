@@ -13,7 +13,6 @@ import { isTauri, gatewayStatus, gatewayStart } from '../lib/tauri'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
 import type { GatewayStatus, StatsSnapshot } from '../types/gateway'
-import { queryKeys } from '../queries/keys'
 import { syncLocalUsageFromStats } from './useLocalUsageSync'
 import { usePrefs } from './usePrefs'
 import { useTheme } from './useI18n'
@@ -52,10 +51,9 @@ export function useBootstrap(enabled: boolean) {
       const scope = useAppStore.getState().scope
       setStats(scope === 'global' ? globalStats : sessionStats)
       setGlobalStats(globalStats)
-      void syncLocalUsageFromStats(globalStats, {
-        scope: 'global',
-        modelId: setup?.edge?.model?.trim() || undefined,
-      })
+      const modelId = setup?.edge?.model?.trim() || undefined
+      void syncLocalUsageFromStats(sessionStats, { scope: 'session', modelId })
+      void syncLocalUsageFromStats(globalStats, { scope: 'global', modelId })
       void qc.invalidateQueries({ queryKey: ['gateway'] })
       showToast('toast.connected')
     } catch {
@@ -137,48 +135,12 @@ export function useBootstrap(enabled: boolean) {
       await afterBoot()
     }
     void run()
-
-    const poll = setInterval(async () => {
-      if (!useAppStore.getState().connected) return
-      try {
-        const status = await apiFetch<GatewayStatus>('/v1/admin/status')
-        setStatus(status)
-        setUptimeAnchor({ secs: status.uptime_secs, at: Date.now() })
-        const scope = useAppStore.getState().scope
-        const stats = await apiFetch<StatsSnapshot>(`/v1/admin/stats?scope=${scope}`)
-        setStats(stats)
-        if (scope === 'session') {
-          const globalStats = await apiFetch<StatsSnapshot>('/v1/admin/stats?scope=global')
-          setGlobalStats(globalStats)
-          void syncLocalUsageFromStats(globalStats, {
-            scope: 'global',
-            modelId: useSetupStore.getState().setup?.edge?.model?.trim() || undefined,
-          })
-        } else {
-          setGlobalStats(stats)
-          void syncLocalUsageFromStats(stats, {
-            scope: 'global',
-            modelId: useSetupStore.getState().setup?.edge?.model?.trim() || undefined,
-          })
-        }
-        void qc.invalidateQueries({ queryKey: queryKeys.gatewayStatus })
-      } catch (e) {
-        console.warn('status poll', e)
-      }
-    }, 10_000)
-
-    return () => clearInterval(poll)
   }, [
     enabled,
     afterBoot,
     applyTheme,
     setGatewayBase,
-    setGlobalStats,
     setIsTauriApp,
-    setStats,
-    setStatus,
-    setUptimeAnchor,
     tryConnect,
-    qc,
   ])
 }

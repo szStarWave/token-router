@@ -6,6 +6,7 @@ import { OnboardingProvider } from '../onboarding/OnboardingProvider'
 import { useI18n } from '../../hooks/useI18n'
 import { useEdgeSetupSync } from '../../hooks/useEdgeSetupSync'
 import { useAutoRefreshBalance } from '../../hooks/useAutoRefreshBalance'
+import { useStatsSync } from '../../hooks/useStatsSync'
 
 const PAGE_TITLE_KEYS: Record<string, string> = {
   overview: 'page.overview',
@@ -23,6 +24,7 @@ export function AppLayout() {
   const { t } = useI18n()
   useEdgeSetupSync()
   useAutoRefreshBalance()
+  useStatsSync()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
   const pageTitle = (() => {

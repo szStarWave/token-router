@@ -66,7 +66,8 @@ pub fn seed_heuristic_priors(data: &mut ClassifierData) {
     seed_feature_prior(data, "ctx_bucket:mid", 0.55, 0.45);
     seed_feature_prior(data, "ctx_bucket:low", 0.80, 0.20);
     seed_feature_prior(data, "flag:multimodal", 0.45, 0.55);
-    seed_feature_prior(data, "flag:risky_tool_tier1", 0.15, 0.85);
+    seed_feature_prior(data, "flag:risky_tool_hard", 0.10, 0.90);
+    seed_feature_prior(data, "flag:risky_tool_soft", 0.35, 0.65);
     seed_feature_prior(data, "flag:assistant_failed_recent", 0.10, 0.90);
 
     data.meta.total_updates = 0;

@@ -1951,4 +1951,203 @@ mod tests {
             decision.reason_codes
         );
     }
+
+    fn pending_tool_request(tool_name: &str, args: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("do it".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: None,
+                    content_parts: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".into(),
+                        call_type: "function".into(),
+                        function: FunctionCallPayload {
+                            name: tool_name.into(),
+                            arguments: args.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: tool_name.into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    fn pending_tool_with_result_request(tool_name: &str, args: &str) -> ChatCompletionRequest {
+        let mut req = pending_tool_request(tool_name, args);
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: Some("ok".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: Some("call_1".into()),
+        });
+        req
+    }
+
+    #[test]
+    fn exec_delete_on_tool_arg_fill_routes_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_request("exec", r#"{"command":"rm -rf /tmp/x"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_RISKY_TOOL:exec"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn exec_git_status_on_tool_arg_fill_no_risky() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_request("exec", r#"{"command":"git status"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("GATE_RISKY_TOOL") || c.starts_with("RISKY_TOOL_SOFT")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn write_on_tool_arg_fill_no_risky() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_request("write", r#"{"path":"a.txt","content":"hi"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("GATE_RISKY_TOOL") || c.starts_with("RISKY_TOOL_SOFT")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn browser_on_tool_arg_fill_does_not_hard_gate() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_request("browser", r#"{"query":"gold price"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_RISKY_TOOL"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "RISKY_TOOL_SOFT:browser"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn exec_after_delete_no_hard_gate() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_with_result_request("exec", r#"{"command":"rm -rf /tmp/x"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_RISKY_TOOL"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn read_on_tool_arg_fill_no_risky_signal() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &pending_tool_request("read", r#"{"path":"README.md"}"#),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("GATE_RISKY_TOOL") || c.starts_with("RISKY_TOOL_SOFT")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
 }

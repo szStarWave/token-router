@@ -50,7 +50,10 @@ pub fn check_hard_gates(
         });
     }
 
-    if signals.risky_tool_tier1 {
+    if signals.risky_tool_hard
+        && matches!(step_kind, StepKind::ToolSelect | StepKind::ToolArgFill)
+        && !signals.last_role_tool
+    {
         return Some(HardGate {
             code: "GATE_RISKY_TOOL",
         });
@@ -106,7 +109,11 @@ mod tests {
             cron_background: false,
             tools_enabled: false,
             had_tool_roundtrip: false,
-            risky_tool_tier1: false,
+            risky_tool_hard: false,
+            risky_tool_soft: false,
+            risky_tool_names: Vec::new(),
+            risky_tool_hard_names: Vec::new(),
+            risky_tool_soft_names: Vec::new(),
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
@@ -195,5 +202,41 @@ mod tests {
             "GATE_OPENCLAW_COMPACT"
         );
         assert!(check_hard_gates(&signals, StepKind::DirectChat, 55_000, true).is_none());
+    }
+
+    #[test]
+    fn delete_move_hard_gate_on_tool_arg_fill() {
+        let mut signals = empty_signals();
+        signals.risky_tool_hard = true;
+        signals.risky_tool_hard_names = vec!["exec".into()];
+        assert_eq!(
+            check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true)
+                .unwrap()
+                .code,
+            "GATE_RISKY_TOOL"
+        );
+    }
+
+    #[test]
+    fn delete_move_skipped_after_tool_result() {
+        let mut signals = empty_signals();
+        signals.risky_tool_hard = true;
+        signals.last_role_tool = true;
+        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
+    }
+
+    #[test]
+    fn write_create_does_not_trigger_hard_gate() {
+        let mut signals = empty_signals();
+        signals.risky_tool_soft = false;
+        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
+    }
+
+    #[test]
+    fn browser_soft_does_not_trigger_hard_gate() {
+        let mut signals = empty_signals();
+        signals.risky_tool_soft = true;
+        signals.risky_tool_soft_names = vec!["browser".into()];
+        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
     }
 }

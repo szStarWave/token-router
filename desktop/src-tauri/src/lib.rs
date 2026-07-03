@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -92,6 +95,24 @@ fn gateway_read_logs(
 }
 
 #[tauri::command]
+fn gateway_read_routing_logs(
+    after_id: Option<i64>,
+    before_id: Option<i64>,
+    limit: Option<u32>,
+) -> Result<token_router::gateway::routing_log::RoutingLogsResponse, String> {
+    let config = token_router::gateway::AppConfig::load().map_err(|e| e.to_string())?;
+    let store = token_router::gateway::routing_log::RoutingLogStore::open(&config.data_dir)
+        .map_err(|e| e.to_string())?;
+    store
+        .query(token_router::gateway::routing_log::RoutingLogsQuery {
+            after_id,
+            before_id,
+            limit,
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn gateway_open_logs_dir() -> Result<(), String> {
     let config = token_router::gateway::AppConfig::load().map_err(|e| e.to_string())?;
     let logs_dir = config.data_dir.join("logs");
@@ -106,6 +127,36 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
         window.set_focus().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Hide to tray without blocking the WebView2 message loop (Windows deadlock otherwise).
+#[tauri::command]
+async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn(async move {
+        if let Some(window) = app.get_webview_window("main") {
+            if let Err(err) = window.hide() {
+                eprintln!("hide_main_window: {err}");
+            }
+        }
+    });
+    Ok(())
+}
+
+fn defer_show_main_window(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+}
+
+fn defer_quit(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        app.exit(0);
+    });
 }
 
 fn wechat_callback_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -139,6 +190,34 @@ fn emit_wechat_callback<R: tauri::Runtime>(webview: &tauri::Webview<R>, url: &st
     let _ = app.emit_to(webview.label(), "wechat-login-callback", url);
 }
 
+fn stop_embedded_with_timeout(timeout: Duration) {
+    if !embedded::is_running() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(embedded::stop());
+    });
+    if rx.recv_timeout(timeout).is_err() {
+        eprintln!(
+            "embedded gateway stop timed out after {}s",
+            timeout.as_secs()
+        );
+    }
+}
+
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+fn shutdown_background_services() {
+    if SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    ota::stop_background_checks();
+    herdsman::stop_herdsman_service();
+    status_pipe::stop();
+    stop_embedded_with_timeout(Duration::from_secs(5));
+}
+
 fn load_app_icon(app: &tauri::App) -> Image<'static> {
     app.default_window_icon()
         .map(|img| img.clone().to_owned())
@@ -161,16 +240,10 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .tooltip("Token Router")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                defer_show_main_window(app);
             }
             "quit" => {
-                if embedded::is_running() {
-                    let _ = embedded::stop();
-                }
-                app.exit(0);
+                defer_quit(app);
             }
             _ => {}
         })
@@ -182,10 +255,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                defer_show_main_window(&app);
             }
         })
         .build(app)?;
@@ -214,8 +284,10 @@ pub fn run() {
             gateway_url,
             gateway_status,
             gateway_read_logs,
+            gateway_read_routing_logs,
             gateway_open_logs_dir,
             show_main_window,
+            hide_main_window,
             herdsman::herdsman_open_or_install,
             herdsman::herdsman_get_status,
             herdsman::herdsman_refresh_status,
@@ -256,20 +328,22 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide to tray instead of quitting (quit via tray menu).
-                let _ = window.hide();
+                // Do not call hide() synchronously here — WebView2 deadlocks on Windows.
                 api.prevent_close();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                });
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             if let RunEvent::Exit = event {
-                ota::stop_background_checks();
-                herdsman::stop_herdsman_service();
-                status_pipe::stop();
-                if embedded::is_running() {
-                    let _ = embedded::stop();
-                }
+                // Do not block the Windows message loop during teardown.
+                std::thread::spawn(shutdown_background_services);
             }
         });
 }

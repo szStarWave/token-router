@@ -16,6 +16,7 @@ use crate::gateway::api::responses::responses_handler;
 use crate::gateway::api::setup;
 use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::config_manager::ConfigManager;
+use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::server::GatewayRuntime;
 use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::experience::ExperienceStore;
@@ -39,6 +40,7 @@ pub struct AppState {
     pub edge_load: Arc<EdgeInferenceTracker>,
     pub agent_usage: Arc<AgentCloudUsageStore>,
     pub wordfreq: Arc<WordFreqStore>,
+    pub routing_logs: Arc<RoutingLogStore>,
 }
 
 impl AppState {
@@ -65,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/stats/timeline", get(admin::stats_timeline))
         .route("/v1/admin/logs", get(admin::logs))
+        .route("/v1/admin/routing-logs", get(admin::routing_logs))
         .route("/v1/admin/setup", get(setup::setup_get).post(setup::setup_post))
         .route("/v1/admin/setup/init", post(setup::setup_init))
         .route("/v1/admin/auth-keys", get(auth_keys::auth_keys_list).post(auth_keys::auth_keys_create))

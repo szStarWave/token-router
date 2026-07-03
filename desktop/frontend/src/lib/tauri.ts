@@ -20,6 +20,10 @@ export function invokeErrorMessage(err: unknown): string {
   return String(err)
 }
 
+export async function hideMainWindow() {
+  return tauriInvoke<void>('hide_main_window')
+}
+
 export async function gatewayStatus() {
   return tauriInvoke<GatewayStatusPayload>('gateway_status')
 }
@@ -48,6 +52,29 @@ export async function gatewayReadLogs(
   }>('gateway_read_logs', {
     offset: offset ?? null,
     before_offset: beforeOffset ?? null,
+  })
+}
+
+export async function gatewayReadRoutingLogs(
+  afterId?: number | null,
+  beforeId?: number | null,
+  limit?: number,
+) {
+  return tauriInvoke<{
+    entries: Array<{
+      id: number
+      timestamp: string
+      route: string
+      step_kind: string
+      model: string
+      user_preview: string
+      reason_codes: string[]
+    }>
+    has_older: boolean
+  }>('gateway_read_routing_logs', {
+    after_id: afterId ?? null,
+    before_id: beforeId ?? null,
+    limit: limit ?? null,
   })
 }
 

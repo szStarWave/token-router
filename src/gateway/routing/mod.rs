@@ -14,6 +14,7 @@ mod wordfreq_store;
 mod reject_intent;
 mod signals;
 mod step_kind;
+mod tool_risk;
 mod upstream_availability;
 mod work;
 
@@ -28,7 +29,7 @@ mod tests;
 pub use decision::{RouteDecision, RouteTier, RoutingMode, decide};
 pub use policy::Profile;
 pub use difficulty::DifficultyScore;
-pub use signals::{RequestSignals, SignalExtractor};
+pub use signals::{last_message_text, RequestSignals, SignalExtractor};
 pub use step_kind::StepKind;
 pub use upstream_availability::require_any_upstream;
 pub use wordfreq_store::{LexicalLearnContext, WordFreqSettings, WordFreqStore};

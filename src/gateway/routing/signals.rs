@@ -26,7 +26,13 @@ pub struct RequestSignals {
     pub cron_background: bool,
     pub tools_enabled: bool,
     pub had_tool_roundtrip: bool,
-    pub risky_tool_tier1: bool,
+    /// Pending tool calls delete/move files — hard gate to cloud.
+    pub risky_tool_hard: bool,
+    /// Pending tool calls include soft-tier tools (browser/message/sessions_spawn).
+    pub risky_tool_soft: bool,
+    pub risky_tool_names: Vec<String>,
+    pub risky_tool_hard_names: Vec<String>,
+    pub risky_tool_soft_names: Vec<String>,
     pub intent_hard: bool,
     pub intent_easy: bool,
     pub intent_plan: bool,
@@ -242,16 +248,10 @@ impl SignalExtractor<'_> {
                 &req.messages[req.messages.len() - 1],
             ));
 
-        let risky_tool_tier1 = prev_assistant
+        let tool_risk = prev_assistant
             .and_then(|m| m.tool_calls.as_ref())
-            .is_some_and(|calls| {
-                calls.iter().any(|c| {
-                    matches!(
-                        c.function.name.as_str(),
-                        "exec" | "write" | "edit" | "browser" | "sessions_spawn" | "message"
-                    )
-                })
-            });
+            .map(|calls| super::tool_risk::assess_tool_calls(calls))
+            .unwrap_or_default();
 
         RequestSignals {
             tok_system,
@@ -276,7 +276,11 @@ impl SignalExtractor<'_> {
             cron_background,
             tools_enabled: !req.tools.is_empty(),
             had_tool_roundtrip: had_tool,
-            risky_tool_tier1,
+            risky_tool_hard: tool_risk.risky_tool_hard,
+            risky_tool_soft: tool_risk.risky_tool_soft,
+            risky_tool_names: tool_risk.risky_tool_names,
+            risky_tool_hard_names: tool_risk.risky_tool_hard_names,
+            risky_tool_soft_names: tool_risk.risky_tool_soft_names,
             intent_hard,
             intent_easy,
             intent_plan,
@@ -362,6 +366,22 @@ pub fn last_user_message_text(req: &ChatCompletionRequest) -> String {
         .rev()
         .find(|m| m.role == Role::User)
         .map(message_text)
+        .unwrap_or_default()
+}
+
+/// Latest message text in the transcript (any role), for routing log preview.
+pub fn last_message_text(req: &ChatCompletionRequest) -> String {
+    req.messages
+        .iter()
+        .rev()
+        .find_map(|m| {
+            let text = message_text(m);
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        })
         .unwrap_or_default()
 }
 
@@ -491,7 +511,11 @@ mod tests {
             cron_background: false,
             tools_enabled: true,
             had_tool_roundtrip: false,
-            risky_tool_tier1: false,
+            risky_tool_hard: false,
+            risky_tool_soft: false,
+            risky_tool_names: Vec::new(),
+            risky_tool_hard_names: Vec::new(),
+            risky_tool_soft_names: Vec::new(),
             intent_hard: false,
             intent_easy: true,
             intent_plan: false,
@@ -616,7 +640,11 @@ mod tests {
             cron_background: false,
             tools_enabled: true,
             had_tool_roundtrip: false,
-            risky_tool_tier1: false,
+            risky_tool_hard: false,
+            risky_tool_soft: false,
+            risky_tool_names: Vec::new(),
+            risky_tool_hard_names: Vec::new(),
+            risky_tool_soft_names: Vec::new(),
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
@@ -657,7 +685,11 @@ mod tests {
             cron_background: false,
             tools_enabled: true,
             had_tool_roundtrip: false,
-            risky_tool_tier1: false,
+            risky_tool_hard: false,
+            risky_tool_soft: false,
+            risky_tool_names: Vec::new(),
+            risky_tool_hard_names: Vec::new(),
+            risky_tool_soft_names: Vec::new(),
             intent_hard: false,
             intent_easy: true,
             intent_plan: false,
@@ -803,6 +835,40 @@ mod tests {
         };
         let signals = extractor.extract(&req, None);
         assert!(signals.memory_compact_hint);
+    }
+
+    #[test]
+    fn last_message_text_uses_latest_non_empty_any_role() {
+        let req = ChatCompletionRequest {
+            model: "test".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("Sender (untrusted metadata): ...".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("Here is the summary you asked for.".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            last_message_text(&req),
+            "Here is the summary you asked for."
+        );
+        assert_eq!(
+            last_user_message_text(&req),
+            "Sender (untrusted metadata): ..."
+        );
     }
 }
 

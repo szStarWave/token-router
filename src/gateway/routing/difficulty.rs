@@ -37,6 +37,7 @@ impl DifficultyScore {
         linear += tool_error_streak_bias(signals.consecutive_tool_error_streak);
         linear += tool_loop_bias(signals.tool_invocations_since_last_user);
         linear += lexical_rarity_bias(signals.rare_lexical, signals.special_lexical);
+        linear += risky_tool_soft_bias(signals, step_kind);
 
         let d = sigmoid(linear);
         Self(d.clamp(0.0, 1.0))
@@ -67,6 +68,15 @@ pub fn lexical_rarity_bias(rare: bool, special: bool) -> f32 {
         (false, true) => 0.12,
         (true, false) => 0.08,
         (false, false) => 0.0,
+    }
+}
+
+/// Soft-tier tools (exec/write/edit/browser/etc.) add difficulty bias.
+pub fn risky_tool_soft_bias(signals: &RequestSignals, _step_kind: StepKind) -> f32 {
+    if signals.risky_tool_soft {
+        0.22
+    } else {
+        0.0
     }
 }
 
@@ -103,7 +113,11 @@ mod tests {
             cron_background: false,
             tools_enabled: false,
             had_tool_roundtrip: false,
-            risky_tool_tier1: false,
+            risky_tool_hard: false,
+            risky_tool_soft: false,
+            risky_tool_names: Vec::new(),
+            risky_tool_hard_names: Vec::new(),
+            risky_tool_soft_names: Vec::new(),
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
@@ -192,6 +206,25 @@ mod tests {
         let d_loop = DifficultyScore::compute(&loop_only, step, ctx_max, 0.0);
         let d_user = DifficultyScore::compute(&user_heavy, step, ctx_max, 0.0);
         assert!(d_user.0 > d_loop.0);
+    }
+
+    #[test]
+    fn risky_tool_soft_bias_values() {
+        let mut soft = base_signals(0);
+        soft.risky_tool_soft = true;
+        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolArgFill), 0.22);
+        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolResultDigest), 0.22);
+    }
+
+    #[test]
+    fn risky_tool_soft_increases_difficulty() {
+        let ctx_max = 65536;
+        let step = StepKind::ToolArgFill;
+        let mut soft = base_signals(0);
+        soft.risky_tool_soft = true;
+        let base = DifficultyScore::compute(&base_signals(0), step, ctx_max, 0.0);
+        let d_soft = DifficultyScore::compute(&soft, step, ctx_max, 0.0);
+        assert!(d_soft.0 > base.0);
     }
 
     #[test]

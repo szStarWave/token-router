@@ -1,11 +1,13 @@
 import { reportLocalModelUsage } from '../lib/flowy/api'
 import { getAuthToken } from '../stores/authStore'
 import { useAppStore } from '../stores/appStore'
-import type { StatsSnapshot } from '../types/gateway'
+import type { StatsScope, StatsSnapshot } from '../types/gateway'
 import { getEdgeModelValue } from '../lib/edge-upstream'
 
-let lastReportKey: string | null = null
-let syncInFlight: { key: string; promise: Promise<number | null> } | null = null
+type UsageScope = StatsScope | 'session' | 'global'
+
+const lastReportKey: Partial<Record<UsageScope, string>> = {}
+const syncInFlight: Partial<Record<UsageScope, { key: string; promise: Promise<number | null> }>> = {}
 
 function normalizeUsageNumber(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.floor(value))
@@ -16,9 +18,17 @@ function normalizeUsageNumber(value: unknown): number {
   return 0
 }
 
-function extractSavedPoints(data: Record<string, unknown> | null | undefined): number {
+function extractSavedPoints(
+  data: Record<string, unknown> | null | undefined,
+  scope: UsageScope,
+): number {
   if (!data || typeof data !== 'object') return 0
-  return normalizeUsageNumber(data.savedPoints ?? data.saved_points ?? data.totalSavedPoints)
+  const scoped =
+    scope === 'session'
+      ? data.sessionSavedPoints ?? data.session_saved_points
+      : data.globalSavedPoints ?? data.global_saved_points
+  if (scoped != null) return normalizeUsageNumber(scoped)
+  return normalizeUsageNumber(data.savedPoints ?? data.saved_points)
 }
 
 function edgeTokensFromStats(stats: StatsSnapshot | null | undefined) {
@@ -34,33 +44,39 @@ function hasUsage(tokens: { promptTokens: number; completionTokens: number; cach
   return tokens.promptTokens > 0 || tokens.completionTokens > 0 || tokens.cacheTokens > 0
 }
 
+function savedPointsForScope(scope: UsageScope): number | null {
+  const state = useAppStore.getState()
+  return scope === 'session' ? state.sessionSavedPoints : state.globalSavedPoints
+}
+
 export async function syncLocalUsageFromStats(
   stats: StatsSnapshot | null | undefined,
-  options: { scope?: string; modelId?: string } = {},
+  options: { scope?: UsageScope; modelId?: string } = {},
 ): Promise<number | null> {
-  const token = getAuthToken()
+  const scope = options.scope || 'global'
   const setSavedPoints = useAppStore.getState().setSavedPoints
+  const token = getAuthToken()
   if (!token) {
-    setSavedPoints(null)
-    lastReportKey = null
+    setSavedPoints(scope, null)
+    delete lastReportKey[scope]
     return null
   }
 
   const usage = edgeTokensFromStats(stats)
   if (!hasUsage(usage)) {
-    return useAppStore.getState().savedPoints
+    return savedPointsForScope(scope)
   }
 
-  const scope = options.scope || 'global'
   const modelId = (options.modelId || getEdgeModelValue() || '').trim()
   const idempotencyKey = `token-router:${scope}:${usage.promptTokens}:${usage.completionTokens}:${usage.cacheTokens}`
-  const currentSaved = useAppStore.getState().savedPoints
-  if (idempotencyKey === lastReportKey && currentSaved != null) {
+  const currentSaved = savedPointsForScope(scope)
+  if (idempotencyKey === lastReportKey[scope] && currentSaved != null) {
     return currentSaved
   }
 
-  if (syncInFlight?.key === idempotencyKey) {
-    return syncInFlight.promise
+  const inFlight = syncInFlight[scope]
+  if (inFlight?.key === idempotencyKey) {
+    return inFlight.promise
   }
 
   const promise = (async () => {
@@ -78,24 +94,28 @@ export async function syncLocalUsageFromStats(
         },
         token,
       )
-      lastReportKey = idempotencyKey
-      const saved = extractSavedPoints(result as Record<string, unknown>)
-      setSavedPoints(saved)
+      lastReportKey[scope] = idempotencyKey
+      const saved = extractSavedPoints(result as Record<string, unknown>, scope)
+      setSavedPoints(scope, saved)
       return saved
     } catch (e) {
-      console.warn('[local-usage-sync]', e)
-      return useAppStore.getState().savedPoints
+      console.warn('[local-usage-sync]', scope, e)
+      return savedPointsForScope(scope)
     } finally {
-      if (syncInFlight?.key === idempotencyKey) syncInFlight = null
+      if (syncInFlight[scope]?.key === idempotencyKey) delete syncInFlight[scope]
     }
   })()
 
-  syncInFlight = { key: idempotencyKey, promise }
+  syncInFlight[scope] = { key: idempotencyKey, promise }
   return promise
 }
 
 export function resetLocalUsageSync() {
-  lastReportKey = null
-  syncInFlight = null
-  useAppStore.getState().setSavedPoints(null)
+  delete lastReportKey.session
+  delete lastReportKey.global
+  delete syncInFlight.session
+  delete syncInFlight.global
+  const setSavedPoints = useAppStore.getState().setSavedPoints
+  setSavedPoints('session', null)
+  setSavedPoints('global', null)
 }

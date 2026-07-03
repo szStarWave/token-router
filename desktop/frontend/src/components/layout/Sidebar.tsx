@@ -50,7 +50,7 @@ export function Sidebar() {
   const status = useAppStore((s) => s.status)
   const stats = useAppStore((s) => s.stats)
   const globalStats = useAppStore((s) => s.globalStats)
-  const savedPoints = useAppStore((s) => s.savedPoints)
+  const globalSavedPoints = useAppStore((s) => s.globalSavedPoints)
   const liveUptime = useLiveUptime()
   const userInfo = useAuthStore((s) => s.userInfo)
   const setup = useSetupStore((s) => s.setup)
@@ -219,7 +219,7 @@ export function Sidebar() {
                 <NavCardIcon navId={card.navId} />
               </span>
               <div className="nav-card-expand">
-                <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={savedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} autoLabel={autoLabel} t={t} locale={locale} />
+                <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={globalSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} autoLabel={autoLabel} t={t} locale={locale} />
                 <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} t={t} locale={locale} />
               </div>
             </Link>

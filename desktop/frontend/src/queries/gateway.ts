@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, postSetup, refreshGatewayStatusAfterRestart } from '../lib/gateway'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
-import type { LogsResponse, GatewayStatus, StatsSnapshot, StatsTimelineResponse, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
+import type { LogsResponse, RoutingLogsResponse, GatewayStatus, StatsSnapshot, StatsTimelineResponse, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
 import { toastErrorKey } from '../lib/toast-i18n'
 import { queryKeys } from './keys'
 import { normalizeClientGatewayBase } from '../lib/gateway'
-import { gatewayReadLogs, gatewayRestart, gatewayStart, gatewayStop, isTauri } from '../lib/tauri'
+import { gatewayReadLogs, gatewayReadRoutingLogs, gatewayRestart, gatewayStart, gatewayStop, invokeErrorMessage, isTauri } from '../lib/tauri'
+import { parseRoutingLogLines } from '../lib/routing-log'
 
 export function useGatewayStatusQuery(enabled = true) {
   const connected = useAppStore((s) => s.connected)
@@ -78,6 +79,73 @@ export function useGatewayLogsQuery(offset: number | null, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.gatewayLogs(offset),
     queryFn: () => fetchGatewayLogs({ offset }),
+    enabled: connected && enabled,
+    refetchInterval: enabled && connected ? 1000 : false,
+  })
+}
+
+async function fetchRoutingLogsFromFile(): Promise<RoutingLogsResponse> {
+  const data = await fetchGatewayLogs({ offset: null })
+  let nextId = 0
+  const lines = data.lines.map((line) => ({
+    id: nextId++,
+    msg: line.text ?? line.msg ?? '',
+  }))
+  const entries = parseRoutingLogLines(lines).map((entry) => ({
+    id: entry.id,
+    timestamp: entry.timestamp,
+    route: entry.route,
+    step_kind: entry.stepKind,
+    model: entry.model ?? 'auto',
+    user_preview: entry.userPreview,
+    reason_codes: entry.reasonCodes,
+  }))
+  return { entries, has_older: false }
+}
+
+export async function fetchRoutingLogs(params: {
+  afterId?: number | null
+  beforeId?: number | null
+  limit?: number
+}): Promise<RoutingLogsResponse> {
+  const errors: string[] = []
+
+  if (isTauri()) {
+    try {
+      return await gatewayReadRoutingLogs(params.afterId, params.beforeId, params.limit)
+    } catch (e) {
+      errors.push(invokeErrorMessage(e))
+    }
+  }
+
+  try {
+    const q = new URLSearchParams()
+    if (params.beforeId != null) q.set('before_id', String(params.beforeId))
+    else if (params.afterId != null) q.set('after_id', String(params.afterId))
+    if (params.limit != null) q.set('limit', String(params.limit))
+    const qs = q.toString()
+    return await apiFetch<RoutingLogsResponse>(`/v1/admin/routing-logs${qs ? `?${qs}` : ''}`)
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e))
+  }
+
+  if (params.afterId == null && params.beforeId == null) {
+    try {
+      return await fetchRoutingLogsFromFile()
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const detail = errors.filter(Boolean).join('; ') || 'routing logs unavailable'
+  throw new Error(detail)
+}
+
+export function useRoutingLogsQuery(afterId: number | null, enabled: boolean) {
+  const connected = useAppStore((s) => s.connected)
+  return useQuery({
+    queryKey: queryKeys.gatewayRoutingLogs(afterId),
+    queryFn: () => fetchRoutingLogs({ afterId }),
     enabled: connected && enabled,
     refetchInterval: enabled && connected ? 1000 : false,
   })

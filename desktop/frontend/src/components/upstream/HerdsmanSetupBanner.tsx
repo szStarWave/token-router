@@ -5,8 +5,10 @@ import { openExternalUrl } from '../../lib/open-external'
 import { useEdgeStore } from '../../stores/edgeStore'
 
 const START_TIMEOUT_MS = 60_000
+const REFRESH_SHOW_DELAY_MS = 8_000
 const INSTALL_POLL_INTERVAL_MS = 15_000
 const INSTALL_POLL_TIMEOUT_MS = 10 * 60_000
+const REFRESH_TIMEOUT_MS = 15_000
 
 function HerdsmanIcon() {
   return (
@@ -44,8 +46,12 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
   const { t } = useI18n()
   const herdsmanConnected = useEdgeStore((s) => s.herdsmanConnected)
   const [starting, setStarting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [showRefresh, setShowRefresh] = useState(false)
   const [detectingInstall, setDetectingInstall] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refreshShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -55,6 +61,20 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
       timeoutRef.current = null
+    }
+  }, [])
+
+  const clearRefreshTimeout = useCallback(() => {
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current)
+      refreshTimeoutRef.current = null
+    }
+  }, [])
+
+  const clearRefreshShowTimer = useCallback(() => {
+    if (refreshShowTimerRef.current) {
+      clearTimeout(refreshShowTimerRef.current)
+      refreshShowTimerRef.current = null
     }
   }, [])
 
@@ -72,9 +92,25 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
   useEffect(() => {
     if (starting && herdsmanConnected) {
       setStarting(false)
+      setShowRefresh(false)
       clearStartTimeout()
+      clearRefreshShowTimer()
     }
-  }, [starting, herdsmanConnected, clearStartTimeout])
+  }, [starting, herdsmanConnected, clearStartTimeout, clearRefreshShowTimer])
+
+  useEffect(() => {
+    if (herdsmanConnected) {
+      setShowRefresh(false)
+      clearRefreshShowTimer()
+    }
+  }, [herdsmanConnected, clearRefreshShowTimer])
+
+  useEffect(() => {
+    if (refreshing && herdsmanConnected) {
+      setRefreshing(false)
+      clearRefreshTimeout()
+    }
+  }, [refreshing, herdsmanConnected, clearRefreshTimeout])
 
   useEffect(() => {
     if (detectingInstall && installed) {
@@ -85,19 +121,50 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
 
   useEffect(() => () => {
     clearStartTimeout()
+    clearRefreshShowTimer()
+    clearRefreshTimeout()
     clearInstallPoll()
-  }, [clearStartTimeout, clearInstallPoll])
+  }, [clearStartTimeout, clearRefreshShowTimer, clearRefreshTimeout, clearInstallPoll])
+
+  const scheduleRefreshButton = useCallback(() => {
+    clearRefreshShowTimer()
+    setShowRefresh(false)
+    refreshShowTimerRef.current = setTimeout(() => {
+      setShowRefresh(true)
+    }, REFRESH_SHOW_DELAY_MS)
+  }, [clearRefreshShowTimer])
 
   const handleStart = async () => {
     if (starting) return
     setStarting(true)
+    scheduleRefreshButton()
     clearStartTimeout()
-    timeoutRef.current = setTimeout(() => setStarting(false), START_TIMEOUT_MS)
+    timeoutRef.current = setTimeout(() => {
+      setStarting(false)
+      if (!useEdgeStore.getState().herdsmanConnected) {
+        setShowRefresh(true)
+      }
+    }, START_TIMEOUT_MS)
     try {
       await startHerdsman()
     } catch {
       setStarting(false)
+      setShowRefresh(false)
       clearStartTimeout()
+      clearRefreshShowTimer()
+    }
+  }
+
+  const handleRefresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    clearRefreshTimeout()
+    refreshTimeoutRef.current = setTimeout(() => setRefreshing(false), REFRESH_TIMEOUT_MS)
+    try {
+      await refreshHerdsmanStatus()
+    } catch {
+      setRefreshing(false)
+      clearRefreshTimeout()
     }
   }
 
@@ -125,16 +192,30 @@ export function HerdsmanSetupBanner({ installed }: { installed: boolean }) {
         <p className="edge-herdsman-banner-hint">{hint}</p>
         <div className="edge-herdsman-actions">
           {installed ? (
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={starting}
-              aria-busy={starting}
-              onClick={() => void handleStart()}
-            >
-              {starting ? <BtnSpinner /> : <PlayIcon />}
-              {starting ? t('herdsman.starting') : t('herdsman.start')}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={starting}
+                aria-busy={starting}
+                onClick={() => void handleStart()}
+              >
+                {starting ? <BtnSpinner /> : <PlayIcon />}
+                {starting ? t('herdsman.starting') : t('herdsman.start')}
+              </button>
+              {showRefresh ? (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={refreshing}
+                  aria-busy={refreshing}
+                  onClick={() => void handleRefresh()}
+                >
+                  {refreshing ? <BtnSpinner /> : null}
+                  {refreshing ? t('herdsman.refreshingConnection') : t('herdsman.refreshConnection')}
+                </button>
+              ) : null}
+            </>
           ) : (
             <button
               type="button"
