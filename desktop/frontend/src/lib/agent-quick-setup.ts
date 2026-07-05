@@ -1,7 +1,3 @@
-import {
-  createGatewayAuthKey,
-  fetchGatewayAuthKeys,
-} from './gateway-auth-keys'
 import { generateGatewayAuthKey } from './gateway'
 import {
   checkAgentDeployed,
@@ -12,6 +8,7 @@ import {
   configureHermesFlashAgent,
   configureOpenClawAgent,
   invokeErrorMessage,
+  readDefaultAuthKey,
   readInboundAuthKey as readInboundAuthKeyCmd,
   type AgentKind,
 } from './tauri'
@@ -52,34 +49,16 @@ function isAuthEnabled(): boolean {
   return !!useSetupStore.getState().setup?.gateway?.auth_enabled
 }
 
-async function readInboundAuthKey(preferredName?: string): Promise<string | null> {
-  try {
-    const key = await readInboundAuthKeyCmd(preferredName ?? null)
-    return key?.trim() || null
-  } catch {
-    return null
-  }
-}
-
-export async function resolveApiKey(agentName: AgentKind): Promise<string | null> {
+export async function resolveApiKey(_agentName: AgentKind): Promise<string | null> {
   if (!isAuthEnabled()) {
     return generateGatewayAuthKey()
   }
 
-  const preferred = await readInboundAuthKey(agentName)
-  if (preferred) return preferred
+  const defaultKey = await readDefaultAuthKey()
+  if (defaultKey?.trim()) return defaultKey.trim()
 
-  const anyKey = await readInboundAuthKey()
-  if (anyKey) return anyKey
-
-  const keys = await fetchGatewayAuthKeys()
-  if (keys.length > 0) {
-    const fallback = await readInboundAuthKey(keys[0].name)
-    if (fallback) return fallback
-  }
-
-  const created = await createGatewayAuthKey(agentName)
-  return created.full_key
+  const fallback = await readInboundAuthKeyCmd()
+  return fallback?.trim() || null
 }
 
 export async function getAgentDeployStatus(agent: AgentKind): Promise<boolean | null> {

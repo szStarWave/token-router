@@ -139,28 +139,37 @@ export function GatewayAuthKeysPanel() {
             ) : (
               rows.map((row) => (
                 <tr key={row.id}>
-                  <td>{row.name}</td>
+                  <td>
+                    {row.name}
+                    {row.is_default && (
+                      <span className="tag bordered neutral" title={t('authKeys.builtinHint')}>
+                        {t('authKeys.builtin')}
+                      </span>
+                    )}
+                  </td>
                   <td><code>{row.key_preview}</code></td>
                   <td>{formatAuthKeyCreatedAt(row.created_at, locale)}</td>
                   <td className="table-actions-col">
-                    <div className="table-actions">
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        disabled={busy}
-                        onClick={() => openEdit(row.id, row.name)}
-                      >
-                        {t('action.edit')}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        disabled={busy}
-                        onClick={() => deleteMutation.mutate(row.id)}
-                      >
-                        {t('action.delete')}
-                      </button>
-                    </div>
+                    {!row.is_default && (
+                      <div className="table-actions">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          disabled={busy}
+                          onClick={() => openEdit(row.id, row.name)}
+                        >
+                          {t('action.edit')}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          disabled={busy}
+                          onClick={() => deleteMutation.mutate(row.id)}
+                        >
+                          {t('action.delete')}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))

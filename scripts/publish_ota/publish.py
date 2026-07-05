@@ -8,8 +8,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
+import time
 
 from modelscope.hub.api import HubApi
 
@@ -17,6 +19,8 @@ from modelscope.hub.api import HubApi
 OWNER_NAME = "flowy2025"
 DATASET_NAME = "token_router_versions"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+UPLOAD_RETRIES = 3
+UPLOAD_RETRY_DELAY_SECS = 5
 
 
 def parse_args():
@@ -40,6 +44,11 @@ def parse_args():
         default=str(default_release_notes),
         help="Release notes JSON path",
     )
+    parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Upload latest.json only (recover when setup was already published)",
+    )
     return parser.parse_args()
 
 
@@ -55,16 +64,36 @@ def get_repo_id() -> str:
     return f"{OWNER_NAME}/{DATASET_NAME}"
 
 
-def upload_file(api: HubApi, local_path: str, path_in_repo: str, repo_id: str) -> None:
-    print(f"正在上传: {local_path} -> {path_in_repo}")
-    api.upload_file(
-        path_or_fileobj=local_path,
-        path_in_repo=path_in_repo,
-        repo_id=repo_id,
-        repo_type="dataset",
-        commit_message=f"upload: {path_in_repo}",
-    )
-    print(f"上传成功: {path_in_repo}")
+def upload_folder_with_retry(
+    api: HubApi,
+    folder_path: str,
+    path_in_repo: str,
+    repo_id: str,
+    commit_message: str,
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, UPLOAD_RETRIES + 1):
+        try:
+            print(
+                f"正在上传目录: {folder_path} -> {path_in_repo} "
+                f"(attempt {attempt}/{UPLOAD_RETRIES})"
+            )
+            api.upload_folder(
+                repo_id=repo_id,
+                folder_path=folder_path,
+                path_in_repo=path_in_repo,
+                repo_type="dataset",
+                commit_message=commit_message,
+            )
+            print(f"上传成功: {path_in_repo}")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"上传失败 (attempt {attempt}/{UPLOAD_RETRIES}): {exc}", file=sys.stderr)
+            if attempt < UPLOAD_RETRIES:
+                print(f"等待 {UPLOAD_RETRY_DELAY_SECS}s 后重试...", file=sys.stderr)
+                time.sleep(UPLOAD_RETRY_DELAY_SECS)
+    raise last_error if last_error is not None else RuntimeError("upload failed")
 
 
 def release_notes_lookup_keys(version: str) -> list[str]:
@@ -125,22 +154,26 @@ def load_release_notes(path: str, version: str) -> dict:
     return normalized
 
 
-def create_latest_json(version: str, setup_filename: str, release_notes: dict) -> str:
+def write_latest_json(
+    staging_dir: Path,
+    version: str,
+    setup_filename: str,
+    release_notes: dict,
+) -> None:
     latest_json = {
         "version": version if version.startswith("v") else f"v{version}",
         "file": setup_filename,
         "release_notes": release_notes,
     }
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="latest_")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+    latest_path = staging_dir / "latest.json"
+    with latest_path.open("w", encoding="utf-8") as f:
         json.dump(latest_json, f, indent=4, ensure_ascii=False)
-    return path
 
 
 def main() -> None:
     args = parse_args()
 
-    if not os.path.exists(args.setup_path):
+    if not args.manifest_only and not os.path.exists(args.setup_path):
         print(f"错误: setup 安装包不存在: {args.setup_path}", file=sys.stderr)
         sys.exit(1)
 
@@ -153,6 +186,7 @@ def main() -> None:
     print(f"SetupPath: {args.setup_path}")
     print(f"SetupFilename: {setup_filename}")
     print(f"ReleaseNotesFile: {args.release_notes_file}")
+    print(f"ManifestOnly: {args.manifest_only}")
 
     try:
         release_notes = load_release_notes(args.release_notes_file, args.version)
@@ -167,17 +201,29 @@ def main() -> None:
     print(f"目标数据集: {repo_id}")
 
     account_dir = "with_account" if args.enable_account_system == "true" else "without_account"
-
-    path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}/{setup_filename}"
-    upload_file(api, args.setup_path, path_in_repo, repo_id)
-
+    path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}"
     manifest_version = args.version if args.version.startswith("v") else f"v{args.version}"
-    latest_json_path = create_latest_json(manifest_version, setup_filename, release_notes)
+
+    staging_dir = Path(tempfile.mkdtemp(prefix="token_router_ota_publish_"))
     try:
-        latest_path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}/latest.json"
-        upload_file(api, latest_json_path, latest_path_in_repo, repo_id)
+        write_latest_json(staging_dir, manifest_version, setup_filename, release_notes)
+        if not args.manifest_only:
+            shutil.copy2(args.setup_path, staging_dir / setup_filename)
+
+        commit_message = (
+            f"upload manifest: {manifest_version}"
+            if args.manifest_only
+            else f"upload OTA: {manifest_version}"
+        )
+        upload_folder_with_retry(
+            api,
+            str(staging_dir),
+            path_in_repo,
+            repo_id,
+            commit_message,
+        )
     finally:
-        os.unlink(latest_json_path)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     print("OTA 发布完成!")
 

@@ -195,6 +195,22 @@
       "en-US": [
         "Version update"
       ]
+    },
+    "0.12.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.12.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
     }
   }
 }

@@ -58,6 +58,8 @@ pub struct AppConfig {
     pub auth_key_by_value: HashMap<String, ResolvedAuthKey>,
     /// First inbound key for legacy callers.
     pub api_key: Option<String>,
+    /// Built-in default inbound key (always present after init).
+    pub default_api_key: Option<String>,
     pub admin_token: Option<String>,
     pub config_path: PathBuf,
     pub experience: ExperienceSettings,
@@ -114,7 +116,8 @@ impl AppConfig {
         } else {
             HashMap::new()
         };
-        let api_key = inbound_api_keys.first().cloned();
+        let default_api_key = crate::config::auth_keys::default_gateway_auth_key_value(&file.gateway);
+        let api_key = default_api_key.clone();
 
         Ok(Self {
             listen_addr: file.gateway.listen,
@@ -153,6 +156,7 @@ impl AppConfig {
             inbound_api_keys,
             auth_key_by_value,
             api_key,
+            default_api_key,
             admin_token: file.gateway.admin_token.filter(|s| !s.is_empty()),
             config_path,
             experience: ExperienceSettings {

@@ -1134,12 +1134,14 @@ mod tests {
                 name: "Key A".into(),
                 key_preview: "ka-****".into(),
                 created_at: 0,
+                is_default: false,
             },
             GatewayAuthKeyView {
                 id: "id-key-b".into(),
                 name: "Key B".into(),
                 key_preview: "kb-****".into(),
                 created_at: 0,
+                is_default: false,
             },
         ];
         let snap = stats.snapshot(

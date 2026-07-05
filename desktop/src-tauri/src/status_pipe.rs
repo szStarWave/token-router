@@ -171,7 +171,7 @@ fn empty_endpoint_urls() -> EndpointUrls {
 fn resolve_status_token() -> String {
     AppConfig::load()
         .ok()
-        .and_then(|config| config.api_key)
+        .and_then(|config| config.default_api_key)
         .unwrap_or_default()
 }
 

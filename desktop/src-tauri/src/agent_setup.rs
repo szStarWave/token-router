@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use token_router::config::auth_keys::collect_inbound_api_keys;
+use token_router::config::auth_keys::{collect_inbound_api_keys, default_gateway_auth_key_value};
 use token_router::config::{ensure_initialized, load_from_path};
 use token_router::gateway::AppConfig;
 
@@ -162,16 +162,22 @@ fn generate_placeholder_key() -> String {
     format!("placeholder-{}", uuid::Uuid::new_v4().simple())
 }
 
-fn resolve_api_key(auth_enabled: bool, override_key: Option<String>, inbound_keys: &[String]) -> String {
+fn resolve_api_key(auth_enabled: bool, override_key: Option<String>, default_key: Option<String>) -> String {
     if let Some(key) = override_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         return key;
     }
     if auth_enabled {
-        if let Some(key) = inbound_keys.first() {
-            return key.clone();
+        if let Some(key) = default_key {
+            return key;
         }
     }
     generate_placeholder_key()
+}
+
+pub fn read_default_auth_key() -> Result<Option<String>, String> {
+    let (path, _) = ensure_initialized(None).map_err(|e| e.to_string())?;
+    let (file, _) = load_from_path(&path).map_err(|e| e.to_string())?;
+    Ok(default_gateway_auth_key_value(&file.gateway))
 }
 
 pub fn read_inbound_auth_key(preferred_name: Option<String>) -> Result<Option<String>, String> {
@@ -442,20 +448,20 @@ fn merge_codex_config(existing: &mut toml::Value, base_url: &str, model_id: &str
         .insert(CODEX_PROVIDER.to_string(), toml::Value::Table(provider));
 }
 
-fn load_gateway_auth_state() -> Result<(bool, Vec<String>), String> {
+fn load_gateway_auth_state() -> Result<(bool, Option<String>), String> {
     let (path, _) = ensure_initialized(None).map_err(|e| e.to_string())?;
     let (file, _) = load_from_path(&path).map_err(|e| e.to_string())?;
-    let keys = collect_inbound_api_keys(&file.gateway);
-    Ok((file.gateway.auth_enabled, keys))
+    let default_key = default_gateway_auth_key_value(&file.gateway);
+    Ok((file.gateway.auth_enabled, default_key))
 }
 
 fn configure_hermes_for(agent: &str, api_key: Option<String>) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
-    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized(agent)?;
     let base_url = gateway_agent_base_url(&config);
     let model = resolved_model(&config);
-    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_yaml_file(&path)?;
     merge_hermes_config(&mut doc, &base_url, &model, &key);
@@ -471,11 +477,11 @@ fn configure_hermes_for(agent: &str, api_key: Option<String>) -> Result<AgentSet
 
 fn configure_openclaw(api_key: Option<String>) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
-    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("openclaw")?;
     let base_url = gateway_agent_base_url(&config);
     let model = DEFAULT_MODEL.to_string();
-    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_json_file(&path)?;
     merge_openclaw_config(&mut doc, &base_url, &model, &key);
@@ -499,11 +505,11 @@ fn configure_hermes_flash(api_key: Option<String>) -> Result<AgentSetupResult, S
 
 fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
-    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("claude-code")?;
     let base_url = gateway_anthropic_base_url(&config);
     let model = resolved_model(&config);
-    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = if path.is_file() {
         read_json_file(&path)?
@@ -526,11 +532,11 @@ fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, St
 
 fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
-    let (auth_enabled, inbound_keys) = load_gateway_auth_state()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("codex")?;
     let base_url = gateway_agent_base_url(&config);
     let model = resolved_model(&config);
-    let key = resolve_api_key(auth_enabled, api_key, &inbound_keys);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_toml_file(&path)?;
     merge_codex_config(&mut doc, &base_url, &model, &key);
@@ -686,6 +692,11 @@ pub fn configure_codex_agent(api_key: Option<String>) -> Result<AgentSetupResult
 #[tauri::command]
 pub fn read_inbound_auth_key_cmd(preferred_name: Option<String>) -> Result<Option<String>, String> {
     read_inbound_auth_key(preferred_name)
+}
+
+#[tauri::command]
+pub fn read_default_auth_key_cmd() -> Result<Option<String>, String> {
+    read_default_auth_key()
 }
 
 #[cfg(test)]

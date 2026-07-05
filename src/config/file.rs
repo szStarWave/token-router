@@ -125,6 +125,8 @@ pub struct GatewayApiKeyEntry {
     pub name: String,
     pub key: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -430,6 +432,9 @@ pub fn load_from_path(path: &Path) -> anyhow::Result<(ConfigFile, PathBuf)> {
         anyhow::anyhow!("invalid TOML in {}: {e}", path.display())
     })?;
     crate::config::auth_keys::migrate_legacy_gateway_api_key(&mut cfg);
+    if crate::config::auth_keys::ensure_default_gateway_auth_key(&mut cfg) {
+        save(path, &cfg)?;
+    }
     if !raw.contains("auth_enabled")
         && !crate::config::auth_keys::collect_inbound_api_keys(&cfg.gateway).is_empty()
     {

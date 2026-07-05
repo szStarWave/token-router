@@ -5,6 +5,7 @@ export interface GatewayAuthKeyView {
   name: string
   key_preview: string
   created_at: number
+  is_default?: boolean
 }
 
 export interface CreateGatewayAuthKeyResponse {

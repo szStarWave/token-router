@@ -176,6 +176,10 @@ export async function readInboundAuthKey(preferredName?: string | null) {
   })
 }
 
+export async function readDefaultAuthKey() {
+  return tauriInvoke<string | null>('read_default_auth_key_cmd')
+}
+
 export interface OtaEventPayload {
   message: string
   data?: Record<string, unknown> | null

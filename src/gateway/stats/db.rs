@@ -1515,6 +1515,7 @@ mod tests {
             name: "Active".into(),
             key_preview: "act-****".into(),
             created_at: 0,
+            is_default: false,
         };
         let snaps =
             build_auth_key_stats_snapshots(&db, StatsScope::Global, &[active]).unwrap();
