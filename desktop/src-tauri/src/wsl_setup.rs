@@ -94,16 +94,38 @@ fn run_wsl(distro: &str, script: &str) -> Result<String, String> {
     Ok(decode_wsl_output(&output.stdout).trim().to_string())
 }
 
+fn wsl_distro_unc_names(distro: &str) -> Vec<String> {
+    let mut names = vec![distro.to_string()];
+    for root in [r"\\wsl.localhost", r"\\wsl$"] {
+        let base = PathBuf::from(root);
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.eq_ignore_ascii_case(distro)
+                    && names
+                        .iter()
+                        .all(|existing| !existing.eq_ignore_ascii_case(&name))
+                {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
 fn unix_path_to_unc(distro: &str, unix_path: &str) -> Result<PathBuf, String> {
     let unix_path = unix_path.trim();
     if unix_path.is_empty() || !unix_path.starts_with('/') {
         return Err(format!("invalid WSL path: {unix_path}"));
     }
     let rel = unix_path.trim_start_matches('/').replace('/', "\\");
-    for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
-        let path = PathBuf::from(format!("{prefix}{distro}\\{rel}"));
-        if path.is_dir() {
-            return Ok(path);
+    for distro_name in wsl_distro_unc_names(distro) {
+        for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+            let path = PathBuf::from(format!("{prefix}{distro_name}\\{rel}"));
+            if path.is_dir() {
+                return Ok(path);
+            }
         }
     }
     Err(format!(
@@ -111,18 +133,75 @@ fn unix_path_to_unc(distro: &str, unix_path: &str) -> Result<PathBuf, String> {
     ))
 }
 
-fn wsl_home_unc(distro: &str) -> Result<PathBuf, String> {
-    let home = run_wsl(
-        distro,
-        "if [ -n \"$HOME\" ]; then printf '%s' \"$HOME\"; \
-else H=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f6); \
-[ -n \"$H\" ] && printf '%s' \"$H\"; fi",
-    )?;
-    if home.is_empty() {
-        return Err(format!("could not resolve home directory for WSL distro `{distro}`"));
+fn home_unix_candidates(user: &str, home_unix: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if !home_unix.is_empty() {
+        candidates.push(home_unix.to_string());
     }
-    unix_path_to_unc(distro, &home)
+    if !user.is_empty() {
+        if user == "root" {
+            candidates.push("/root".to_string());
+        }
+        candidates.push(format!("/home/{user}"));
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
+
+fn wsl_default_user(distro: &str) -> Option<String> {
+    run_wsl(distro, "id -un 2>/dev/null || whoami 2>/dev/null")
+        .ok()
+        .map(|user| user.trim().to_string())
+        .filter(|user| !user.is_empty())
+}
+
+fn discover_home_unc_on_windows(distro: &str, user: &str) -> Option<PathBuf> {
+    if user.is_empty() {
+        return None;
+    }
+    for distro_name in wsl_distro_unc_names(distro) {
+        for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+            let candidate = PathBuf::from(format!("{prefix}{distro_name}\\home\\{user}"));
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_home_unc(distro: &str, user: &str, home_unix: &str) -> Result<PathBuf, String> {
+    let user = if user.is_empty() {
+        wsl_default_user(distro).unwrap_or_default()
+    } else {
+        user.to_string()
+    };
+    if user.is_empty() {
+        return Err(format!("could not resolve WSL user for distro `{distro}`"));
+    }
+
+    for candidate in home_unix_candidates(&user, home_unix) {
+        if let Ok(path) = unix_path_to_unc(distro, &candidate) {
+            return Ok(path);
+        }
+    }
+    if let Some(path) = discover_home_unc_on_windows(distro, &user) {
+        return Ok(path);
+    }
+    Err(format!(
+        "could not resolve home directory for WSL distro `{distro}` (user `{user}`)"
+    ))
+}
+
+const DISTRO_PROBE_SCRIPT: &str = "U=$(id -un 2>/dev/null || whoami 2>/dev/null); \
+H=${HOME:-}; \
+if [ -z \"$H\" ] && [ -n \"$U\" ]; then H=$(getent passwd \"$U\" 2>/dev/null | cut -d: -f6); fi; \
+if [ -z \"$H\" ] && [ \"$U\" = root ]; then H=/root; fi; \
+if [ -z \"$H\" ] && [ -n \"$U\" ]; then H=/home/$U; fi; \
+GW=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}'); \
+NS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf); \
+printf '%s|%s|%s|%s' \"$U\" \"$H\" \"$GW\" \"$NS\"";
 
 fn parse_wsl_verbose_line(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim().trim_start_matches('*').trim();
@@ -159,56 +238,61 @@ fn list_running_wsl_distros() -> Result<Vec<String>, String> {
 }
 
 fn wsl_available() -> bool {
-    match run_wsl_raw(&["--status"]) {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
+    list_running_wsl_distros().is_ok()
 }
 
-fn wsl_can_reach(distro: &str, host: &str, port: u16) -> bool {
-    let tcp_script = format!(
-        "command -v bash >/dev/null 2>&1 && bash -c \"exec 3<>/dev/tcp/{host}/{port}\" 2>/dev/null"
-    );
-    if run_wsl(distro, &tcp_script).is_ok() {
-        return true;
-    }
-    let http_script = format!(
-        "H='{host}'; P={port}; \
-if command -v curl >/dev/null 2>&1; then curl -sf --max-time 3 \"http://$H:$P/health\" >/dev/null 2>&1; \
-elif command -v wget >/dev/null 2>&1; then wget -q --timeout=3 -O /dev/null \"http://$H:$P/health\" 2>/dev/null; \
-else exit 1; fi"
-    );
-    run_wsl(distro, &http_script).is_ok()
+struct WslDistroContext {
+    home_unc: PathBuf,
+    gateway_candidates: Vec<String>,
 }
 
-fn wsl_host_ip(distro: &str) -> Result<String, String> {
-    let ip = run_wsl(
-        distro,
-        "awk '/^nameserver/{print $2; exit}' /etc/resolv.conf",
-    )?;
-    if ip.is_empty() {
-        return Err("failed to resolve Windows host IP from WSL".to_string());
-    }
-    Ok(ip)
-}
+fn fetch_distro_context(distro: &str) -> Result<WslDistroContext, String> {
+    let (user, home_unix, gateway, nameserver) = match run_wsl(distro, DISTRO_PROBE_SCRIPT) {
+        Ok(out) => {
+            let mut parts = out.split('|');
+            (
+                parts.next().unwrap_or("").trim().to_string(),
+                parts.next().unwrap_or("").trim().to_string(),
+                parts.next().unwrap_or("").trim().to_string(),
+                parts.next().unwrap_or("").trim().to_string(),
+            )
+        }
+        Err(_) => (String::new(), String::new(), String::new(), String::new()),
+    };
 
-fn wsl_gateway_host_candidates(distro: &str) -> Vec<String> {
-    let mut hosts = vec!["127.0.0.1".to_string(), "localhost".to_string()];
-    if let Ok(ip) = run_wsl(
-        distro,
-        "ip -4 route show default 2>/dev/null | awk '{print $3; exit}'",
-    ) {
-        let ip = ip.trim().to_string();
-        if !ip.is_empty() && !hosts.iter().any(|h| h == &ip) {
-            hosts.push(ip);
+    let home_unc = resolve_home_unc(distro, &user, &home_unix)?;
+
+    let mut gateway_candidates = vec!["127.0.0.1".to_string(), "localhost".to_string()];
+    for ip in [gateway.as_str(), nameserver.as_str()] {
+        if !ip.is_empty() && gateway_candidates.iter().all(|h| h != ip) {
+            gateway_candidates.push(ip.to_string());
         }
     }
-    if let Ok(ip) = wsl_host_ip(distro) {
-        if !hosts.iter().any(|h| h == &ip) {
-            hosts.push(ip);
-        }
+
+    Ok(WslDistroContext {
+        home_unc,
+        gateway_candidates,
+    })
+}
+
+fn probe_reachable_gateway_host(distro: &str, port: u16, hosts: &[String]) -> Option<String> {
+    if hosts.is_empty() {
+        return None;
     }
-    hosts
+    let host_args = hosts
+        .iter()
+        .map(|host| format!("'{}'", host.replace('\'', "")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "P={port}; for H in {host_args}; do \
+if command -v timeout >/dev/null 2>&1; then \
+timeout 1 bash -c \"exec 3<>/dev/tcp/$H/$P\" 2>/dev/null && {{ printf '%s' \"$H\"; exit 0; }}; \
+elif bash -c \"exec 3<>/dev/tcp/$H/$P\" 2>/dev/null; then \
+printf '%s' \"$H\"; exit 0; \
+fi; done; exit 1"
+    );
+    run_wsl(distro, &script).ok().filter(|host| !host.is_empty())
 }
 
 struct WslGatewayHost {
@@ -217,16 +301,13 @@ struct WslGatewayHost {
     warning: Option<String>,
 }
 
-fn pick_wsl_gateway_host(distro: &str, port: u16) -> WslGatewayHost {
-    let candidates = wsl_gateway_host_candidates(distro);
-    for host in &candidates {
-        if wsl_can_reach(distro, host, port) {
-            return WslGatewayHost {
-                host: host.clone(),
-                verified: true,
-                warning: None,
-            };
-        }
+fn pick_wsl_gateway_host(distro: &str, port: u16, candidates: &[String]) -> WslGatewayHost {
+    if let Some(host) = probe_reachable_gateway_host(distro, port, candidates) {
+        return WslGatewayHost {
+            host,
+            verified: true,
+            warning: None,
+        };
     }
     let fallback = candidates
         .first()
@@ -240,6 +321,17 @@ fn pick_wsl_gateway_host(distro: &str, port: u16) -> WslGatewayHost {
         host: fallback,
         verified: false,
         warning: Some(warning),
+    }
+}
+
+fn gateway_host_for_detect(candidates: &[String]) -> WslGatewayHost {
+    WslGatewayHost {
+        host: candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+        verified: false,
+        warning: None,
     }
 }
 
@@ -260,9 +352,13 @@ fn detect_agents(home: &Path) -> Vec<WslAgentDetectItem> {
             initialized: false,
             config_path: String::new(),
         });
-        let deployed = agent_deploy_state_at(home, agent)
-            .map(|s| s.deployed)
-            .unwrap_or(false);
+        let deployed = if init.initialized {
+            agent_deploy_state_at(home, agent)
+                .map(|s| s.deployed)
+                .unwrap_or(false)
+        } else {
+            false
+        };
         items.push(WslAgentDetectItem {
             agent: (*agent).to_string(),
             initialized: init.initialized,
@@ -274,16 +370,11 @@ fn detect_agents(home: &Path) -> Vec<WslAgentDetectItem> {
 }
 
 fn detect_distro(distro: &str, port: u16) -> WslDistroInfo {
-    let home_result = wsl_home_unc(distro);
-    let home_path = home_result.as_ref().ok().map(|p| p.display().to_string());
-    let agents = home_result
-        .as_ref()
-        .map(|home| detect_agents(home))
-        .unwrap_or_default();
-
-    match home_result {
-        Ok(_) => {
-            let gateway = pick_wsl_gateway_host(distro, port);
+    match fetch_distro_context(distro) {
+        Ok(context) => {
+            let home_path = Some(context.home_unc.display().to_string());
+            let agents = detect_agents(&context.home_unc);
+            let gateway = gateway_host_for_detect(&context.gateway_candidates);
             let (_base, v1, anthropic) = gateway_urls_from_host(&gateway.host, port);
             WslDistroInfo {
                 name: distro.to_string(),
@@ -303,7 +394,7 @@ fn detect_distro(distro: &str, port: u16) -> WslDistroInfo {
             gateway_v1_base: None,
             gateway_anthropic_base: None,
             gateway_verified: false,
-            agents,
+            agents: Vec::new(),
             message: Some(message),
         },
     }
@@ -354,11 +445,12 @@ fn ensure_running_distro(distro: &str) -> Result<(), String> {
 
 fn configure_wsl_agents(distro: &str, api_key: Option<String>) -> Result<WslConfigureResult, String> {
     ensure_running_distro(distro)?;
-    let home = wsl_home_unc(distro)?;
+    let context = fetch_distro_context(distro)?;
+    let home = context.home_unc;
 
     let config = AppConfig::load().map_err(|e| e.to_string())?;
     let port = listen_port_from_addr(&config.listen_addr);
-    let gateway = pick_wsl_gateway_host(distro, port);
+    let gateway = pick_wsl_gateway_host(distro, port, &context.gateway_candidates);
     let (_base, openai_v1_base, anthropic_base) = gateway_urls_from_host(&gateway.host, port);
 
     let mut configured = Vec::new();
@@ -397,20 +489,24 @@ fn configure_wsl_agents(distro: &str, api_key: Option<String>) -> Result<WslConf
 }
 
 #[tauri::command]
-pub fn wsl_detect_environment() -> Result<WslDetectResult, String> {
-    detect_wsl_environment()
+pub async fn wsl_detect_environment() -> Result<WslDetectResult, String> {
+    tauri::async_runtime::spawn_blocking(detect_wsl_environment)
+        .await
+        .map_err(|err| format!("WSL detection task failed: {err}"))?
 }
 
 #[tauri::command]
-pub fn wsl_configure_agents(
+pub async fn wsl_configure_agents(
     distro: String,
     api_key: Option<String>,
 ) -> Result<WslConfigureResult, String> {
-    let distro = distro.trim();
+    let distro = distro.trim().to_string();
     if distro.is_empty() {
         return Err("WSL distro is required".to_string());
     }
-    configure_wsl_agents(distro, api_key)
+    tauri::async_runtime::spawn_blocking(move || configure_wsl_agents(&distro, api_key))
+        .await
+        .map_err(|err| format!("WSL configure task failed: {err}"))?
 }
 
 #[cfg(test)]
@@ -437,6 +533,18 @@ mod tests {
             parse_wsl_verbose_line("* Ubuntu-22.04           Running         2").unwrap();
         assert_eq!(name, "Ubuntu-22.04");
         assert_eq!(state, "Running");
+    }
+
+    #[test]
+    fn home_unix_candidates_falls_back_to_home_user() {
+        let candidates = home_unix_candidates("devuser", "");
+        assert!(candidates.contains(&"/home/devuser".to_string()));
+    }
+
+    #[test]
+    fn home_unix_candidates_prefers_explicit_home() {
+        let candidates = home_unix_candidates("devuser", "/home/custom");
+        assert_eq!(candidates.first().map(String::as_str), Some("/home/custom"));
     }
 
     #[test]

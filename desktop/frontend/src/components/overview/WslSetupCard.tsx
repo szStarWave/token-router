@@ -5,6 +5,7 @@ import { isWindowsTauri } from '../../lib/tauri'
 import {
   configureWslAgents,
   detectWslEnvironment,
+  getWslDetectSessionCache,
   wslSetupErrorMessage,
   type WslDetectResult,
   type WslDistroInfo,
@@ -57,7 +58,7 @@ export function WslSetupCard() {
       ? t('overview.gatewayRequired')
       : null
 
-  const refreshDetect = useCallback(async () => {
+  const refreshDetect = useCallback(async (force = false) => {
     if (!desktopApp) {
       setDetect(null)
       setSelectedDistro(null)
@@ -65,15 +66,16 @@ export function WslSetupCard() {
     }
     setDetecting(true)
     try {
-      const result = await detectWslEnvironment()
+      const result = await detectWslEnvironment({ force })
       setDetect(result)
       setSelectedDistro((current) => pickDefaultDistro(result.runningDistros, current))
     } catch (err) {
-      setDetect({
+      const failed: WslDetectResult = {
         available: false,
         runningDistros: [],
         message: wslSetupErrorMessage(err),
-      })
+      }
+      setDetect(failed)
       setSelectedDistro(null)
     } finally {
       setDetecting(false)
@@ -81,8 +83,14 @@ export function WslSetupCard() {
   }, [desktopApp])
 
   useEffect(() => {
-    void refreshDetect()
-  }, [refreshDetect, connected])
+    if (!desktopApp) return
+
+    const cached = getWslDetectSessionCache()
+    if (cached) {
+      setDetect(cached)
+      setSelectedDistro((current) => pickDefaultDistro(cached.runningDistros, current))
+    }
+  }, [desktopApp])
 
   const initializedAgents = useMemo(
     () => activeDistro?.agents.filter((a) => a.initialized) ?? [],
@@ -91,7 +99,8 @@ export function WslSetupCard() {
 
   const statusLine = useMemo(() => {
     if (detecting) return t('overview.wslDetecting')
-    if (!detect?.available) return detect?.message || t('overview.wslUnavailable')
+    if (!detect) return t('overview.wslDetectPrompt')
+    if (!detect.available) return detect.message || t('overview.wslUnavailable')
     if (!runningDistros.length) return detect.message || t('overview.wslNoRunningDistros')
     if (runningDistros.length > 1 && !selectedDistro) {
       return t('overview.wslMultipleRunning', { n: runningDistros.length })
@@ -100,7 +109,7 @@ export function WslSetupCard() {
     const parts = [t('overview.wslDistro', { name: activeDistro.name })]
     if (activeDistro.gatewayHost) {
       parts.push(t('overview.wslGatewayHost', { host: activeDistro.gatewayHost }))
-      if (activeDistro.gatewayVerified === false) {
+      if (activeDistro.gatewayVerified === false && activeDistro.message) {
         parts.push(t('overview.wslGatewayUnverified'))
       }
     } else if (activeDistro.message) {
@@ -119,7 +128,7 @@ export function WslSetupCard() {
     try {
       const result = await configureWslAgents(distro)
       setSelectedDistro(distro)
-      await refreshDetect()
+      await refreshDetect(true)
       showToast('toast.wslConfigured', true, {
         n: result.configured.length,
         distro: result.distro,
@@ -221,7 +230,7 @@ export function WslSetupCard() {
             className="btn btn-ghost"
             id="btn-wsl-refresh"
             disabled={detecting || loading}
-            onClick={() => void refreshDetect()}
+            onClick={() => void refreshDetect(true)}
           >
             {detecting ? <BtnSpinner /> : null}
             {t('overview.wslRefreshDetect')}

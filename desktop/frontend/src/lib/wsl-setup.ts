@@ -38,8 +38,33 @@ export interface WslConfigureResult {
   skipped: string[]
 }
 
-export async function detectWslEnvironment(): Promise<WslDetectResult> {
-  return tauriInvoke<WslDetectResult>('wsl_detect_environment')
+let wslDetectSessionCache: WslDetectResult | null = null
+let wslDetectInFlight: Promise<WslDetectResult> | null = null
+
+export function getWslDetectSessionCache(): WslDetectResult | null {
+  return wslDetectSessionCache
+}
+
+export async function detectWslEnvironment(options?: { force?: boolean }): Promise<WslDetectResult> {
+  const force = options?.force ?? false
+  if (!force && wslDetectSessionCache) {
+    return wslDetectSessionCache
+  }
+  if (!force && wslDetectInFlight) {
+    return wslDetectInFlight
+  }
+
+  const request = tauriInvoke<WslDetectResult>('wsl_detect_environment')
+  wslDetectInFlight = request
+  try {
+    const result = await request
+    wslDetectSessionCache = result
+    return result
+  } finally {
+    if (wslDetectInFlight === request) {
+      wslDetectInFlight = null
+    }
+  }
 }
 
 export async function configureWslAgents(distro: string): Promise<WslConfigureResult> {

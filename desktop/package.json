@@ -10,7 +10,8 @@
     "pretauri:dev": "pnpm --dir frontend install",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:win": "tauri build --bundles nsis"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.6.0",

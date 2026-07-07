@@ -68,10 +68,21 @@ make tauri-build-macos
 
 ```powershell
 cd desktop
-pnpm run tauri:build
+pnpm run tauri:build:win
+# 或仓库根目录：make tauri-build
 ```
 
-产物：`src-tauri/target/release/bundle/`（NSIS 安装包）及 `token-router-desktop.exe`。
+产物：`src-tauri/target/release/bundle/nsis/`（NSIS 安装包）及 `token-router-desktop.exe`。
+
+Windows 打包 NSIS 时需要 Tauri 工具链（与 WiX/MSI 无关）。若 GitHub 下载超时，先运行：
+
+```powershell
+make setup-tauri-nsis
+# 或
+powershell -ExecutionPolicy Bypass -File scripts/setup-tauri-nsis.ps1
+```
+
+工具会安装到 `%LOCALAPPDATA%\tauri\NSIS\`（含 `makensis.exe` 与 `Plugins\x86-unicode\additional\nsis_tauri_utils.dll`）。MSI 才需要 WiX，解压到 `%LOCALAPPDATA%\tauri\WixTools314\`。
 
 ## 功能说明
 

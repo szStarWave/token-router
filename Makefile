@@ -66,7 +66,7 @@ endif
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh \
         package-electron-win clean-package-electron-win \
-        ui-build tauri-dev tauri-build tauri-build-macos \
+        ui-build tauri-dev tauri-build tauri-build-macos setup-tauri-nsis \
         ota-check-windows ota-stage build-ota ota-publish push version
 
 help:
@@ -88,6 +88,7 @@ help:
 	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
 	@echo "  tauri-build      Build Tauri desktop app (release)"
+	@echo "  setup-tauri-nsis Prefetch NSIS toolchain for Windows Tauri bundling"
 	@echo "  tauri-build-macos  Build Tauri desktop app on macOS (.app + .dmg)"
 	@echo "  build-ota        Build Tauri release and stage OTA NSIS setup (Windows)"
 	@echo "  push             Build, stage, and publish OTA setup (needs MODELSCOPE_TOKEN)"
@@ -221,7 +222,20 @@ tauri-dev:
 
 tauri-build:
 	$(PNPM) --dir $(DESKTOP) run icons:generate
+ifeq ($(UNAME_S),Windows)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-tauri-nsis.ps1
+	$(PNPM) --dir $(DESKTOP) run tauri:build:win
+else
 	$(PNPM) --dir $(DESKTOP) run tauri:build
+endif
+
+setup-tauri-nsis:
+ifeq ($(UNAME_S),Windows)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-tauri-nsis.ps1
+else
+	@echo "setup-tauri-nsis is Windows-only"
+	@exit 1
+endif
 
 tauri-build-macos:
 ifeq ($(UNAME_S),Darwin)
