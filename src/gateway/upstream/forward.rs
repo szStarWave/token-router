@@ -21,6 +21,8 @@ use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseS
 use crate::gateway::upstream::verify::cloud_verifies_edge;
 use crate::gateway::api::meta::log_upstream_served;
 use crate::gateway::routing_log::RoutingLogStore;
+use crate::gateway::session::SessionStore;
+use crate::gateway::served_outcome::{CloudCacheSettings, StreamPostServe};
 
 struct UpstreamTarget {
     base_url: Option<String>,
@@ -38,6 +40,7 @@ pub struct UpstreamClient {
     edge_load: Arc<EdgeInferenceTracker>,
     agent_usage: Arc<AgentCloudUsageStore>,
     routing_logs: Arc<RoutingLogStore>,
+    sessions: Arc<SessionStore>,
 }
 
 impl UpstreamClient {
@@ -48,6 +51,7 @@ impl UpstreamClient {
         edge_load: Arc<EdgeInferenceTracker>,
         agent_usage: Arc<AgentCloudUsageStore>,
         routing_logs: Arc<RoutingLogStore>,
+        sessions: Arc<SessionStore>,
     ) -> Self {
         Self {
             http: Client::new(),
@@ -57,6 +61,7 @@ impl UpstreamClient {
             edge_load,
             agent_usage,
             routing_logs,
+            sessions,
         }
     }
 
@@ -105,12 +110,6 @@ impl UpstreamClient {
     ) -> AppResult<ChatCompletionResponse> {
         if decision.multimodal_strategy != MultimodalStrategy::None {
             return self.complete_multimodal(req, decision, agent_id, auth_key).await;
-        }
-
-        if decision.work_strategy == WorkStrategy::CachedEdge {
-            return self
-                .complete_edge_with_context_fallback(req, decision, agent_id, auth_key)
-                .await;
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
@@ -197,12 +196,6 @@ impl UpstreamClient {
     ) -> AppResult<(SseStream, bool)> {
         if decision.multimodal_strategy != MultimodalStrategy::None {
             return self.stream_multimodal(req, decision, agent_id, auth_key).await;
-        }
-
-        if decision.work_strategy == WorkStrategy::CachedEdge {
-            return self
-                .stream_edge_with_context_fallback(req, decision, agent_id, auth_key)
-                .await;
         }
 
         if decision.work_strategy == WorkStrategy::Verify {
@@ -600,6 +593,19 @@ impl UpstreamClient {
             }
         };
         let stream_agent_id = stream_agent_usage.as_ref().and(stream_agent_id);
+        let fallback_flag = tier_static == "cloud"
+            && matches!(decision.route, RouteTier::Edge | RouteTier::Cascade);
+        let served_model = endpoint_model.unwrap_or(&req.model).to_string();
+        let post_serve = Some(StreamPostServe {
+            sessions: self.sessions.clone(),
+            routing_logs: self.routing_logs.clone(),
+            settings: CloudCacheSettings::from_config(&self.cfg()),
+            req: req.clone(),
+            decision: decision.clone(),
+            assistant_failed: decision.assistant_failed_recent,
+            fallback: fallback_flag,
+            served_model,
+        });
         let stream = instrument_stream(
             raw,
             StreamRecordContext {
@@ -612,10 +618,10 @@ impl UpstreamClient {
                 agent_usage: stream_agent_usage,
                 agent_id: stream_agent_id,
                 auth_key: auth_key.cloned(),
+                post_serve,
             },
         );
-        let fallback = tier_static == "cloud"
-            && matches!(decision.route, RouteTier::Edge | RouteTier::Cascade);
+        let fallback = fallback_flag;
         log_upstream_served(
             Some(self.routing_logs.as_ref()),
             decision.routing_log_id,
@@ -766,7 +772,7 @@ fn apply_upstream_model(req: &ChatCompletionRequest, endpoint_model: Option<&str
 
 fn missing_upstream(tier: &str) -> AppError {
     AppError::Unavailable(format!(
-        "upstream.{tier} not configured — set [upstream.{tier}] in config.toml"
+        "upstream.{tier} not configured ??set [upstream.{tier}] in config.toml"
     ))
 }
 

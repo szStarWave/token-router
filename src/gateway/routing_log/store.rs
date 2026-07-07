@@ -11,7 +11,7 @@ use crate::gateway::api::meta::{
 };
 use crate::gateway::routing::RouteDecision;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 /// Keep the newest N routing decisions on disk.
 const MAX_ROWS: i64 = 50_000;
 const DEFAULT_LIMIT: u32 = 100;
@@ -28,6 +28,7 @@ pub struct RoutingLogEntryJson {
     pub step_kind: String,
     pub model: String,
     pub user_preview: String,
+    pub difficulty: f64,
     pub reason_codes: Vec<String>,
 }
 
@@ -46,7 +47,7 @@ pub struct RoutingLogsQuery {
 
 pub struct RoutingLogStore {
     path: PathBuf,
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl RoutingLogStore {
@@ -124,6 +125,22 @@ impl RoutingLogStore {
             }
             conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
         }
+
+        if version < 3 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS request_route_cache (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   hash_code TEXT NOT NULL UNIQUE,
+                   route TEXT NOT NULL,
+                   model TEXT NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_request_route_cache_hash ON request_route_cache(hash_code);
+                 CREATE INDEX IF NOT EXISTS idx_request_route_cache_updated ON request_route_cache(updated_at);",
+            )?;
+            conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
+        }
         Ok(())
     }
 
@@ -138,7 +155,7 @@ impl RoutingLogStore {
         let summary = summarize_route_reasons(decision);
         let user_preview = truncate_user_preview_for_log(user_preview);
         let message = format!(
-            "routing: {} → {} | {}",
+            "routing: {} �?{} | {}",
             step_kind_name(decision.step_kind),
             tier_name(decision.route),
             summary,
@@ -218,7 +235,7 @@ impl RoutingLogStore {
 
         if let Some(before_id) = query.before_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, reason_codes
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
                  FROM routing_logs
                  WHERE id < ?1
                  ORDER BY id DESC
@@ -241,7 +258,7 @@ impl RoutingLogStore {
 
         if let Some(after_id) = query.after_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, reason_codes
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
                  FROM routing_logs
                  WHERE id > ?1
                  ORDER BY id ASC
@@ -257,7 +274,7 @@ impl RoutingLogStore {
         }
 
         let mut stmt = conn.prepare(
-            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, reason_codes
+            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
              FROM routing_logs
              ORDER BY id DESC
              LIMIT ?1",
@@ -280,7 +297,7 @@ impl RoutingLogStore {
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson> {
-    let reason_codes_raw: String = row.get(7)?;
+    let reason_codes_raw: String = row.get(8)?;
     Ok(RoutingLogEntryJson {
         id: row.get(0)?,
         timestamp: row.get(1)?,
@@ -289,6 +306,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson
         step_kind: row.get(4)?,
         model: row.get(5)?,
         user_preview: row.get(6)?,
+        difficulty: row.get(7)?,
         reason_codes: reason_codes_raw
             .split(',')
             .filter(|s| !s.is_empty())
@@ -318,6 +336,7 @@ mod tests {
             cloud_input_saved_estimate: 100,
             conversation_key: "conv:test".into(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,

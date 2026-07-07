@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import type { RoutingLogEntry } from '../../lib/routing-log'
-import { pickDisplayReasonCodes, truncatePreview } from '../../lib/routing-log'
-import { explainReasonCode, stepKindLabel } from '../../lib/routing-reasons'
+import {
+  extractDifficultyScore,
+  parseDifficultyBreakdown,
+  pickDisplayReasonCodes,
+  pickFinalRouteFactorCode,
+  truncatePreview,
+} from '../../lib/routing-log'
+import { explainDifficultyPartKey, explainFinalRouteFactor, stepKindLabel } from '../../lib/routing-reasons'
 import { useI18n } from '../../hooks/useI18n'
 
 interface Props {
@@ -27,6 +33,18 @@ export function RoutingLogCard({ entry }: Props) {
     : t('logs.noMessagePreview')
   const previewTitle = entry.hasUserPreview ? entry.userPreview : undefined
   const { shown: reasonTags, overflow } = pickDisplayReasonCodes(entry.reasonCodes)
+  const finalDifficulty = extractDifficultyScore(entry.reasonCodes, entry.difficulty)
+  const finalFactorCode = pickFinalRouteFactorCode(entry.reasonCodes)
+  const finalFactorText = finalFactorCode
+    ? explainFinalRouteFactor(finalFactorCode, entry.route, t)
+    : null
+  const difficultyBreakdown = parseDifficultyBreakdown(entry.reasonCodes)
+
+  function formatSigned(n: number | null, digits = 3): string {
+    if (n == null || !Number.isFinite(n)) return '—'
+    const sign = n >= 0 ? '+' : ''
+    return `${sign}${n.toFixed(digits)}`
+  }
 
   return (
     <article className="routing-log-card">
@@ -69,14 +87,90 @@ export function RoutingLogCard({ entry }: Props) {
             </svg>
           </button>
           {expanded && (
-            <ul className="routing-log-card__details">
-              {entry.reasonCodes.map((code) => (
-                <li key={code}>
-                  <code className="routing-log-card__code">{code}</code>
-                  <span className="routing-log-card__explain">{explainReasonCode(code, t)}</span>
-                </li>
-              ))}
-            </ul>
+            <>
+              {difficultyBreakdown && (
+                <div className="routing-log-card__breakdown">
+                  <p className="routing-log-card__breakdown-title">{t('logs.difficultyBreakdown')}</p>
+                  {difficultyBreakdown.parts.length > 0 && (
+                    <table className="routing-log-card__breakdown-table">
+                      <thead>
+                        <tr>
+                          <th>{t('logs.difficultyFactor')}</th>
+                          <th>{t('logs.difficultyLinear')}</th>
+                          <th>{t('logs.difficultyScoreDelta')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {difficultyBreakdown.parts.map((part) => (
+                          <tr key={part.key}>
+                            <td>{explainDifficultyPartKey(part.key, t)}</td>
+                            <td>{formatSigned(part.linear)}</td>
+                            <td>{formatSigned(part.scoreDelta, 4)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {difficultyBreakdown.linearSum != null && (
+                    <p className="routing-log-card__breakdown-meta">
+                      {t('routing.reason.DIFF_LINEAR_SUM', {
+                        sum: difficultyBreakdown.linearSum.toFixed(3),
+                      })}
+                    </p>
+                  )}
+                  {difficultyBreakdown.heuristic != null && (
+                    <p className="routing-log-card__breakdown-meta">
+                      {t('logs.difficultyHeuristic')}: {difficultyBreakdown.heuristic.toFixed(4)}
+                    </p>
+                  )}
+                  {difficultyBreakdown.fuse && (
+                    <p className="routing-log-card__breakdown-meta">
+                      {t('logs.difficultyFuseDetail', {
+                        heur: difficultyBreakdown.fuse.heur.toFixed(4),
+                        bayes: difficultyBreakdown.fuse.bayes.toFixed(4),
+                        w: difficultyBreakdown.fuse.w.toFixed(2),
+                        final: difficultyBreakdown.fuse.final.toFixed(4),
+                      })}
+                    </p>
+                  )}
+                  {difficultyBreakdown.adjustments.length > 0 && (
+                    <div className="routing-log-card__breakdown-adjustments">
+                      <p className="routing-log-card__breakdown-subtitle">{t('logs.difficultyAdjustments')}</p>
+                      <ul>
+                        {difficultyBreakdown.adjustments.map((adj) => (
+                          <li key={adj.key}>
+                            {explainDifficultyPartKey(adj.key, t)}: {formatSigned(adj.scoreDelta, 4)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              {(finalDifficulty != null || finalFactorText) && (
+                <div className="routing-log-card__conclusion">
+                  {finalDifficulty != null && (
+                    <p className="routing-log-card__conclusion-row">
+                      <span className="routing-log-card__conclusion-label">{t('logs.finalDifficulty')}</span>
+                      <span className="routing-log-card__conclusion-value">
+                        {finalDifficulty.toFixed(2)}
+                      </span>
+                    </p>
+                  )}
+                  {finalFactorText && (
+                    <p className="routing-log-card__conclusion-row">
+                      <span className="routing-log-card__conclusion-label">{t('logs.finalRouteDecision')}</span>
+                      <span className="routing-log-card__conclusion-value">
+                        {t('logs.finalRouteDecisionValue', {
+                          reason: finalFactorText,
+                          route: t(`route.${entry.route}`),
+                        })}
+                      </span>
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

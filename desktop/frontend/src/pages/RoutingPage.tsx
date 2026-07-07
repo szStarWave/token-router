@@ -106,7 +106,8 @@ export function RoutingPage() {
           </div>
           <div className="form-row">
             <div><label>{t('field.workVerifySampleRate')}</label><input id="work_verify_sample_rate" type="number" min={0} max={1} step={0.05} value={form.work_verify_sample_rate ?? ''} onChange={(e) => set('work_verify_sample_rate', e.target.value ? Number(e.target.value) : undefined)} /></div>
-            <div><label>{t('field.cloudStickyTtlSecs')}</label><input id="cloud_sticky_ttl_secs" type="number" min={0} step={60} value={form.cloud_sticky_ttl_secs ?? ''} onChange={(e) => set('cloud_sticky_ttl_secs', e.target.value ? Number(e.target.value) : undefined)} /></div>
+            <div><label>{t('field.cloudCacheDecayHalfLifeSecs')}</label><input id="cloud_cache_decay_half_life_secs" type="number" min={0} step={60} value={form.cloud_cache_decay_half_life_secs ?? form.cloud_sticky_ttl_secs ?? ''} onChange={(e) => set('cloud_cache_decay_half_life_secs', e.target.value ? Number(e.target.value) : undefined)} /></div>
+            <div><label>{t('field.cloudCacheBoostMax')}</label><input id="cloud_cache_boost_max" type="number" min={0} max={1} step={0.01} value={form.cloud_cache_boost_max ?? ''} onChange={(e) => set('cloud_cache_boost_max', e.target.value ? Number(e.target.value) : undefined)} /></div>
             <div><label>{t('field.experienceLearningRate')}</label><input id="experience_learning_rate" type="number" min={0} max={1} step={0.01} value={form.experience_learning_rate ?? ''} onChange={(e) => set('experience_learning_rate', e.target.value ? Number(e.target.value) : undefined)} /></div>
             <div><label>{t('field.experienceTargetFallback')}</label><input id="experience_target_fallback" type="number" min={0} max={1} step={0.01} value={form.experience_target_fallback ?? ''} onChange={(e) => set('experience_target_fallback', e.target.value ? Number(e.target.value) : undefined)} /></div>
           </div>

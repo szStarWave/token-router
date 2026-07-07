@@ -65,8 +65,6 @@ pub struct RequestSignals {
 
 /// Consecutive trailing tool errors before difficulty bias / reason codes.
 pub const TOOL_ERROR_STREAK_DIFFICULTY: u32 = 1;
-/// Consecutive trailing tool errors before Recovery step kind and hard cloud gate.
-pub const TOOL_ERROR_STREAK_ESCALATE: u32 = 3;
 
 /// Cognitive difficulty applies only to the first routing hop after the triggering user
 /// message — not to mid-loop tool/assistant follow-ups.
@@ -101,7 +99,7 @@ pub fn is_casual_chat(signals: &RequestSignals) -> bool {
     if signals.multimodal && signals.tools_enabled {
         return false;
     }
-    // Mid-loop agent with tools: require easy intent (OpenClaw tool loop).
+    // Mid-loop agent with tools: require easy intent (tool execution loop).
     if signals.loop_steps > 0 && signals.tools_enabled {
         if signals.intent_plan {
             return false;
@@ -208,10 +206,8 @@ impl SignalExtractor<'_> {
             });
 
         let last_role_tool = last.is_some_and(|m| m.role == Role::Tool);
-        let synthetic_tool_result = last.is_some_and(|m| {
-            message_text(m).contains("[openclaw] missing tool result")
-                || message_text(m).contains("prompt lock was released")
-        });
+        let synthetic_tool_result =
+            last.is_some_and(|m| is_placeholder_tool_result(&message_text(m)));
 
         let assistant_failed_recent = tail.iter().any(|m| {
             m.role == Role::Assistant
@@ -402,6 +398,12 @@ pub fn consecutive_tool_error_tail(messages: &[Message]) -> u32 {
 
 pub fn tool_result_has_error(text: &str) -> bool {
     super::keywords::tool_result_has_error(text)
+}
+
+/// Placeholder tool payloads injected when a real tool result is missing (any agent runtime).
+pub fn is_placeholder_tool_result(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("missing tool result") || lower.contains("prompt lock was released")
 }
 
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -678,6 +680,19 @@ mod tests {
             },
         ];
         assert_eq!(consecutive_tool_error_tail(&messages), 1);
+    }
+
+    #[test]
+    fn placeholder_tool_result_is_agent_agnostic() {
+        assert!(is_placeholder_tool_result(
+            "[openclaw] missing tool result for call_1"
+        ));
+        assert!(is_placeholder_tool_result(
+            "[Hermes] missing tool result for call_1"
+        ));
+        assert!(is_placeholder_tool_result("missing tool result"));
+        assert!(is_placeholder_tool_result("Prompt lock was released"));
+        assert!(!is_placeholder_tool_result("Error: command failed"));
     }
 
     #[test]

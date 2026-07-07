@@ -52,15 +52,23 @@ pub struct GatewaySection {
     pub experience_max_bias: f32,
     #[serde(default = "default_experience_target_fallback")]
     pub experience_target_fallback: f32,
-    #[serde(default = "default_cloud_sticky_ttl_secs")]
-    pub cloud_sticky_ttl_secs: u64,
+    #[serde(default = "default_cloud_cache_decay_half_life_secs", alias = "cloud_sticky_ttl_secs")]
+    pub cloud_cache_decay_half_life_secs: u64,
+    #[serde(default = "default_cloud_cache_boost_max")]
+    pub cloud_cache_boost_max: f32,
+    #[serde(default = "default_request_route_cache_enabled")]
+    pub request_route_cache_enabled: bool,
+    #[serde(default = "default_request_route_cache_retention_days")]
+    pub request_route_cache_retention_days: u64,
+    #[serde(default = "default_request_route_cache_cleanup_interval_secs")]
+    pub request_route_cache_cleanup_interval_secs: u64,
     #[serde(default = "default_session_persist_enabled")]
     pub session_persist_enabled: bool,
     #[serde(default = "default_session_retention_days")]
     pub session_retention_days: u64,
     #[serde(default = "default_session_cleanup_interval_secs")]
     pub session_cleanup_interval_secs: u64,
-    /// Fraction of work-step requests that run edge + cloud verification (0.0–1.0).
+    /// Fraction of work-step requests that run edge + cloud verification (0.0-1.0).
     #[serde(default = "default_work_verify_sample_rate")]
     pub work_verify_sample_rate: f32,
     /// Runtime auto-tuning from experience.json + stats (see adaptive_*).
@@ -191,8 +199,24 @@ fn default_experience_target_fallback() -> f32 {
     0.15
 }
 
-fn default_cloud_sticky_ttl_secs() -> u64 {
+fn default_cloud_cache_decay_half_life_secs() -> u64 {
     600
+}
+
+fn default_cloud_cache_boost_max() -> f32 {
+    0.18
+}
+
+fn default_request_route_cache_enabled() -> bool {
+    true
+}
+
+fn default_request_route_cache_retention_days() -> u64 {
+    7
+}
+
+fn default_request_route_cache_cleanup_interval_secs() -> u64 {
+    3600
 }
 
 fn default_session_persist_enabled() -> bool {
@@ -291,7 +315,11 @@ impl Default for GatewaySection {
             experience_learning_rate: default_experience_learning_rate(),
             experience_max_bias: default_experience_max_bias(),
             experience_target_fallback: default_experience_target_fallback(),
-            cloud_sticky_ttl_secs: default_cloud_sticky_ttl_secs(),
+            cloud_cache_decay_half_life_secs: default_cloud_cache_decay_half_life_secs(),
+            cloud_cache_boost_max: default_cloud_cache_boost_max(),
+            request_route_cache_enabled: default_request_route_cache_enabled(),
+            request_route_cache_retention_days: default_request_route_cache_retention_days(),
+            request_route_cache_cleanup_interval_secs: default_request_route_cache_cleanup_interval_secs(),
             session_persist_enabled: default_session_persist_enabled(),
             session_retention_days: default_session_retention_days(),
             session_cleanup_interval_secs: default_session_cleanup_interval_secs(),
@@ -362,10 +390,10 @@ ctx_edge_max_tokens = 100000
 # experience_learning_rate = 0.08
 # experience_max_bias = 0.12
 # session_persist_enabled = true
-# session_retention_days = 7          # 过期 session 保留天数；0 = 不删过期项（仍清理损坏/tmp）
-# session_cleanup_interval_secs = 3600 # sessions/ 扫描间隔（秒）
-# work_verify_sample_rate = 0.1   # work 步态云端校验抽样比例 (0.0–1.0)
-# adaptive_routing_enabled = true # 根据 experience/stats 运行时微调抽样率与难度阈值
+# session_retention_days = 7          # 过期 session 保留天数�? = 不删过期项（仍清理损�?tmp�?
+# session_cleanup_interval_secs = 3600 # sessions/ 扫描间隔（秒�?
+# work_verify_sample_rate = 0.1   # work 步态云端校验抽样比�?(0.0�?.0)
+# adaptive_routing_enabled = true # 根据 experience/stats 运行时微调抽样率与难度阈�?
 # adaptive_min_verified_samples = 20
 # adaptive_verify_rate_floor = 0.05
 # adaptive_verify_rate_ceiling = 0.45

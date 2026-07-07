@@ -67,6 +67,7 @@ mod tests {
             cloud_input_saved_estimate: 50,
             conversation_key: "conv:test".into(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: crate::gateway::multimodal::MultimodalStrategy::None,
             work_strategy: crate::gateway::routing::WorkStrategy::None,
             force_cloud_sticky: false,

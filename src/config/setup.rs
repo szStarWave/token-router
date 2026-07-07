@@ -16,7 +16,11 @@ pub struct GatewayConfigView {
     pub experience_learning_rate: f32,
     pub experience_max_bias: f32,
     pub experience_target_fallback: f32,
-    pub cloud_sticky_ttl_secs: u64,
+    pub cloud_cache_decay_half_life_secs: u64,
+    pub cloud_cache_boost_max: f32,
+    pub request_route_cache_enabled: bool,
+    pub request_route_cache_retention_days: u64,
+    pub request_route_cache_cleanup_interval_secs: u64,
     pub session_persist_enabled: bool,
     pub work_verify_sample_rate: f32,
     pub adaptive_routing_enabled: bool,
@@ -47,7 +51,12 @@ pub struct GatewayConfigPatch {
     pub experience_learning_rate: Option<f32>,
     pub experience_max_bias: Option<f32>,
     pub experience_target_fallback: Option<f32>,
-    pub cloud_sticky_ttl_secs: Option<u64>,
+    #[serde(alias = "cloud_sticky_ttl_secs")]
+    pub cloud_cache_decay_half_life_secs: Option<u64>,
+    pub cloud_cache_boost_max: Option<f32>,
+    pub request_route_cache_enabled: Option<bool>,
+    pub request_route_cache_retention_days: Option<u64>,
+    pub request_route_cache_cleanup_interval_secs: Option<u64>,
     pub session_persist_enabled: Option<bool>,
     pub work_verify_sample_rate: Option<f32>,
     pub adaptive_routing_enabled: Option<bool>,
@@ -76,7 +85,11 @@ impl GatewayConfigPatch {
             && self.experience_learning_rate.is_none()
             && self.experience_max_bias.is_none()
             && self.experience_target_fallback.is_none()
-            && self.cloud_sticky_ttl_secs.is_none()
+            && self.cloud_cache_decay_half_life_secs.is_none()
+            && self.cloud_cache_boost_max.is_none()
+            && self.request_route_cache_enabled.is_none()
+            && self.request_route_cache_retention_days.is_none()
+            && self.request_route_cache_cleanup_interval_secs.is_none()
             && self.session_persist_enabled.is_none()
             && self.work_verify_sample_rate.is_none()
             && self.adaptive_routing_enabled.is_none()
@@ -314,7 +327,11 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         experience_learning_rate: g.experience_learning_rate,
         experience_max_bias: g.experience_max_bias,
         experience_target_fallback: g.experience_target_fallback,
-        cloud_sticky_ttl_secs: g.cloud_sticky_ttl_secs,
+        cloud_cache_decay_half_life_secs: g.cloud_cache_decay_half_life_secs,
+        cloud_cache_boost_max: g.cloud_cache_boost_max,
+        request_route_cache_enabled: g.request_route_cache_enabled,
+        request_route_cache_retention_days: g.request_route_cache_retention_days,
+        request_route_cache_cleanup_interval_secs: g.request_route_cache_cleanup_interval_secs,
         session_persist_enabled: g.session_persist_enabled,
         work_verify_sample_rate: g.work_verify_sample_rate,
         adaptive_routing_enabled: g.adaptive_routing_enabled,
@@ -582,8 +599,23 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     if let Some(v) = patch.experience_target_fallback {
         g.experience_target_fallback = clamp_range_f32(v, 0.0, 1.0, "experience_target_fallback")?;
     }
-    if let Some(v) = patch.cloud_sticky_ttl_secs {
-        g.cloud_sticky_ttl_secs = clamp_range_u64(v, 0, 604_800, "cloud_sticky_ttl_secs")?;
+    if let Some(v) = patch.cloud_cache_decay_half_life_secs {
+        g.cloud_cache_decay_half_life_secs =
+            clamp_range_u64(v, 0, 604_800, "cloud_cache_decay_half_life_secs")?;
+    }
+    if let Some(v) = patch.cloud_cache_boost_max {
+        g.cloud_cache_boost_max = clamp_range_f32(v, 0.0, 1.0, "cloud_cache_boost_max")?;
+    }
+    if let Some(v) = patch.request_route_cache_enabled {
+        g.request_route_cache_enabled = v;
+    }
+    if let Some(v) = patch.request_route_cache_retention_days {
+        g.request_route_cache_retention_days =
+            clamp_range_u64(v, 0, 365, "request_route_cache_retention_days")?;
+    }
+    if let Some(v) = patch.request_route_cache_cleanup_interval_secs {
+        g.request_route_cache_cleanup_interval_secs =
+            clamp_range_u64(v, 60, 86_400, "request_route_cache_cleanup_interval_secs")?;
     }
     if let Some(v) = patch.session_persist_enabled {
         g.session_persist_enabled = v;

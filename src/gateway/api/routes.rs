@@ -55,7 +55,7 @@ impl AppState {
         self.classifier
             .update_settings(config.classifier.clone());
         self.wordfreq.update_settings(config.wordfreq.clone());
-        self.adaptive_tuner.recompute(config, self.experience.as_ref(), &self.stats);
+        self.adaptive_tuner.recompute(config);
     }
 }
 

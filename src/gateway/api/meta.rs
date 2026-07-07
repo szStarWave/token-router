@@ -279,7 +279,6 @@ pub fn routing_mode_name(m: RoutingMode) -> &'static str {
 pub fn work_strategy_name(w: WorkStrategy) -> &'static str {
     match w {
         WorkStrategy::None => "none",
-        WorkStrategy::CachedEdge => "cached_edge",
         WorkStrategy::Verify => "verify",
     }
 }
@@ -313,6 +312,7 @@ mod tests {
             cloud_input_saved_estimate: 100,
             conversation_key: "conv:test".into(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,

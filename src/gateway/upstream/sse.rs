@@ -10,6 +10,7 @@ use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::stats::metrics::{
     inspect_sse_bytes, FinalResponseMetrics, StreamChunkAccumulator, UpstreamCallMetrics,
 };
+use crate::gateway::served_outcome::StreamPostServe;
 use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 
 pub type SseStream = Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
@@ -24,6 +25,7 @@ pub struct StreamRecordContext {
     pub agent_usage: Option<Arc<AgentCloudUsageStore>>,
     pub agent_id: Option<String>,
     pub auth_key: Option<AuthKeyContext>,
+    pub post_serve: Option<StreamPostServe>,
 }
 
 pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStream {
@@ -77,6 +79,14 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
                 usage.record_tokens(agent_id, (prompt + completion) as u64);
             }
         }
+        if let Some(bundle) = ctx.post_serve.as_ref() {
+            crate::gateway::served_outcome::run_stream_post_serve(
+                bundle,
+                ctx.tier,
+                prompt,
+                cached,
+            );
+        }
     })
 }
 
@@ -90,9 +100,9 @@ mod tests {
 
     fn stub_sse_stream(req: &ChatCompletionRequest, tier: &str) -> SseStream {
         let content = if tier == "edge" {
-            "[token-router] edge stub — configure [upstream.edge] in ~/.token-router/config.toml"
+            "[token-router] edge stub ??configure [upstream.edge] in ~/.token-router/config.toml"
         } else {
-            "[token-router] cloud stub — configure [upstream.cloud] in ~/.token-router/config.toml"
+            "[token-router] cloud stub ??configure [upstream.cloud] in ~/.token-router/config.toml"
         };
 
         let id = format!("token-router-stub-{}", uuid::Uuid::new_v4());
@@ -198,6 +208,7 @@ mod tests {
                 agent_usage: None,
                 agent_id: None,
                 auth_key: None,
+                post_serve: None,
             },
         );
         while stream.next().await.is_some() {}
@@ -279,6 +290,7 @@ mod tests {
                 agent_usage: None,
                 agent_id: None,
                 auth_key: None,
+                post_serve: None,
             },
         );
         while stream.next().await.is_some() {}

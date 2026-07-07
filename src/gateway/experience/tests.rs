@@ -20,6 +20,7 @@ mod tests {
             cloud_input_saved_estimate: 0,
             conversation_key: "conv:test".into(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
@@ -32,10 +33,37 @@ mod tests {
     }
 
     #[test]
-    fn edge_trusted_after_verified_samples() {
+    fn tool_failure_increases_bias() {
+        let settings = ExperienceSettings {
+            enabled: true,
+            learning_rate: 0.5,
+            max_bias: 0.12,
+            target_fallback: 0.15,
+        };
+        let store = ExperienceStore::new_in_memory(settings);
+        let step = StepKind::ToolSelect;
+        for _ in 0..5 {
+            store.record_outcome(
+                step,
+                RequestOutcome {
+                    edge_ok: true,
+                    cascade_fallback: false,
+                    upstream_error: false,
+                },
+            );
+        }
+        let baseline = store.bias_for(step);
+        for _ in 0..5 {
+            store.record_tool_failure(step, 1);
+        }
+        let after = store.bias_for(step);
+        assert!(after > baseline, "expected bias to rise: {baseline} -> {after}");
+    }
+
+    #[test]
+    fn edge_trusted_revoked_by_tool_failures() {
         let settings = ExperienceSettings::default();
         let store = ExperienceStore::new_in_memory(settings);
-        assert!(!store.edge_trusted(StepKind::ToolSelect));
         for _ in 0..3 {
             store.record_outcome(
                 StepKind::ToolSelect,
@@ -47,6 +75,10 @@ mod tests {
             );
         }
         assert!(store.edge_trusted(StepKind::ToolSelect));
+        for _ in 0..3 {
+            store.record_tool_failure(StepKind::ToolSelect, 1);
+        }
+        assert!(!store.edge_trusted(StepKind::ToolSelect));
     }
 
     #[test]

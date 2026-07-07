@@ -22,12 +22,14 @@ const CC_SWITCH_ACTIONS: Array<{
     | 'overview.ccSwitchExportOpenClaw'
     | 'overview.ccSwitchExportHermes'
     | 'overview.ccSwitchExportGemini'
+    | 'overview.ccSwitchExportOpenCode'
 }> = [
   { app: 'claude', labelKey: 'overview.ccSwitchExportClaude' },
   { app: 'codex', labelKey: 'overview.ccSwitchExportCodex' },
   { app: 'openclaw', labelKey: 'overview.ccSwitchExportOpenClaw' },
   { app: 'hermes', labelKey: 'overview.ccSwitchExportHermes' },
   { app: 'gemini', labelKey: 'overview.ccSwitchExportGemini' },
+  { app: 'opencode', labelKey: 'overview.ccSwitchExportOpenCode' },
 ]
 
 export function CcSwitchExportCard() {

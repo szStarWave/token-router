@@ -57,18 +57,11 @@ pub fn map_policy(
 pub fn map_policy_with_thresholds(
     d: DifficultyScore,
     step_kind: StepKind,
-    profile: Profile,
+    _profile: Profile,
     mode: RoutingMode,
     theta_edge: f32,
     theta_cloud: f32,
 ) -> RouteTier {
-    if profile == Profile::Privacy {
-        if step_kind == StepKind::RecoveryAfterFailure {
-            return RouteTier::Cloud;
-        }
-        return RouteTier::Edge;
-    }
-
     let score = d.0;
 
     if mode != RoutingMode::Split

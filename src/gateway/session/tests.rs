@@ -21,8 +21,9 @@ mod tests {
             tokens_in_estimate: 500,
             tokens_out_estimate: 50,
             cloud_input_saved_estimate: 0,
-            conversation_key: "conv:sticky_test".into(),
+            conversation_key: "conv:cloud_cache_test".into(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
@@ -49,10 +50,10 @@ mod tests {
     }
 
     #[test]
-    fn sticky_persists_to_disk() {
-        let dir = temp_sessions_dir("sticky");
+    fn cloud_cache_persists_to_disk() {
+        let dir = temp_sessions_dir("cloud-cache");
         std::fs::create_dir_all(&dir).unwrap();
-        let key = "conv:sticky_test";
+        let key = "conv:cloud_cache_test";
         {
             let store = SessionStore::open(dir.clone(), true).unwrap();
             let d = sample_decision();
@@ -64,23 +65,24 @@ mod tests {
                 false,
             );
             store.flush().unwrap();
-            assert!(store.cloud_sticky_until(key).is_some());
+            assert!(store.cloud_cache_anchor(key).is_some());
         }
-        let path = dir.join("conv_sticky_test.json");
+        let path = dir.join("conv_cloud_cache_test.json");
         let loaded = data::load(&path).unwrap();
-        assert!(loaded.cloud_sticky_until_unix.is_some());
+        assert!(loaded.cloud_cache_anchor_unix.is_some());
+        assert!(loaded.cloud_cache_peak_linear > 0.0);
         assert!(loaded.last_updated_unix > 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn edge_success_clears_sticky() {
+    fn edge_success_clears_cloud_cache() {
         let store = SessionStore::new_in_memory();
-        let key = "conv:clear_sticky";
-        let sticky_decision = sample_decision();
+        let key = "conv:clear_cloud_cache";
+        let warm_decision = sample_decision();
         store.apply_outcome(
             key,
-            &sticky_decision,
+            &warm_decision,
             RequestOutcome {
                 edge_ok: false,
                 cascade_fallback: true,
@@ -89,7 +91,7 @@ mod tests {
             600,
             false,
         );
-        assert!(store.cloud_sticky_until(key).is_some());
+        assert!(store.cloud_cache_anchor(key).is_some());
 
         let edge_decision = RouteDecision {
             route: RouteTier::Edge,
@@ -103,7 +105,9 @@ mod tests {
             600,
             false,
         );
-        assert!(store.cloud_sticky_until(key).is_none());
+        assert!(store.cloud_cache_anchor(key).is_none());
+        let state = store.cloud_cache_state(key);
+        assert_eq!(state.peak_linear, 0.0);
     }
 
     #[test]
@@ -124,10 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_keeps_active_sticky_even_when_old() {
-        let dir = temp_sessions_dir("sticky-keep");
+    fn cleanup_keeps_active_cloud_cache_even_when_old() {
+        let dir = temp_sessions_dir("cloud-cache-keep");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("conv_old_sticky.json");
+        let path = dir.join("conv_old_cloud_cache.json");
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -135,7 +139,8 @@ mod tests {
         let data = SessionData {
             version: data::SESSION_VERSION,
             last_tok_in: 100,
-            cloud_sticky_until_unix: Some(now + 3600),
+            cloud_cache_anchor_unix: Some(now),
+            cloud_cache_peak_linear: 0.18,
             last_updated_unix: now.saturating_sub(30 * 86_400),
             ..SessionData::default()
         };

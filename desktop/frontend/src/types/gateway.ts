@@ -28,6 +28,12 @@ export interface GatewayConfigView {
   experience_enabled?: boolean
   experience_learning_rate?: number
   experience_target_fallback?: number
+  cloud_cache_decay_half_life_secs?: number
+  cloud_cache_boost_max?: number
+  request_route_cache_enabled?: boolean
+  request_route_cache_retention_days?: number
+  request_route_cache_cleanup_interval_secs?: number
+  /** @deprecated use cloud_cache_decay_half_life_secs */
   cloud_sticky_ttl_secs?: number
   work_verify_sample_rate?: number
   adaptive_routing_enabled?: boolean
@@ -188,6 +194,7 @@ export interface RoutingLogApiEntry {
   step_kind: string
   model: string
   user_preview: string
+  difficulty?: number
   reason_codes: string[]
 }
 

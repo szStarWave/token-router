@@ -1,3 +1,4 @@
+﻿
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -6,6 +7,14 @@ use std::time::Duration;
 use super::data::{self, SessionData};
 use crate::gateway::experience::RequestOutcome;
 use crate::gateway::routing::RouteDecision;
+use crate::gateway::routing::StepKind;
+use crate::gateway::served_outcome::{CloudCacheSettings, ServedOutcome};
+
+#[derive(Debug, Clone, Copy)]
+pub struct CloudCacheState {
+    pub anchor_unix: Option<u64>,
+    pub peak_linear: f32,
+}
 
 pub struct SessionStore {
     sessions_dir: PathBuf,
@@ -54,13 +63,17 @@ impl SessionStore {
         }
     }
 
-    pub fn cloud_sticky_until(&self, conversation_key: &str) -> Option<u64> {
+    pub fn cloud_cache_state(&self, conversation_key: &str) -> CloudCacheState {
         let data = self.get_or_load(conversation_key);
-        if data.cloud_sticky_active() {
-            data.cloud_sticky_until_unix
-        } else {
-            None
+        CloudCacheState {
+            anchor_unix: data.cloud_cache_anchor_unix,
+            peak_linear: data.cloud_cache_peak_linear,
         }
+    }
+
+    #[cfg(test)]
+    pub fn cloud_cache_anchor(&self, conversation_key: &str) -> Option<u64> {
+        self.cloud_cache_state(conversation_key).anchor_unix
     }
 
     pub fn record_tokens(&self, conversation_key: &str, tok_in: u32) {
@@ -69,29 +82,86 @@ impl SessionStore {
         });
     }
 
-    pub fn apply_outcome(
+    pub fn apply_served_outcome(
         &self,
         conversation_key: &str,
         decision: &RouteDecision,
-        outcome: RequestOutcome,
-        cloud_sticky_ttl_secs: u64,
+        served: &ServedOutcome,
+        settings: &CloudCacheSettings,
         assistant_failed_signal: bool,
     ) {
+        let outcome = served.outcome;
         self.with_mut(conversation_key, |data| {
             data.last_route = Some(data::route_name(decision.route).to_string());
             data.last_fallback = Some(outcome.cascade_fallback);
             data.last_step_kind = Some(data::step_kind_name(decision.step_kind));
             data.last_assistant_failed = assistant_failed_signal;
 
-            if outcome.edge_ok && !outcome.cascade_fallback && !outcome.upstream_error {
-                data.cloud_sticky_until_unix = None;
+            let edge_served_ok = served.served_tier == "edge"
+                && outcome.edge_ok
+                && !outcome.cascade_fallback
+                && !outcome.upstream_error;
+
+            if edge_served_ok {
+                data.clear_cloud_cache();
+                return;
+            }
+
+            let now = now_unix();
+            if served.served_tier == "cloud" {
+                let mut peak = settings.boost_max;
+                if served.cached_tokens > 0 && served.prompt_tokens > 0 {
+                    let ratio =
+                        served.cached_tokens as f32 / served.prompt_tokens as f32;
+                    peak = (peak * (1.0 + ratio * 0.25)).min(settings.boost_max);
+                }
+                data.refresh_cloud_cache(now, peak);
             } else if decision.force_cloud_sticky
                 || outcome.should_set_cloud_sticky(decision.step_kind)
             {
-                data.cloud_sticky_until_unix =
-                    Some(now_unix().saturating_add(cloud_sticky_ttl_secs));
+                data.refresh_cloud_cache(now, settings.boost_max);
             }
         });
+    }
+
+    /// Legacy path for tests that still call the old signature.
+    #[cfg(test)]
+    pub fn apply_outcome(
+        &self,
+        conversation_key: &str,
+        decision: &RouteDecision,
+        outcome: RequestOutcome,
+        _ttl: u64,
+        assistant_failed_signal: bool,
+    ) {
+        let served_tier = if outcome.cascade_fallback {
+            "cloud".to_string()
+        } else if matches!(decision.route, crate::gateway::routing::RouteTier::Cloud) {
+            "cloud".to_string()
+        } else if outcome.edge_ok {
+            "edge".to_string()
+        } else {
+            "edge".to_string()
+        };
+        let served = ServedOutcome {
+            outcome,
+            served_tier,
+            served_model: "test".to_string(),
+            cached_tokens: 0,
+            prompt_tokens: decision.tokens_in_estimate,
+        };
+        let settings = CloudCacheSettings {
+            boost_max: 0.18,
+            decay_half_life_secs: 600,
+            route_cache_enabled: false,
+        };
+        self.apply_served_outcome(
+            conversation_key,
+            decision,
+            &served,
+            &settings,
+            assistant_failed_signal,
+        );
     }
 
     fn get_or_load(&self, conversation_key: &str) -> SessionData {

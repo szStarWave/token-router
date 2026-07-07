@@ -10,6 +10,7 @@ export interface RoutingLogEntry {
   userPreview: string
   hasUserPreview: boolean
   reasonCodes: string[]
+  difficulty?: number | null
   raw: string
 }
 
@@ -89,6 +90,7 @@ export function mapApiRoutingEntry(entry: {
   model: string
   user_preview: string
   reason_codes: string[]
+  difficulty?: number | null
 }): RoutingLogEntry {
   return {
     id: entry.id,
@@ -100,17 +102,170 @@ export function mapApiRoutingEntry(entry: {
     userPreview: entry.user_preview,
     hasUserPreview: entry.user_preview.length > 0,
     reasonCodes: entry.reason_codes,
+    difficulty: entry.difficulty ?? null,
     raw: '',
   }
 }
 
 export function isDecisiveReasonCode(code: string): boolean {
+  if (isDifficultyMetaCode(code)) return false
   return DECISIVE_PREFIXES.some((p) => code.startsWith(p))
 }
 
+export interface DifficultyScorePart {
+  key: string
+  linear: number | null
+  scoreDelta: number | null
+}
+
+export interface DifficultyBreakdown {
+  parts: DifficultyScorePart[]
+  linearSum: number | null
+  heuristic: number | null
+  fuse: { heur: number; bayes: number; w: number; final: number } | null
+  adjustments: Array<{ key: string; scoreDelta: number }>
+  final: number | null
+}
+
+const DIFF_L_RE = /^DIFF_L:([^:]+):([+-]?\d+(?:\.\d+)?)$/
+const DIFF_D_RE = /^DIFF_D:([^:]+):([+-]?\d+(?:\.\d+)?)$/
+const DIFF_HEUR_RE = /^DIFF_HEUR:([+-]?\d+(?:\.\d+)?)$/
+const DIFF_LINEAR_SUM_RE = /^DIFF_LINEAR_SUM:([+-]?\d+(?:\.\d+)?)$/
+const DIFF_FUSE_RE = /^DIFF_FUSE:heur=([\d.]+)[|,]bayes=([\d.]+)[|,]w=([\d.]+)[|,]final=([\d.]+)$/
+
+export function isOrphanReasonFragment(code: string): boolean {
+  if (/^(heur|bayes|w|final)=/.test(code)) return true
+  if (/^\d+\.\d+\)$/.test(code)) return true
+  if (/^ADAPTIVE_THETA\([\d.]+$/.test(code)) return true
+  return false
+}
+
+export function isDifficultyMetaCode(code: string): boolean {
+  return (
+    code.startsWith('DIFF_L:') ||
+    code.startsWith('DIFF_D:') ||
+    code.startsWith('DIFF_HEUR:') ||
+    code.startsWith('DIFF_LINEAR_SUM:') ||
+    code.startsWith('DIFF_FUSE:')
+  )
+}
+
+export function parseDifficultyBreakdown(codes: string[]): DifficultyBreakdown | null {
+  const linearMap = new Map<string, number>()
+  const scoreMap = new Map<string, number>()
+  let linearSum: number | null = null
+  let heuristic: number | null = null
+  let fuse: DifficultyBreakdown['fuse'] = null
+  const adjustments: Array<{ key: string; scoreDelta: number }> = []
+  const heuristicKeys = new Set<string>()
+
+  for (const code of codes) {
+    const linearMatch = DIFF_L_RE.exec(code)
+    if (linearMatch) {
+      linearMap.set(linearMatch[1], Number.parseFloat(linearMatch[2]))
+      continue
+    }
+    const scoreMatch = DIFF_D_RE.exec(code)
+    if (scoreMatch) {
+      const key = scoreMatch[1]
+      const delta = Number.parseFloat(scoreMatch[2])
+      if (key.startsWith('CALIB_') || key === 'BAYES_FUSE' || key.startsWith('PRIVACY_') || key === 'CASUAL_CLASSIFIER_GUARD') {
+        adjustments.push({ key, scoreDelta: delta })
+      } else {
+        scoreMap.set(key, delta)
+        heuristicKeys.add(key)
+      }
+      continue
+    }
+    if (code.startsWith('DIFF_HEUR:')) {
+      const m = DIFF_HEUR_RE.exec(code)
+      if (m) heuristic = Number.parseFloat(m[1])
+      continue
+    }
+    if (code.startsWith('DIFF_LINEAR_SUM:')) {
+      const m = DIFF_LINEAR_SUM_RE.exec(code)
+      if (m) linearSum = Number.parseFloat(m[1])
+      continue
+    }
+    if (code.startsWith('DIFF_FUSE:')) {
+      const m = DIFF_FUSE_RE.exec(code)
+      if (m) {
+        fuse = {
+          heur: Number.parseFloat(m[1]),
+          bayes: Number.parseFloat(m[2]),
+          w: Number.parseFloat(m[3]),
+          final: Number.parseFloat(m[4]),
+        }
+      }
+    }
+  }
+
+  const partKeys = new Set([...linearMap.keys(), ...scoreMap.keys()])
+  const parts = [...partKeys]
+    .map((key) => ({
+      key,
+      linear: linearMap.get(key) ?? null,
+      scoreDelta: scoreMap.get(key) ?? null,
+    }))
+    .sort((a, b) => Math.abs(b.scoreDelta ?? 0) - Math.abs(a.scoreDelta ?? 0))
+
+  const final = extractDifficultyScore(codes)
+
+  if (parts.length === 0 && adjustments.length === 0 && fuse == null && heuristic == null) {
+    return null
+  }
+
+  return { parts, linearSum, heuristic, fuse, adjustments, final }
+}
+
+/** Codes that directly override the planned route (last match wins). */
+export function isRouteOverrideCode(code: string): boolean {
+  if (code.startsWith('GATE_')) return true
+  if (code.startsWith('CONFIG_ROUTE_')) return true
+  if (code.startsWith('UPSTREAM_')) return true
+  if (code.startsWith('MULTIMODAL_')) return true
+  if (code.startsWith('LONG_GEN_')) return true
+  if (code === 'WORK_TOOL_ERROR_VERIFY') return true
+  if (code === 'WORK_CACHE_EDGE') return true
+  if (code === 'CLOUD_CACHE_BOOST' || code === 'REQ_ROUTE_CACHE_CLOUD') return true
+  if (code === 'STICKY_CASCADE_RETRY') return true
+  if (code === 'CLOUD_INTENT' || code === 'EDGE_INTENT') return true
+  if (code === 'CASUAL_PREFER_EDGE') return true
+  return false
+}
+
+export function extractDifficultyScore(
+  codes: string[],
+  fallback?: number | null,
+): number | null {
+  if (fallback != null && Number.isFinite(fallback)) return fallback
+  for (let i = codes.length - 1; i >= 0; i--) {
+    const code = codes[i]
+    if (!code.startsWith('DIFFICULTY_')) continue
+    const score = Number.parseFloat(code.slice('DIFFICULTY_'.length))
+    if (Number.isFinite(score)) return score
+  }
+  return null
+}
+
+/** Last route override, or difficulty-based policy when no override exists. */
+export function pickFinalRouteFactorCode(codes: string[]): string | null {
+  for (let i = codes.length - 1; i >= 0; i--) {
+    if (isRouteOverrideCode(codes[i])) return codes[i]
+  }
+  for (let i = codes.length - 1; i >= 0; i--) {
+    if (codes[i].startsWith('DIFFICULTY_')) return codes[i]
+  }
+  return codes.find((c) => c.startsWith('CONFIG_ROUTE_')) ?? null
+}
+
 export function pickDisplayReasonCodes(codes: string[], max = 4): { shown: string[]; overflow: number } {
+  const overrides = codes.filter(isRouteOverrideCode)
   const decisive = codes.filter(isDecisiveReasonCode)
-  const pool = decisive.length ? decisive : codes.filter((c) => !c.startsWith('STEP_') && !c.startsWith('TOK_'))
+  const pool = [
+    ...overrides,
+    ...(decisive.length ? decisive : codes.filter((c) => !c.startsWith('STEP_') && !c.startsWith('TOK_'))),
+  ].filter((code, index, arr) => arr.indexOf(code) === index)
   const shown = pool.slice(0, max)
   const overflow = Math.max(0, pool.length - shown.length)
   return { shown, overflow }

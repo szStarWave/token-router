@@ -98,6 +98,7 @@ mod tests {
             None,
             edge_tps,
             None,
+            None,
             test_wordfreq().as_ref(),
         )
     }
@@ -120,6 +121,7 @@ mod tests {
             None,
             None,
             Some(classifier),
+            None,
             test_wordfreq().as_ref(),
         )
     }
@@ -1003,9 +1005,16 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_tool_errors_force_cloud() {
+    fn consecutive_tool_errors_raise_difficulty_not_force_cloud() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
+        let baseline = decide_test(
+            &cfg,
+            &single_tool_error_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
         let decision = decide_test(
             &cfg,
             &tool_error_streak_request(),
@@ -1014,19 +1023,32 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Cloud),
-            "three consecutive tool errors should force cloud: {:?}",
-            decision
-        );
-        assert!(
-            decision
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c == "GATE_TOOL_ERROR_STREAK"),
             "{:?}",
             decision.reason_codes
         );
-        assert!(decision.force_cloud_sticky);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("TOOL_ERROR_STREAK_")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(!decision.force_cloud_sticky);
+        assert!(decision.difficulty > baseline.difficulty);
+        assert_eq!(decision.step_kind, StepKind::ToolResultDigest);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFFICULTY_")),
+            "route should follow difficulty score: {:?}",
+            decision.reason_codes
+        );
     }
 
     #[test]
@@ -1949,7 +1971,7 @@ mod tests {
     }
 
     #[test]
-    fn work_step_skips_verify_at_zero_sample_rate() {
+    fn work_step_follows_difficulty_at_zero_sample_rate() {
         let cfg = test_config_with_verify_rate(true, true, 0.0);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -1960,12 +1982,20 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Edge),
+            matches!(decision.route, RouteTier::Cascade),
             "{:?}",
             decision
         );
         assert!(
             decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFFICULTY_")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c.starts_with("WORK_SAMPLE_SKIP")),
@@ -1975,7 +2005,7 @@ mod tests {
     }
 
     #[test]
-    fn work_step_uses_cached_edge_when_trusted() {
+    fn trusted_experience_biases_difficulty_not_direct_edge() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let experience = ExperienceStore::new_in_memory(ExperienceSettings::default());
@@ -1989,8 +2019,16 @@ mod tests {
                 },
             );
         }
+        assert!(experience.edge_trusted(StepKind::ToolSelect));
 
-        let decision = decide_test(
+        let without = decide_test(
+            &cfg,
+            &work_tool_select_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        let with = decide_test(
             &cfg,
             &work_tool_select_request(),
             &sessions,
@@ -1998,17 +2036,18 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Edge),
-            "{:?}",
-            decision
+            with.difficulty < without.difficulty,
+            "trusted history should lower difficulty via bias: {} vs {}",
+            with.difficulty,
+            without.difficulty
         );
         assert!(
-            decision
+            !with
                 .reason_codes
                 .iter()
                 .any(|c| c == "WORK_CACHE_EDGE"),
             "{:?}",
-            decision.reason_codes
+            with.reason_codes
         );
     }
 
@@ -2189,7 +2228,7 @@ mod tests {
         );
     }
 
-    fn seed_cloud_sticky(sessions: &SessionStore, conv_key: &str) {
+    fn seed_cloud_cache(sessions: &SessionStore, conv_key: &str) {
         let decision = RouteDecision {
             route: RouteTier::Cascade,
             profile: Profile::Balanced,
@@ -2202,6 +2241,7 @@ mod tests {
             cloud_input_saved_estimate: 0,
             conversation_key: conv_key.to_string(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
@@ -2225,16 +2265,16 @@ mod tests {
     }
 
     #[test]
-    fn sticky_does_not_block_direct_chat() {
+    fn cloud_cache_does_not_block_direct_chat() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let req = simple_greeting_request();
         let key = conversation_key(&req);
-        seed_cloud_sticky(&sessions, &key);
+        seed_cloud_cache(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
         assert!(
             casual_routes_edge(decision.route),
-            "DirectChat should bypass sticky: {:?}",
+            "DirectChat should not be forced cloud by cache boost: {:?}",
             decision
         );
         assert!(
@@ -2248,55 +2288,42 @@ mod tests {
     }
 
     #[test]
-    fn sticky_work_exec_uses_cascade_retry() {
+    fn cloud_cache_boosts_work_exec() {
         let cfg = test_config_with_verify_rate(true, true, 0.0);
         let sessions = SessionStore::new_in_memory();
         let req = work_tool_select_request();
         let key = conversation_key(&req);
-        seed_cloud_sticky(&sessions, &key);
+        seed_cloud_cache(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
         assert_eq!(decision.step_kind, StepKind::ToolSelect);
-        assert!(
-            matches!(decision.route, RouteTier::Cascade),
-            "{:?}",
-            decision
-        );
         assert!(
             decision
                 .reason_codes
                 .iter()
-                .any(|c| c == "STICKY_CASCADE_RETRY"),
+                .any(|c| c == "CLOUD_CACHE_BOOST"),
             "{:?}",
             decision.reason_codes
         );
     }
 
     #[test]
-    fn sticky_initial_plan_stays_cloud() {
+    fn cloud_cache_does_not_force_initial_plan_cascade() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let req = initial_plan_request();
         let key = conversation_key(&req);
-        seed_cloud_sticky(&sessions, &key);
+        seed_cloud_cache(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
         assert_eq!(decision.step_kind, StepKind::InitialPlan);
         assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
-        assert!(
-            !decision
-                .reason_codes
-                .iter()
-                .any(|c| c == "STICKY_CASCADE_RETRY"),
-            "{:?}",
-            decision.reason_codes
-        );
     }
 
     #[test]
-    fn edge_ok_clears_cloud_sticky() {
+    fn edge_ok_clears_cloud_cache() {
         let sessions = SessionStore::new_in_memory();
         let key = "conv:edge_clear";
-        seed_cloud_sticky(&sessions, &key);
-        assert!(sessions.cloud_sticky_until(key).is_some());
+        seed_cloud_cache(&sessions, &key);
+        assert!(sessions.cloud_cache_anchor(key).is_some());
 
         let decision = RouteDecision {
             route: RouteTier::Edge,
@@ -2310,6 +2337,7 @@ mod tests {
             cloud_input_saved_estimate: 50,
             conversation_key: key.to_string(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,
@@ -2326,7 +2354,85 @@ mod tests {
             600,
             false,
         );
-        assert!(sessions.cloud_sticky_until(key).is_none());
+        assert!(sessions.cloud_cache_anchor(key).is_none());
+    }
+
+    #[test]
+    fn hash_lookup_cloud_boosts() {
+        use crate::gateway::routing::request_context_hash;
+        use crate::gateway::routing_log::RoutingLogStore;
+
+        let dir = std::env::temp_dir().join(format!("flowy-hash-cloud-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = RoutingLogStore::open(&dir).unwrap();
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = work_tool_select_request();
+        let hash = request_context_hash(&req);
+        logs.upsert_route_cache(&hash, "cloud", "gpt-4o").unwrap();
+        let decision = decide(
+            &cfg,
+            &req,
+            &sessions,
+            None,
+            None,
+            &EffectiveRouting::passthrough(&cfg),
+            None,
+            None,
+            None,
+            Some(logs.as_ref()),
+            test_wordfreq().as_ref(),
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| {
+                c == "REQ_ROUTE_CACHE_CLOUD" || c.starts_with("REQ_ROUTE_CACHE_CLOUD:")
+            }),
+            "{:?}",
+            decision.reason_codes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hash_lookup_edge_no_cloud_boost() {
+        use crate::gateway::routing::request_context_hash;
+        use crate::gateway::routing_log::RoutingLogStore;
+
+        let dir = std::env::temp_dir().join(format!("flowy-hash-edge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = RoutingLogStore::open(&dir).unwrap();
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = work_tool_select_request();
+        let hash = request_context_hash(&req);
+        logs.upsert_route_cache(&hash, "edge", "local").unwrap();
+        let decision = decide(
+            &cfg,
+            &req,
+            &sessions,
+            None,
+            None,
+            &EffectiveRouting::passthrough(&cfg),
+            None,
+            None,
+            None,
+            Some(logs.as_ref()),
+            test_wordfreq().as_ref(),
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "REQ_ROUTE_CACHE_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "REQ_ROUTE_CACHE_CLOUD" || c.starts_with("REQ_ROUTE_CACHE_CLOUD:")),
+            "{:?}",
+            decision.reason_codes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2343,6 +2449,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
             None,
             None,
             test_wordfreq().as_ref(),
@@ -2373,6 +2480,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
             None,
             None,
             test_wordfreq().as_ref(),
@@ -2473,6 +2581,7 @@ mod tests {
                 },
                 RouteTier::Edge,
                 WorkStrategy::None,
+                0,
             );
         }
         let decision = decide_with_classifier(
@@ -2509,7 +2618,7 @@ mod tests {
             upstream_error: false,
         };
         for _ in 0..150 {
-            classifier.record(&features, outcome, RouteTier::Edge, WorkStrategy::None);
+            classifier.record(&features, outcome, RouteTier::Edge, WorkStrategy::None, 0);
         }
     }
 
@@ -2604,6 +2713,7 @@ mod tests {
                 outcome,
                 RouteTier::Edge,
                 WorkStrategy::None,
+                0,
             );
         }
         assert_eq!(classifier.snapshot().total_updates, before);

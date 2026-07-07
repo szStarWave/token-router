@@ -30,7 +30,7 @@ impl StepKind {
             StepKind::ToolArgFill => -0.25,
             StepKind::ToolSelect => -0.10,
             StepKind::FinalReply => 0.05,
-            StepKind::InitialPlan => 0.35,
+            StepKind::InitialPlan => 0.55,
             StepKind::MemoryCompact => 0.20,
             StepKind::RecoveryAfterFailure => 0.55,
             StepKind::SubagentSpawn => 0.50,
@@ -50,10 +50,6 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
     }
 
     if signals.assistant_failed_recent {
-        return StepKind::RecoveryAfterFailure;
-    }
-
-    if signals.consecutive_tool_error_streak >= super::signals::TOOL_ERROR_STREAK_ESCALATE {
         return StepKind::RecoveryAfterFailure;
     }
 
@@ -174,17 +170,17 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_resolves_recovery_after_failure_from_third() {
+    fn tool_error_streak_stays_tool_result_digest_from_second() {
         let req = ChatCompletionRequest::default();
-        let signals = signals_with_tool_error_streak(2);
-        assert_ne!(
-            resolve_step_kind(&req, &signals),
-            StepKind::RecoveryAfterFailure
-        );
-        let signals = signals_with_tool_error_streak(3);
+        let signals = signals_with_tool_error_streak(1);
         assert_eq!(
             resolve_step_kind(&req, &signals),
-            StepKind::RecoveryAfterFailure
+            StepKind::ToolResultDigest
+        );
+        let signals = signals_with_tool_error_streak(2);
+        assert_eq!(
+            resolve_step_kind(&req, &signals),
+            StepKind::ToolResultDigest
         );
     }
 

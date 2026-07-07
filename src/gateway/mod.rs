@@ -12,6 +12,7 @@ pub mod multimodal;
 pub mod routing;
 pub mod routing_log;
 pub mod server;
+pub mod served_outcome;
 pub mod session;
 pub mod stats;
 pub mod upstream;

@@ -1,8 +1,10 @@
 mod edge_busy;
+mod cloud_cache;
 mod adaptive;
 mod adaptive_tuner;
 mod cognitive_intent;
 mod conversation;
+mod request_hash;
 mod decision;
 mod difficulty;
 mod gates;
@@ -28,10 +30,11 @@ pub use conversation::conversation_key;
 mod tests;
 
 pub use decision::{RouteDecision, RouteTier, RoutingMode, decide};
+pub use request_hash::request_context_hash;
 pub use policy::Profile;
 pub use difficulty::DifficultyScore;
 pub use signals::{last_message_text, RequestSignals, SignalExtractor};
 pub use step_kind::StepKind;
 pub use upstream_availability::require_any_upstream;
 pub use wordfreq_store::{LexicalLearnContext, WordFreqSettings, WordFreqStore};
-pub use work::{WorkStrategy, apply_work_route, is_plan_step, is_work_step};
+pub use work::{WorkStrategy, attach_work_verify, is_plan_step, is_work_step};

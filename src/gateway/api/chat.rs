@@ -13,6 +13,7 @@ use crate::gateway::api::responses::{chat_response_to_responses, ResponsesSseTra
 use crate::gateway::api::routes::AppState;
 use crate::gateway::api::sse_transform::wrap_sse_transform;
 use crate::gateway::experience::RequestOutcome;
+use crate::gateway::served_outcome::{record_request_completion, CloudCacheSettings, ServedOutcome};
 use crate::gateway::error::{AppError, AppResult};
 use crate::gateway::stats::AuthKeyContext;
 
@@ -68,11 +69,7 @@ pub async fn chat_completions_core(
         return Err(e);
     }
 
-    let routing = state.adaptive_tuner.refresh(
-        &state.config(),
-        state.experience.as_ref(),
-        state.stats.as_ref(),
-    );
+    let routing = state.adaptive_tuner.refresh(&state.config());
     let edge_tps = state.stats.session_edge_tps();
     let mut decision = crate::gateway::routing::decide(
         &state.config(),
@@ -84,6 +81,7 @@ pub async fn chat_completions_core(
         Some(state.edge_load.as_ref()),
         edge_tps,
         Some(state.classifier.as_ref()),
+        Some(state.routing_logs.as_ref()),
         state.wordfreq.as_ref(),
     );
     state.stats.record_decision(&decision);
@@ -112,7 +110,7 @@ pub async fn chat_completions_core(
         {
             Ok((byte_stream, fallback)) => {
                 let outcome = RequestOutcome::success(&decision, fallback);
-                record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
+                record_learning(&state, &decision, &req, outcome, assistant_failed, None);
 
                 let byte_stream = match &output {
                     ChatOutputFormat::OpenAi => byte_stream,
@@ -143,9 +141,10 @@ pub async fn chat_completions_core(
                 record_learning(
                     &state,
                     &decision,
-                    &conv_key,
+                    &req,
                     RequestOutcome::upstream_error(),
                     assistant_failed,
+                    None,
                 );
                 Err(e)
             }
@@ -158,8 +157,16 @@ pub async fn chat_completions_core(
         {
             Ok(mut resp) => {
                 let fallback = resp.token_router_meta.as_ref().is_some_and(|m| m.fallback);
-                let outcome = RequestOutcome::success(&decision, fallback);
-                record_learning(&state, &decision, &conv_key, outcome, assistant_failed);
+                let served = ServedOutcome::from_non_stream(&decision, &resp, fallback);
+                let outcome = served.outcome;
+                record_learning(
+                    &state,
+                    &decision,
+                    &req,
+                    outcome,
+                    assistant_failed,
+                    Some(&served),
+                );
 
                 match output {
                     ChatOutputFormat::OpenAi => {
@@ -187,9 +194,10 @@ pub async fn chat_completions_core(
                 record_learning(
                     &state,
                     &decision,
-                    &conv_key,
+                    &req,
                     RequestOutcome::upstream_error(),
                     assistant_failed,
+                    None,
                 );
                 Err(e)
             }
@@ -200,13 +208,20 @@ pub async fn chat_completions_core(
 fn record_learning(
     state: &AppState,
     decision: &crate::gateway::routing::RouteDecision,
-    conv_key: &str,
+    req: &ChatCompletionRequest,
     outcome: RequestOutcome,
     assistant_failed_signal: bool,
+    served: Option<&ServedOutcome>,
 ) {
     state
         .experience
         .record_outcome(decision.step_kind, outcome);
+    if decision.consecutive_tool_error_streak > 0 {
+        state.experience.record_tool_failure(
+            decision.step_kind,
+            decision.consecutive_tool_error_streak,
+        );
+    }
     state.wordfreq.reinforce_from_outcome(
         &decision.lexical_learn,
         decision.step_kind,
@@ -221,16 +236,38 @@ fn record_learning(
                 outcome,
                 decision.route,
                 decision.work_strategy,
+                decision.consecutive_tool_error_streak,
             );
         }
     }
-    state.sessions.apply_outcome(
-        conv_key,
-        decision,
-        outcome,
-        state.config().cloud_sticky_ttl_secs,
-        assistant_failed_signal,
-    );
+    if let Some(served) = served {
+        let settings = CloudCacheSettings::from_config(&state.config());
+        record_request_completion(
+            state.sessions.as_ref(),
+            state.routing_logs.as_ref(),
+            &settings,
+            req,
+            decision,
+            served,
+            assistant_failed_signal,
+        );
+    } else if outcome.upstream_error {
+        let settings = CloudCacheSettings::from_config(&state.config());
+        let served = ServedOutcome {
+            outcome,
+            served_tier: "edge".to_string(),
+            served_model: String::new(),
+            cached_tokens: 0,
+            prompt_tokens: decision.tokens_in_estimate,
+        };
+        state.sessions.apply_served_outcome(
+            &decision.conversation_key,
+            decision,
+            &served,
+            &settings,
+            assistant_failed_signal,
+        );
+    }
 }
 
 fn apply_sse_headers(headers: &mut HeaderMap) {

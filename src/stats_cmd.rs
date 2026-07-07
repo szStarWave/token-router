@@ -689,15 +689,9 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
     };
     let experience = experience_snapshot_from_disk(&data_dir, settings).ok();
     let classifier = classifier_snapshot_from_disk(&data_dir, settings).ok();
-    let effective_routing = experience.as_ref().and_then(|exp| {
-        let config = AppConfig::from_file(settings.file.clone(), settings.config_path.clone()).ok()?;
-        Some(compute_effective_routing(
-            &config,
-            exp,
-            Some(&data),
-            &config.adaptive_routing,
-        ))
-    });
+    let effective_routing = AppConfig::from_file(settings.file.clone(), settings.config_path.clone())
+        .ok()
+        .map(|config| compute_effective_routing(&config));
     let mut snap = stats::build_snapshot(
         &data,
         StatsScope::Global,

@@ -1,65 +1,78 @@
 use super::signals::RequestSignals;
 use super::step_kind::StepKind;
 
-#[derive(Debug, Clone)]
-pub struct HardGate {
-    pub code: &'static str,
+#[derive(Debug, Clone, Default)]
+pub struct GateBiasResult {
+    pub linear_delta: f32,
+    pub parts: Vec<(String, f32)>,
+    pub reason_codes: Vec<String>,
 }
 
-pub fn check_hard_gates(
+/// Former hard gates — now contribute linear difficulty bias + observability reason codes.
+pub fn collect_gate_biases(
     signals: &RequestSignals,
     step_kind: StepKind,
     ctx_edge_max: u32,
     edge_available: bool,
-) -> Option<HardGate> {
+) -> GateBiasResult {
+    let mut linear_delta = 0.0f32;
+    let mut reason_codes = Vec::new();
+
+    let mut parts = Vec::new();
+
     if !edge_available {
-        return Some(HardGate {
-            code: "GATE_EDGE_DOWN",
-        });
+        reason_codes.push("GATE_EDGE_DOWN".to_string());
+        return GateBiasResult {
+            linear_delta,
+            parts,
+            reason_codes,
+        };
     }
 
     if signals.user_rejects_answer {
-        return Some(HardGate {
-            code: "GATE_USER_REJECT",
-        });
+        reason_codes.push("GATE_USER_REJECT".to_string());
+        linear_delta += 0.55;
+        parts.push(("GATE_USER_REJECT".to_string(), 0.55));
     }
 
     if step_kind == StepKind::MemoryCompact
         && ctx_overflow_triggers(signals, step_kind, ctx_edge_max)
     {
-        return Some(HardGate {
-            code: "GATE_OPENCLAW_COMPACT",
-        });
-    }
-
-    if ctx_overflow_triggers(signals, step_kind, ctx_edge_max) {
-        return Some(HardGate {
-            code: "GATE_CTX_OVERFLOW",
-        });
+        reason_codes.push("GATE_OPENCLAW_COMPACT".to_string());
+        linear_delta += 0.45;
+        parts.push(("GATE_OPENCLAW_COMPACT".to_string(), 0.45));
+    } else if step_kind != StepKind::MemoryCompact
+        && ctx_overflow_triggers(signals, step_kind, ctx_edge_max)
+    {
+        reason_codes.push("GATE_CTX_OVERFLOW".to_string());
+        let delta = match step_kind {
+            StepKind::DirectChat | StepKind::HeartbeatAck => 0.35,
+            _ => 0.50,
+        };
+        linear_delta += delta;
+        parts.push(("GATE_CTX_OVERFLOW".to_string(), delta));
     }
 
     if signals.assistant_failed_recent && step_kind != StepKind::HeartbeatAck {
-        return Some(HardGate {
-            code: "GATE_ASSISTANT_FAILURE",
-        });
-    }
-
-    if signals.consecutive_tool_error_streak >= super::signals::TOOL_ERROR_STREAK_ESCALATE {
-        return Some(HardGate {
-            code: "GATE_TOOL_ERROR_STREAK",
-        });
+        reason_codes.push("GATE_ASSISTANT_FAILURE".to_string());
+        linear_delta += 0.20;
+        parts.push(("GATE_ASSISTANT_FAILURE".to_string(), 0.20));
     }
 
     if signals.risky_tool_hard
         && matches!(step_kind, StepKind::ToolSelect | StepKind::ToolArgFill)
         && !signals.last_role_tool
     {
-        return Some(HardGate {
-            code: "GATE_RISKY_TOOL",
-        });
+        reason_codes.push("GATE_RISKY_TOOL".to_string());
+        linear_delta += 0.60;
+        parts.push(("GATE_RISKY_TOOL".to_string(), 0.60));
     }
 
-    None
+    GateBiasResult {
+        linear_delta,
+        parts,
+        reason_codes,
+    }
 }
 
 /// Token budget for overflow gate. Casual turns ignore static OpenClaw system + tool schema.
@@ -135,42 +148,20 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_gate_fires_from_third() {
-        let mut signals = empty_signals();
-        signals.consecutive_tool_error_streak = 3;
-        let gate = check_hard_gates(
-            &signals,
-            StepKind::ToolResultDigest,
-            65536,
-            true,
-        );
-        assert_eq!(gate.unwrap().code, "GATE_TOOL_ERROR_STREAK");
-    }
-
-    #[test]
-    fn two_tool_errors_do_not_trigger_gate() {
+    fn tool_error_streak_has_no_escalate_gate() {
         let mut signals = empty_signals();
         signals.consecutive_tool_error_streak = 2;
-        assert!(check_hard_gates(
-            &signals,
-            StepKind::RecoveryAfterFailure,
-            65536,
-            true,
-        )
-        .is_none());
+        let result = collect_gate_biases(&signals, StepKind::ToolResultDigest, 65536, true);
+        assert!(!result.reason_codes.iter().any(|c| c == "GATE_TOOL_ERROR_STREAK"));
+        assert!(result.linear_delta < 0.50);
     }
 
     #[test]
-    fn single_tool_error_does_not_trigger_gate() {
+    fn single_tool_error_does_not_add_escalate_gate() {
         let mut signals = empty_signals();
         signals.consecutive_tool_error_streak = 1;
-        assert!(check_hard_gates(
-            &signals,
-            StepKind::RecoveryAfterFailure,
-            65536,
-            true,
-        )
-        .is_none());
+        let result = collect_gate_biases(&signals, StepKind::RecoveryAfterFailure, 65536, true);
+        assert!(!result.reason_codes.iter().any(|c| c == "GATE_TOOL_ERROR_STREAK"));
     }
 
     #[test]
@@ -180,7 +171,8 @@ mod tests {
         signals.tok_tools_schema = 10_000;
         signals.tok_rest = 100;
         signals.tok_total_in = 60_100;
-        assert!(check_hard_gates(&signals, StepKind::DirectChat, 55_000, true).is_none());
+        let result = collect_gate_biases(&signals, StepKind::DirectChat, 55_000, true);
+        assert!(!result.reason_codes.iter().any(|c| c == "GATE_CTX_OVERFLOW"));
     }
 
     #[test]
@@ -188,12 +180,9 @@ mod tests {
         let mut signals = empty_signals();
         signals.tok_rest = 60_000;
         signals.tok_total_in = 120_000;
-        assert_eq!(
-            check_hard_gates(&signals, StepKind::DirectChat, 55_000, true)
-                .unwrap()
-                .code,
-            "GATE_CTX_OVERFLOW"
-        );
+        let result = collect_gate_biases(&signals, StepKind::DirectChat, 55_000, true);
+        assert!(result.reason_codes.iter().any(|c| c == "GATE_CTX_OVERFLOW"));
+        assert!(result.linear_delta >= 0.35);
     }
 
     #[test]
@@ -201,61 +190,46 @@ mod tests {
         let mut signals = empty_signals();
         signals.tok_rest = 100;
         signals.tok_total_in = 60_000;
-        assert_eq!(
-            check_hard_gates(&signals, StepKind::ToolSelect, 55_000, true)
-                .unwrap()
-                .code,
-            "GATE_CTX_OVERFLOW"
-        );
+        let result = collect_gate_biases(&signals, StepKind::ToolSelect, 55_000, true);
+        assert!(result.reason_codes.iter().any(|c| c == "GATE_CTX_OVERFLOW"));
+        assert!(result.linear_delta >= 0.50);
     }
 
     #[test]
     fn openclaw_compact_gate_follows_ctx_edge_max() {
         let mut signals = empty_signals();
         signals.tok_total_in = 50_000;
-        assert!(check_hard_gates(&signals, StepKind::MemoryCompact, 262_144, true).is_none());
-        assert_eq!(
-            check_hard_gates(&signals, StepKind::MemoryCompact, 55_000, true)
-                .unwrap()
-                .code,
-            "GATE_OPENCLAW_COMPACT"
-        );
-        assert!(check_hard_gates(&signals, StepKind::DirectChat, 55_000, true).is_none());
+        let ok = collect_gate_biases(&signals, StepKind::MemoryCompact, 262_144, true);
+        assert!(!ok.reason_codes.iter().any(|c| c == "GATE_OPENCLAW_COMPACT"));
+        let overflow = collect_gate_biases(&signals, StepKind::MemoryCompact, 55_000, true);
+        assert!(overflow.reason_codes.iter().any(|c| c == "GATE_OPENCLAW_COMPACT"));
+        let direct = collect_gate_biases(&signals, StepKind::DirectChat, 55_000, true);
+        assert!(!direct.reason_codes.iter().any(|c| c == "GATE_OPENCLAW_COMPACT"));
     }
 
     #[test]
-    fn delete_move_hard_gate_on_tool_arg_fill() {
+    fn risky_tool_hard_bias_on_tool_arg_fill() {
         let mut signals = empty_signals();
         signals.risky_tool_hard = true;
         signals.risky_tool_hard_names = vec!["exec".into()];
-        assert_eq!(
-            check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true)
-                .unwrap()
-                .code,
-            "GATE_RISKY_TOOL"
-        );
+        let result = collect_gate_biases(&signals, StepKind::ToolArgFill, 65536, true);
+        assert!(result.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"));
+        assert!(result.linear_delta >= 0.40);
     }
 
     #[test]
-    fn delete_move_skipped_after_tool_result() {
+    fn risky_tool_hard_skipped_after_tool_result() {
         let mut signals = empty_signals();
         signals.risky_tool_hard = true;
         signals.last_role_tool = true;
-        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
+        let result = collect_gate_biases(&signals, StepKind::ToolArgFill, 65536, true);
+        assert!(!result.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"));
     }
 
     #[test]
-    fn write_create_does_not_trigger_hard_gate() {
-        let mut signals = empty_signals();
-        signals.risky_tool_soft = false;
-        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
-    }
-
-    #[test]
-    fn browser_soft_does_not_trigger_hard_gate() {
-        let mut signals = empty_signals();
-        signals.risky_tool_soft = true;
-        signals.risky_tool_soft_names = vec!["browser".into()];
-        assert!(check_hard_gates(&signals, StepKind::ToolArgFill, 65536, true).is_none());
+    fn edge_down_emits_reason_without_bias() {
+        let result = collect_gate_biases(&empty_signals(), StepKind::ToolArgFill, 65536, false);
+        assert!(result.reason_codes.iter().any(|c| c == "GATE_EDGE_DOWN"));
+        assert_eq!(result.linear_delta, 0.0);
     }
 }

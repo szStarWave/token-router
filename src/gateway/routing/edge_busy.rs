@@ -9,7 +9,7 @@ use crate::gateway::config::AppConfig;
 
 fn would_use_edge(route: RouteTier, work: WorkStrategy, multimodal: MultimodalStrategy) -> bool {
     matches!(route, RouteTier::Edge | RouteTier::Cascade)
-        || matches!(work, WorkStrategy::CachedEdge | WorkStrategy::Verify)
+        || matches!(work, WorkStrategy::Verify)
         || matches!(
             multimodal,
             MultimodalStrategy::CachedEdge
@@ -18,7 +18,29 @@ fn would_use_edge(route: RouteTier, work: WorkStrategy, multimodal: MultimodalSt
         )
 }
 
+/// Returns true when edge is busy and a non-casual step would have used edge.
+pub fn edge_busy_applies(
+    route: RouteTier,
+    work: WorkStrategy,
+    multimodal: MultimodalStrategy,
+    step_kind: StepKind,
+    config: &AppConfig,
+    edge_load: Option<&EdgeInferenceTracker>,
+) -> bool {
+    let Some(tracker) = edge_load else {
+        return false;
+    };
+    if matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck) {
+        return false;
+    }
+    if !tracker.is_busy() || !cloud_configured(config) || !would_use_edge(route, work, multimodal) {
+        return false;
+    }
+    !strict_single_tier(config)
+}
+
 /// When edge is mid-inference and cloud is available, skip edge and route cloud directly.
+/// Used only for fixed-route config paths that bypass difficulty scoring.
 pub fn apply_edge_busy_fallback(
     route: RouteTier,
     work: WorkStrategy,
@@ -28,17 +50,7 @@ pub fn apply_edge_busy_fallback(
     edge_load: Option<&EdgeInferenceTracker>,
     reason_codes: &mut Vec<String>,
 ) -> (RouteTier, WorkStrategy, MultimodalStrategy) {
-    let Some(tracker) = edge_load else {
-        return (route, work, multimodal);
-    };
-    if matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck) {
-        return (route, work, multimodal);
-    }
-    if !tracker.is_busy() || !cloud_configured(config) || !would_use_edge(route, work, multimodal) {
-        return (route, work, multimodal);
-    }
-
-    if strict_single_tier(config) {
+    if !edge_busy_applies(route, work, multimodal, step_kind, config, edge_load) {
         return (route, work, multimodal);
     }
 
@@ -49,7 +61,7 @@ pub fn apply_edge_busy_fallback(
         RouteTier::Cloud => RouteTier::Cloud,
     };
     let work = match work {
-        WorkStrategy::CachedEdge | WorkStrategy::Verify => WorkStrategy::None,
+        WorkStrategy::Verify => WorkStrategy::None,
         other => other,
     };
     let multimodal = match multimodal {
@@ -93,21 +105,32 @@ mod tests {
     }
 
     #[test]
-    fn idle_keeps_edge_route() {
+    fn idle_does_not_apply_busy_bias() {
         let config = dual_config();
         let tracker = EdgeInferenceTracker::new();
-        let mut codes = Vec::new();
-        let (route, _, _) = apply_edge_busy_fallback(
+        assert!(!edge_busy_applies(
             RouteTier::Edge,
             WorkStrategy::None,
             MultimodalStrategy::None,
             StepKind::ToolSelect,
             &config,
             Some(tracker.as_ref()),
-            &mut codes,
-        );
-        assert_eq!(route, RouteTier::Edge);
-        assert!(codes.is_empty());
+        ));
+    }
+
+    #[test]
+    fn busy_applies_for_work_step() {
+        let config = dual_config();
+        let tracker = EdgeInferenceTracker::new();
+        let _g = tracker.begin();
+        assert!(edge_busy_applies(
+            RouteTier::Edge,
+            WorkStrategy::None,
+            MultimodalStrategy::None,
+            StepKind::ToolSelect,
+            &config,
+            Some(tracker.as_ref()),
+        ));
     }
 
     #[test]
@@ -127,22 +150,18 @@ mod tests {
         let config = AppConfig::from_file(file, "/tmp/flowy-edge-busy-fixed.toml".into()).unwrap();
         let tracker = EdgeInferenceTracker::new();
         let _g = tracker.begin();
-        let mut codes = Vec::new();
-        let (route, _, _) = apply_edge_busy_fallback(
+        assert!(!edge_busy_applies(
             RouteTier::Edge,
             WorkStrategy::None,
             MultimodalStrategy::None,
             StepKind::ToolSelect,
             &config,
             Some(tracker.as_ref()),
-            &mut codes,
-        );
-        assert_eq!(route, RouteTier::Edge);
-        assert!(!codes.iter().any(|c| c == "GATE_EDGE_BUSY"));
+        ));
     }
 
     #[test]
-    fn busy_forces_cloud() {
+    fn busy_forces_cloud_on_fixed_route_fallback() {
         let config = dual_config();
         let tracker = EdgeInferenceTracker::new();
         let _g = tracker.begin();
@@ -163,21 +182,17 @@ mod tests {
     }
 
     #[test]
-    fn busy_does_not_redirect_direct_chat() {
+    fn busy_does_not_apply_to_direct_chat() {
         let config = dual_config();
         let tracker = EdgeInferenceTracker::new();
         let _g = tracker.begin();
-        let mut codes = Vec::new();
-        let (route, _, _) = apply_edge_busy_fallback(
+        assert!(!edge_busy_applies(
             RouteTier::Edge,
             WorkStrategy::None,
             MultimodalStrategy::None,
             StepKind::DirectChat,
             &config,
             Some(tracker.as_ref()),
-            &mut codes,
-        );
-        assert_eq!(route, RouteTier::Edge);
-        assert!(!codes.iter().any(|c| c == "GATE_EDGE_BUSY"));
+        ));
     }
 }

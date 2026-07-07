@@ -2,7 +2,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::gateway::config::AppConfig;
-use crate::gateway::experience::ExperienceStore;
 
 use super::decision::RouteTier;
 use super::signals::RequestSignals;
@@ -13,8 +12,6 @@ use super::upstream_availability::{cloud_configured, edge_configured};
 pub enum WorkStrategy {
     #[default]
     None,
-    /// Experience shows edge handles this step_kind reliably.
-    CachedEdge,
     /// Edge first, cloud validates; outcomes feed experience.
     Verify,
 }
@@ -73,19 +70,19 @@ pub fn should_work_verify_sample(
     bucket < rate
 }
 
-pub fn apply_work_route(
+/// Attach work verify metadata without overriding the policy route.
+pub fn attach_work_verify(
     route: RouteTier,
     step_kind: StepKind,
     signals: &RequestSignals,
     config: &AppConfig,
-    experience: Option<&ExperienceStore>,
     conv_key: &str,
     tokens_in: u32,
     work_verify_sample_rate: f32,
     reason_codes: &mut Vec<String>,
-) -> (RouteTier, WorkStrategy) {
+) -> WorkStrategy {
     if !cloud_configured(config) {
-        return (route, WorkStrategy::None);
+        return WorkStrategy::None;
     }
 
     if is_plan_step(step_kind, signals) && super::signals::cognitive_task_applies(signals) {
@@ -97,32 +94,27 @@ pub fn apply_work_route(
     }
 
     if !is_work_step(step_kind) || !edge_configured(config) {
-        return (route, WorkStrategy::None);
+        return WorkStrategy::None;
     }
 
     reason_codes.push("WORK_EXEC_EDGE".to_string());
 
-    if experience.is_some_and(|exp| exp.edge_trusted(step_kind)) {
-        reason_codes.push("WORK_CACHE_EDGE".to_string());
-        return (RouteTier::Edge, WorkStrategy::CachedEdge);
-    }
-
-    if should_work_verify_sample(
-        conv_key,
-        step_kind,
-        tokens_in,
-        work_verify_sample_rate,
-    ) {
+    if route == RouteTier::Cascade
+        && should_work_verify_sample(conv_key, step_kind, tokens_in, work_verify_sample_rate)
+    {
         reason_codes.push(format!(
             "WORK_VERIFY_SAMPLE(p={work_verify_sample_rate:.2})"
         ));
-        return (RouteTier::Cascade, WorkStrategy::Verify);
+        return WorkStrategy::Verify;
     }
 
-    reason_codes.push(format!(
-        "WORK_SAMPLE_SKIP(p={work_verify_sample_rate:.2})"
-    ));
-    (RouteTier::Edge, WorkStrategy::None)
+    if route == RouteTier::Cascade && work_verify_sample_rate > 0.0 {
+        reason_codes.push(format!(
+            "WORK_SAMPLE_SKIP(p={work_verify_sample_rate:.2})"
+        ));
+    }
+
+    WorkStrategy::None
 }
 
 #[cfg(test)]
@@ -209,60 +201,56 @@ mod tests {
     }
 
     #[test]
-    fn apply_work_route_skips_verify_at_zero_rate() {
+    fn attach_work_verify_preserves_cloud_route() {
         let cfg = app_config(0.0);
         let mut codes = Vec::new();
         let signals = empty_signals();
-        let (route, strategy) = apply_work_route(
+        let strategy = attach_work_verify(
             RouteTier::Cloud,
             StepKind::ToolSelect,
             &signals,
             &cfg,
-            None,
             "conv:sample",
             512,
             0.0,
             &mut codes,
         );
-        assert_eq!(route, RouteTier::Edge);
         assert_eq!(strategy, WorkStrategy::None);
-        assert!(codes.iter().any(|c| c.starts_with("WORK_SAMPLE_SKIP")));
+        assert!(codes.iter().any(|c| c == "WORK_EXEC_EDGE"));
+        assert!(!codes.iter().any(|c| c.starts_with("WORK_SAMPLE_SKIP")));
     }
 
     #[test]
-    fn plan_intent_emits_reason_without_forcing_cloud() {
+    fn plan_intent_emits_reason_without_changing_route() {
         let cfg = app_config(0.0);
         let mut signals = empty_signals();
         signals.intent_plan = true;
         signals.loop_steps = 0;
         signals.had_tool_roundtrip = false;
         let mut codes = Vec::new();
-        let (route, _) = apply_work_route(
+        let _ = attach_work_verify(
             RouteTier::Edge,
             StepKind::ToolSelect,
             &signals,
             &cfg,
-            None,
             "conv:plan",
             512,
             0.0,
             &mut codes,
         );
-        assert_eq!(route, RouteTier::Edge);
         assert!(codes.iter().any(|c| c == "PLAN_INTENT"));
     }
 
     #[test]
-    fn apply_work_route_verifies_at_full_rate() {
+    fn attach_work_verify_on_cascade_at_full_rate() {
         let cfg = app_config(1.0);
         let mut codes = Vec::new();
         let signals = empty_signals();
-        let (route, strategy) = apply_work_route(
-            RouteTier::Cloud,
+        let strategy = attach_work_verify(
+            RouteTier::Cascade,
             StepKind::ToolSelect,
             &signals,
             &cfg,
-            None,
             "conv:sample",
             512,
             1.0,
@@ -270,5 +258,25 @@ mod tests {
         );
         assert_eq!(strategy, WorkStrategy::Verify);
         assert!(codes.iter().any(|c| c.starts_with("WORK_VERIFY_SAMPLE")));
+    }
+
+    #[test]
+    fn single_tool_error_streak_does_not_force_verify() {
+        let cfg = app_config(0.0);
+        let mut signals = empty_signals();
+        signals.consecutive_tool_error_streak = 1;
+        let mut codes = Vec::new();
+        let strategy = attach_work_verify(
+            RouteTier::Edge,
+            StepKind::ToolSelect,
+            &signals,
+            &cfg,
+            "conv:tool-err",
+            512,
+            0.0,
+            &mut codes,
+        );
+        assert_eq!(strategy, WorkStrategy::None);
+        assert!(codes.iter().any(|c| c == "WORK_EXEC_EDGE"));
     }
 }

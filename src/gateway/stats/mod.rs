@@ -925,6 +925,7 @@ mod tests {
             cloud_input_saved_estimate: 100,
             conversation_key: String::new(),
             assistant_failed_recent: false,
+            consecutive_tool_error_streak: 0,
             multimodal_strategy: MultimodalStrategy::None,
             work_strategy: WorkStrategy::None,
             force_cloud_sticky: false,

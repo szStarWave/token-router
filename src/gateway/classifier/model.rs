@@ -160,7 +160,11 @@ fn step_kind_feature_key(k: StepKind) -> &'static str {
 
 pub fn label_from_outcome(
     outcome: crate::gateway::experience::RequestOutcome,
+    tool_error_streak: u32,
 ) -> Option<Label> {
+    if tool_error_streak > 0 {
+        return Some(Label::CloudNeeded);
+    }
     if outcome.edge_ok && !outcome.cascade_fallback && !outcome.upstream_error {
         Some(Label::EdgeOk)
     } else if outcome.cascade_fallback || outcome.upstream_error {
@@ -248,7 +252,7 @@ mod tests {
                 edge_ok: true,
                 cascade_fallback: false,
                 upstream_error: false,
-            }),
+            }, 0),
             Some(Label::EdgeOk)
         );
         assert_eq!(
@@ -256,12 +260,20 @@ mod tests {
                 edge_ok: false,
                 cascade_fallback: true,
                 upstream_error: false,
-            }),
+            }, 0),
             Some(Label::CloudNeeded)
         );
         assert_eq!(
-            label_from_outcome(RequestOutcome::default()),
+            label_from_outcome(RequestOutcome::default(), 0),
             None
+        );
+        assert_eq!(
+            label_from_outcome(RequestOutcome {
+                edge_ok: true,
+                cascade_fallback: false,
+                upstream_error: false,
+            }, 1),
+            Some(Label::CloudNeeded)
         );
     }
 
@@ -281,6 +293,7 @@ mod tests {
                     cloud_input_saved_estimate: 0,
                     conversation_key: String::new(),
                     assistant_failed_recent: false,
+                    consecutive_tool_error_streak: 0,
                     multimodal_strategy: crate::gateway::multimodal::MultimodalStrategy::None,
                     work_strategy: crate::gateway::routing::WorkStrategy::None,
                     force_cloud_sticky: false,

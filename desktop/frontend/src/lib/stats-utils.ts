@@ -22,9 +22,11 @@ export function sidebarTokenShares(tb: Record<string, unknown> | undefined) {
 
 export function formatUptime(secs: number, t: (k: string, v?: Record<string, string | number>) => string): string {
   if (!Number.isFinite(secs) || secs < 0) return '—'
-  const h = Math.floor(secs / 3600)
+  const d = Math.floor(secs / 86_400)
+  const h = Math.floor((secs % 86_400) / 3600)
   const m = Math.floor((secs % 3600) / 60)
   const s = Math.floor(secs % 60)
+  if (d > 0) return t('uptime.dhms', { d, h, m, s })
   if (h > 0) return t('uptime.hms', { h, m, s })
   if (m > 0) return t('uptime.ms', { m, s })
   return t('uptime.s', { s })

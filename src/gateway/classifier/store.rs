@@ -121,6 +121,7 @@ impl ClassifierStore {
         outcome: RequestOutcome,
         route: RouteTier,
         work_strategy: WorkStrategy,
+        tool_error_streak: u32,
     ) {
         let settings = self.settings();
         if !settings.enabled {
@@ -130,7 +131,7 @@ impl ClassifierStore {
         {
             return;
         }
-        let Some(label) = label_from_outcome(outcome) else {
+        let Some(label) = label_from_outcome(outcome, tool_error_streak) else {
             return;
         };
         self.with_mut(|data| {
@@ -354,6 +355,7 @@ mod tests {
             },
             RouteTier::Edge,
             WorkStrategy::None,
+            0,
         );
         let snap = store.snapshot();
         assert_eq!(snap.total_updates, 1);
@@ -381,6 +383,7 @@ mod tests {
                 },
                 RouteTier::Edge,
                 WorkStrategy::None,
+                0,
             );
         }
         {

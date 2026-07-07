@@ -1,17 +1,22 @@
-use std::path::Path;
+﻿use std::path::Path;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::routing::{RouteTier, StepKind};
 
-pub const SESSION_VERSION: u32 = 1;
+pub const SESSION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionData {
     pub version: u32,
     pub last_tok_in: u32,
     #[serde(default)]
+    pub cloud_cache_anchor_unix: Option<u64>,
+    #[serde(default)]
+    pub cloud_cache_peak_linear: f32,
+    /// Legacy field; migrated on load into anchor/peak when still active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_sticky_until_unix: Option<u64>,
     #[serde(default)]
     pub last_assistant_failed: bool,
@@ -26,13 +31,32 @@ pub struct SessionData {
 }
 
 impl SessionData {
-    pub fn cloud_sticky_active(&self) -> bool {
-        self.cloud_sticky_active_at(now_unix())
+    pub fn cloud_cache_active_at(&self, _now: u64) -> bool {
+        self.cloud_cache_anchor_unix.is_some_and(|_| {
+            self.cloud_cache_peak_linear > f32::EPSILON
+        })
     }
 
-    pub fn cloud_sticky_active_at(&self, now: u64) -> bool {
-        self.cloud_sticky_until_unix
-            .is_some_and(|until| now < until)
+    pub fn clear_cloud_cache(&mut self) {
+        self.cloud_cache_anchor_unix = None;
+        self.cloud_cache_peak_linear = 0.0;
+        self.cloud_sticky_until_unix = None;
+    }
+
+    pub fn refresh_cloud_cache(&mut self, now: u64, peak: f32) {
+        self.cloud_cache_anchor_unix = Some(now);
+        self.cloud_cache_peak_linear = peak;
+        self.cloud_sticky_until_unix = None;
+    }
+
+    pub fn migrate_legacy_sticky(&mut self, now: u64, default_peak: f32) {
+        if let Some(until) = self.cloud_sticky_until_unix {
+            if now < until {
+                self.cloud_cache_anchor_unix = Some(now);
+                self.cloud_cache_peak_linear = default_peak;
+            }
+            self.cloud_sticky_until_unix = None;
+        }
     }
 
     pub fn last_activity_unix(&self, fallback_mtime: Option<u64>) -> u64 {
@@ -47,7 +71,7 @@ impl SessionData {
         if retention_days == 0 {
             return false;
         }
-        if self.cloud_sticky_active_at(now) {
+        if self.cloud_cache_active_at(now) {
             return false;
         }
         let activity = self.last_activity_unix(fallback_mtime);
@@ -64,8 +88,11 @@ pub fn load(path: &Path) -> anyhow::Result<SessionData> {
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("read session {}", path.display()))?;
-    match serde_json::from_str(&text) {
-        Ok(data) => Ok(data),
+    match serde_json::from_str::<SessionData>(&text) {
+        Ok(mut data) => {
+            data.migrate_legacy_sticky(now_unix(), 0.18);
+            Ok(data)
+        }
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
@@ -107,4 +134,3 @@ fn now_unix() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
-

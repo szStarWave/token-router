@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::data::{self, ExperienceData, StepExperience};
 use super::outcome::RequestOutcome;
-use crate::gateway::routing::StepKind;
+use crate::gateway::routing::{is_work_step, StepKind};
 
 #[derive(Debug, Clone)]
 pub struct ExperienceSettings {
@@ -119,6 +119,16 @@ impl ExperienceStore {
         });
     }
 
+    /// Record trailing tool execution failures visible in the current request context.
+    pub fn record_tool_failure(&self, step_kind: StepKind, streak: u32) {
+        if !self.settings().enabled || streak == 0 || !is_work_step(step_kind) {
+            return;
+        }
+        self.with_mut(|data| {
+            data.step_entry(step_kind).tool_failure += 1;
+        });
+    }
+
     fn with_mut(&self, f: impl FnOnce(&mut ExperienceData)) {
         let mut guard = self.inner.lock().expect("experience mutex");
         f(&mut guard);
@@ -161,6 +171,7 @@ impl ExperienceStore {
             totals.edge_ok += step.edge_ok;
             totals.cascade_fallback += step.cascade_fallback;
             totals.upstream_error += step.upstream_error;
+            totals.tool_failure += step.tool_failure;
             totals.verified_total += step.verified_total;
             totals.total_outcomes += step.total_outcomes;
             if step.edge_trusted {
@@ -168,7 +179,7 @@ impl ExperienceStore {
             }
         }
         totals.fallback_rate = if totals.verified_total > 0 {
-            totals.cascade_fallback as f64 / totals.verified_total as f64
+            (totals.cascade_fallback + totals.tool_failure) as f64 / totals.verified_total as f64
         } else {
             0.0
         };
@@ -209,9 +220,10 @@ impl ExperienceStore {
 }
 
 fn is_edge_trusted(entry: &StepExperience, settings: &ExperienceSettings) -> bool {
-    let verified = entry.edge_ok + entry.cascade_fallback;
+    let effective_failures = entry.cascade_fallback + entry.tool_failure;
+    let verified = entry.edge_ok + effective_failures;
     verified >= MIN_TRUST_SAMPLES
-        && (entry.cascade_fallback as f32 / verified as f32) <= settings.target_fallback
+        && (effective_failures as f32 / verified as f32) <= settings.target_fallback
 }
 
 fn step_snapshot(
@@ -219,9 +231,10 @@ fn step_snapshot(
     entry: &StepExperience,
     settings: &ExperienceSettings,
 ) -> StepSnapshot {
-    let verified = entry.edge_ok + entry.cascade_fallback;
+    let effective_failures = entry.cascade_fallback + entry.tool_failure;
+    let verified = entry.edge_ok + effective_failures;
     let fallback_rate = if verified > 0 {
-        entry.cascade_fallback as f64 / verified as f64
+        effective_failures as f64 / verified as f64
     } else {
         0.0
     };
@@ -235,6 +248,7 @@ fn step_snapshot(
         edge_ok: entry.edge_ok,
         cascade_fallback: entry.cascade_fallback,
         upstream_error: entry.upstream_error,
+        tool_failure: entry.tool_failure,
         verified_total: verified,
         total_outcomes: verified + entry.upstream_error,
         fallback_rate,
@@ -245,11 +259,12 @@ fn step_snapshot(
 }
 
 fn compute_bias(entry: &StepExperience, settings: &ExperienceSettings) -> f32 {
-    let total = entry.edge_ok + entry.cascade_fallback;
-    if total == 0 {
+    let effective_failures = entry.cascade_fallback + entry.tool_failure;
+    let verified = entry.edge_ok + effective_failures;
+    if verified == 0 {
         return 0.0;
     }
-    let fallback_rate = entry.cascade_fallback as f32 / total as f32;
+    let fallback_rate = effective_failures as f32 / verified as f32;
     let raw = settings.learning_rate * (fallback_rate - settings.target_fallback);
     raw.clamp(-settings.max_bias, settings.max_bias)
 }
@@ -278,6 +293,7 @@ pub struct ExperienceTotals {
     pub edge_ok: u64,
     pub cascade_fallback: u64,
     pub upstream_error: u64,
+    pub tool_failure: u64,
     pub verified_total: u64,
     pub total_outcomes: u64,
     pub fallback_rate: f64,
@@ -291,6 +307,7 @@ pub struct StepSnapshot {
     pub edge_ok: u64,
     pub cascade_fallback: u64,
     pub upstream_error: u64,
+    pub tool_failure: u64,
     pub verified_total: u64,
     pub total_outcomes: u64,
     pub fallback_rate: f64,

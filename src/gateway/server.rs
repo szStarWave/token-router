@@ -122,6 +122,10 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     wordfreq.spawn_flush_task();
 
     let routing_logs = RoutingLogStore::open(&config.data_dir)?;
+    routing_logs.spawn_route_cache_cleanup_task(
+        config.request_route_cache_retention_days,
+        config.request_route_cache_cleanup_interval_secs,
+    );
 
     let sessions_for_shutdown = sessions.clone();
     let experience_for_shutdown = experience.clone();
@@ -129,17 +133,12 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let multimodal_for_shutdown = multimodal.clone();
     let agent_usage_for_shutdown = agent_usage.clone();
     let multimodal_for_upstream = multimodal.clone();
-    let initial_routing = {
-        let exp = experience.snapshot();
-        let stats_data = stats.global_data();
-        compute_effective_routing(&config, &exp, Some(&stats_data), &config.adaptive_routing)
-    };
-    let adaptive_tuner = Arc::new(AdaptiveTuner::new(initial_routing));
+    let adaptive_tuner = Arc::new(AdaptiveTuner::new(compute_effective_routing(&config)));
     let edge_load = EdgeInferenceTracker::new();
     let config_mgr = ConfigManager::new(config.clone());
     let state = AppState {
         config_mgr: config_mgr.clone(),
-        sessions,
+        sessions: sessions.clone(),
         experience,
         classifier,
         multimodal,
@@ -150,6 +149,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
             edge_load.clone(),
             agent_usage.clone(),
             routing_logs.clone(),
+            sessions.clone(),
         ),
         runtime: runtime.clone(),
         stats: stats.clone(),

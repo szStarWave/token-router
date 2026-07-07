@@ -13,6 +13,8 @@ pub struct StepExperience {
     pub edge_ok: u64,
     pub cascade_fallback: u64,
     pub upstream_error: u64,
+    #[serde(default)]
+    pub tool_failure: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
