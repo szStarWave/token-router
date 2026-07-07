@@ -1,6 +1,6 @@
 [package]
 name = "token-router-desktop"
-version = "0.15.0"
+version = "0.15.1"
 description = "Token Router desktop shell"
 authors = ["Token Router"]
 edition = "2021"
