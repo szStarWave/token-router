@@ -77,6 +77,17 @@ mod tests {
         experience: Option<&ExperienceStore>,
         multimodal: Option<&MultimodalStore>,
     ) -> crate::gateway::routing::RouteDecision {
+        decide_test_with_edge_tps(config, req, sessions, experience, multimodal, None)
+    }
+
+    fn decide_test_with_edge_tps(
+        config: &AppConfig,
+        req: &ChatCompletionRequest,
+        sessions: &SessionStore,
+        experience: Option<&ExperienceStore>,
+        multimodal: Option<&MultimodalStore>,
+        edge_tps: Option<f64>,
+    ) -> crate::gateway::routing::RouteDecision {
         decide(
             config,
             req,
@@ -85,6 +96,7 @@ mod tests {
             multimodal,
             &EffectiveRouting::passthrough(config),
             None,
+            edge_tps,
             None,
             test_wordfreq().as_ref(),
         )
@@ -105,6 +117,7 @@ mod tests {
             experience,
             multimodal,
             &EffectiveRouting::passthrough(config),
+            None,
             None,
             Some(classifier),
             test_wordfreq().as_ref(),
@@ -420,6 +433,60 @@ mod tests {
 
     fn openclaw_system_with_spawn_docs() -> String {
         "Use sessions_spawn for larger work. Do not poll subagents in a loop.".into()
+    }
+
+    fn openclaw_untrusted_user_content(user_text: &str) -> String {
+        format!(
+            "Sender (untrusted metadata):\n```json\n{{\n  \"label\": \"FlowyAIPC (gateway-client)\",\n  \"id\": \"gateway-client\",\n  \"name\": \"FlowyAIPC\",\n  \"username\": \"FlowyAIPC\"\n}}\n```\n\n[Mon 2026-07-06 16:18 GMT+8] {user_text}"
+        )
+    }
+
+    fn openclaw_untrusted_metadata_request() -> ChatCompletionRequest {
+        let mut req = openclaw_large_prompt_greeting_request();
+        if let Some(user) = req.messages.iter_mut().find(|m| m.role == Role::User) {
+            user.content = Some(openclaw_untrusted_user_content("你能干什么？"));
+        }
+        req
+    }
+
+    #[test]
+    fn openclaw_untrusted_metadata_greeting_stays_edge() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_untrusted_metadata_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(
+            casual_routes_edge(decision.route),
+            "OpenClaw metadata wrapper should not force cloud: {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn openclaw_untrusted_metadata_no_lexical_rare() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &openclaw_untrusted_metadata_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "LEXICAL_RARE" || c == "LEXICAL_BOTH"),
+            "{:?}",
+            decision.reason_codes
+        );
     }
 
     /// Simulates OpenClaw-sized system + tool schema with a short user turn.
@@ -848,6 +915,13 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: Some("e2".into()),
                 },
+                Message {
+                    role: Role::Tool,
+                    content: Some("Error: still failing".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("e3".into()),
+                },
             ],
             tools: vec![ToolDefinition {
                 tool_type: "function".into(),
@@ -898,40 +972,6 @@ mod tests {
         }
     }
 
-    fn successful_tool_result_request() -> ChatCompletionRequest {
-        ChatCompletionRequest {
-            model: "flowy-auto".into(),
-            messages: vec![
-                Message {
-                    role: Role::User,
-                    content: Some("list files".into()),
-                    content_parts: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                Message {
-                    role: Role::Tool,
-                    content: Some("file1.txt\nfile2.txt".into()),
-                    content_parts: None,
-                    tool_calls: None,
-                    tool_call_id: Some("ok1".into()),
-                },
-            ],
-            tools: vec![ToolDefinition {
-                tool_type: "function".into(),
-                function: FunctionDefinition {
-                    name: "exec".into(),
-                    description: None,
-                    parameters: serde_json::json!({}),
-                },
-            }],
-            stream: false,
-            tool_choice: None,
-            max_tokens: None,
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn consecutive_tool_errors_force_cloud() {
         let cfg = test_config(true, true);
@@ -945,7 +985,7 @@ mod tests {
         );
         assert!(
             matches!(decision.route, RouteTier::Cloud),
-            "two consecutive tool errors should force cloud: {:?}",
+            "three consecutive tool errors should force cloud: {:?}",
             decision
         );
         assert!(
@@ -960,16 +1000,9 @@ mod tests {
     }
 
     #[test]
-    fn single_tool_error_increases_difficulty() {
+    fn single_tool_error_does_not_escalate_streak() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
-        let baseline = decide_test(
-            &cfg,
-            &successful_tool_result_request(),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
         let decision = decide_test(
             &cfg,
             &single_tool_error_request(),
@@ -977,8 +1010,9 @@ mod tests {
             None,
             Some(test_multimodal_store().as_ref()),
         );
+        assert_eq!(decision.step_kind, StepKind::ToolResultDigest);
         assert!(
-            decision
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c == "STEP_RECOVERY_AFTER_FAILURE"),
@@ -986,23 +1020,17 @@ mod tests {
             decision.reason_codes
         );
         assert!(
-            decision
+            !decision
                 .reason_codes
                 .iter()
-                .any(|c| c == "TOOL_ERROR_STREAK_1"),
+                .any(|c| c.starts_with("TOOL_ERROR_STREAK_")),
             "{:?}",
             decision.reason_codes
-        );
-        assert!(
-            decision.difficulty > baseline.difficulty,
-            "single tool error should increase difficulty: {} vs {}",
-            decision.difficulty,
-            baseline.difficulty
         );
     }
 
     #[test]
-    fn single_tool_error_routes_cascade_or_cloud() {
+    fn single_tool_error_may_route_edge() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -1013,8 +1041,11 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Cascade | RouteTier::Cloud),
-            "single tool error should not route to edge: {:?}",
+            matches!(
+                decision.route,
+                RouteTier::Edge | RouteTier::Cascade | RouteTier::Cloud
+            ),
+            "single tool error should not hard-gate cloud: {:?}",
             decision
         );
         assert!(
@@ -1252,6 +1283,395 @@ mod tests {
             max_tokens: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn edge_intent_forces_edge() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("用端侧省积分".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(matches!(decision.route, RouteTier::Edge), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "EDGE_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn cloud_intent_forces_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("用云端快速回答".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "CLOUD_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn cloud_intent_slow_complaint_forces_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("太慢了，换个快的".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "CLOUD_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn tier_intent_latest_edge_overrides_earlier_cloud_routing() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![
+                    Message {
+                        role: Role::User,
+                        content: Some("用云端快速回答".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    Message {
+                        role: Role::Assistant,
+                        content: Some("好的，我在云端处理。".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some("用端侧省积分".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                ],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(matches!(decision.route, RouteTier::Edge), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "EDGE_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision.reason_codes.iter().any(|c| c == "CLOUD_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn tier_intent_carries_forward_within_window() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![
+                    Message {
+                        role: Role::User,
+                        content: Some("用云端快速回答".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    Message {
+                        role: Role::Assistant,
+                        content: Some("好的。".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some("帮我写个函数".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                ],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "CLOUD_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn tier_intent_resets_outside_window() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message {
+                role: Role::User,
+                content: Some(format!("闲聊 {i}")),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+            messages.push(Message {
+                role: Role::Assistant,
+                content: Some("嗯".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        messages[0] = Message {
+            role: Role::User,
+            content: Some("用云端快速回答".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages,
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            !decision.reason_codes.iter().any(|c| c == "CLOUD_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn long_gen_intent_prefers_edge_when_tps_unknown() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("帮我写一篇万字长文介绍 Rust".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat);
+        assert!(matches!(decision.route, RouteTier::Edge), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "LONG_GEN_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn long_gen_ppt_prefers_edge_when_tps_unknown() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("帮我生成一个PPT介绍产品".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(matches!(decision.route, RouteTier::Edge), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "LONG_GEN_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn long_gen_forces_cloud_when_edge_tps_low() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test_with_edge_tps(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("帮我写一篇万字长文".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+            Some(10.0),
+        );
+        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "LONG_GEN_EDGE_TPS_LOW"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn long_gen_max_tokens_prefers_edge_when_tps_unknown() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("继续".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: Some(8192),
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(matches!(decision.route, RouteTier::Edge), "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "LONG_GEN_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
     }
 
     #[test]
@@ -1565,6 +1985,7 @@ mod tests {
             classifier_features: None,
             casual_quality_fallback: false,
             lexical_learn: Default::default(),
+            routing_log_id: None,
         };
         sessions.apply_outcome(
             conv_key,
@@ -1672,6 +2093,7 @@ mod tests {
             classifier_features: None,
             casual_quality_fallback: false,
             lexical_learn: Default::default(),
+            routing_log_id: None,
         };
         sessions.apply_outcome(
             key,
@@ -1697,6 +2119,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
             None,
             test_wordfreq().as_ref(),
         );
@@ -1726,6 +2149,7 @@ mod tests {
             None,
             &EffectiveRouting::passthrough(&cfg),
             Some(tracker.as_ref()),
+            None,
             None,
             test_wordfreq().as_ref(),
         );
@@ -1844,6 +2268,121 @@ mod tests {
             decision.reason_codes
         );
         assert!(decision.edge_ok_probability.is_some());
+    }
+
+    fn poison_classifier_for_direct_chat(classifier: &ClassifierStore) {
+        let features = crate::gateway::classifier::FeatureVector {
+            keys: vec![
+                "step_kind:direct_chat".into(),
+                "ctx_bucket:high".into(),
+                "flag:tools_enabled".into(),
+                "tool_bucket:many".into(),
+            ],
+        };
+        let outcome = RequestOutcome {
+            edge_ok: false,
+            cascade_fallback: true,
+            upstream_error: false,
+        };
+        for _ in 0..150 {
+            classifier.record(&features, outcome, RouteTier::Edge, WorkStrategy::None);
+        }
+    }
+
+    #[test]
+    fn openclaw_greeting_stays_edge_with_poisoned_classifier() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let classifier = ClassifierStore::new_in_memory(ClassifierSettings {
+            min_samples: 5,
+            ..Default::default()
+        });
+        poison_classifier_for_direct_chat(classifier.as_ref());
+        let decision = decide_with_classifier(
+            &cfg,
+            &openclaw_large_prompt_greeting_request(),
+            &sessions,
+            None,
+            None,
+            classifier.as_ref(),
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
+        assert!(
+            casual_routes_edge(decision.route),
+            "poisoned classifier must not skip edge for casual OpenClaw greeting: {:?}",
+            decision
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CASUAL_CLASSIFIER_GUARD"),
+            "{:?}",
+            decision.reason_codes
+        );
+        let (_, theta_cloud) = Profile::Balanced.thresholds();
+        assert!(
+            decision.difficulty < theta_cloud,
+            "difficulty {:?} should stay below θ_cloud {:?}",
+            decision.difficulty,
+            theta_cloud
+        );
+    }
+
+    #[test]
+    fn casual_classifier_guard_caps_difficulty() {
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let classifier = ClassifierStore::new_in_memory(ClassifierSettings {
+            min_samples: 5,
+            ..Default::default()
+        });
+        poison_classifier_for_direct_chat(classifier.as_ref());
+        let decision = decide_with_classifier(
+            &cfg,
+            &openclaw_large_prompt_greeting_request(),
+            &sessions,
+            None,
+            None,
+            classifier.as_ref(),
+        );
+        assert_eq!(decision.step_kind, StepKind::DirectChat, "{:?}", decision);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CASUAL_CLASSIFIER_GUARD"),
+            "{:?}",
+            decision.reason_codes
+        );
+        let (_, theta_cloud) = Profile::Balanced.thresholds();
+        assert!(decision.difficulty < theta_cloud, "{:?}", decision);
+        assert!(casual_routes_edge(decision.route), "{:?}", decision);
+    }
+
+    #[test]
+    fn classifier_skips_casual_quality_fallback_learning() {
+        let classifier = test_classifier();
+        let before = classifier.snapshot().total_updates;
+        let outcome = RequestOutcome {
+            edge_ok: false,
+            cascade_fallback: true,
+            upstream_error: false,
+        };
+        let casual_quality_fallback = true;
+        let skip_classifier = casual_quality_fallback && outcome.cascade_fallback;
+        assert!(skip_classifier);
+        if !skip_classifier {
+            classifier.record(
+                &crate::gateway::classifier::FeatureVector {
+                    keys: vec!["step_kind:direct_chat".into()],
+                },
+                outcome,
+                RouteTier::Edge,
+                WorkStrategy::None,
+            );
+        }
+        assert_eq!(classifier.snapshot().total_updates, before);
     }
 
     fn user_reject_request(text: &str) -> ChatCompletionRequest {

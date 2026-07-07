@@ -121,15 +121,15 @@ $env:MODELSCOPE_TOKEN = "<your-token>"
 uv run --with modelscope python scripts/publish_ota/init_dataset.py
 ```
 
-2. 构建 release 并复制 NSIS setup 为版本化文件名，例如 `Token-Router-v0.12.0-flowy-CN-with_account-setup.exe`。
+2. 构建 release 并复制 NSIS setup 为版本化文件名，例如 `Token-Router-v0.14.4-flowy-CN-with_account-setup.exe`。
 
 3. 上传 setup 安装包与 `latest.json`：
 
 ```powershell
 uv run --with modelscope python scripts/publish_ota/publish.py `
-  --channel flowy --region-scope CN --version v0.12.0 `
+  --channel flowy --region-scope CN --version v0.14.4 `
   --enable-account-system true `
-  --setup-path "path\to\Token-Router-v0.12.0-flowy-CN-with_account-setup.exe"
+  --setup-path "path\to\Token-Router-v0.14.4-flowy-CN-with_account-setup.exe"
 ```
 
 更新说明维护在仓库根目录 [`docs/ota-release-notes.json`](../docs/ota-release-notes.json)。

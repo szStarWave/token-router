@@ -82,6 +82,9 @@ pub struct RouteDecision {
     /// Context for wordfreq runtime learning after the request completes.
     #[serde(skip)]
     pub lexical_learn: super::LexicalLearnContext,
+    /// Row id in `routing_logs.db`; set after `log_route_decision`.
+    #[serde(skip)]
+    pub routing_log_id: Option<i64>,
 }
 
 pub fn decide(
@@ -92,6 +95,7 @@ pub fn decide(
     multimodal: Option<&MultimodalStore>,
     routing: &EffectiveRouting,
     edge_load: Option<&EdgeInferenceTracker>,
+    edge_tps: Option<f64>,
     classifier: Option<&ClassifierStore>,
     wordfreq: &super::WordFreqStore,
 ) -> RouteDecision {
@@ -221,7 +225,7 @@ pub fn decide(
         config.ctx_edge_max_tokens,
         exp_bias,
     );
-    if signals.consecutive_tool_error_streak >= 1 {
+    if signals.consecutive_tool_error_streak >= super::signals::TOOL_ERROR_STREAK_DIFFICULTY {
         reason_codes.push(format!(
             "TOOL_ERROR_STREAK_{}",
             signals.consecutive_tool_error_streak
@@ -241,12 +245,21 @@ pub fn decide(
         reason_codes.push("LEXICAL_RARE".to_string());
     }
     push_risky_tool_soft_reason(&signals, &mut reason_codes);
-    let (difficulty, edge_ok_probability) = apply_classifier(
+    let (mut difficulty, edge_ok_probability) = apply_classifier(
         classifier,
         &features,
         d_heuristic.0,
         &mut reason_codes,
     );
+    if matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck)
+        && d_heuristic.0 < routing.theta_cloud
+    {
+        let cap = routing.theta_cloud - f32::EPSILON;
+        if difficulty >= routing.theta_cloud {
+            reason_codes.push("CASUAL_CLASSIFIER_GUARD".to_string());
+            difficulty = difficulty.min(cap);
+        }
+    }
     let d = DifficultyScore(difficulty);
     let route = policy::map_policy_with_thresholds(
         d,
@@ -310,6 +323,9 @@ pub fn decide(
         edge_load,
         &mut reason_codes,
     );
+    let route = apply_cloud_intent_route(route, &signals, config, &mut reason_codes);
+    let route = apply_long_gen_intent_route(route, &signals, config, edge_tps, &mut reason_codes);
+    let route = apply_edge_intent_route(route, &signals, config, &mut reason_codes);
     let route = finalize_route(route, config, &mut reason_codes);
     sessions.record_tokens(&conv_key, signals.tok_total_in);
 
@@ -331,6 +347,84 @@ pub fn decide(
         &last_user_text,
         config,
     )
+}
+
+fn apply_cloud_intent_route(
+    route: RouteTier,
+    signals: &super::signals::RequestSignals,
+    config: &AppConfig,
+    reason_codes: &mut Vec<String>,
+) -> RouteTier {
+    if !signals.intent_cloud || !cloud_configured(config) {
+        return route;
+    }
+    if route == RouteTier::Cloud {
+        return route;
+    }
+    reason_codes.push("CLOUD_INTENT".to_string());
+    RouteTier::Cloud
+}
+
+fn apply_long_gen_intent_route(
+    route: RouteTier,
+    signals: &super::signals::RequestSignals,
+    config: &AppConfig,
+    edge_tps: Option<f64>,
+    reason_codes: &mut Vec<String>,
+) -> RouteTier {
+    if !signals.intent_long_gen || signals.intent_cloud {
+        return route;
+    }
+
+    let edge_ok = edge_configured(config);
+    let cloud_ok = cloud_configured(config);
+
+    if !cloud_ok {
+        return route;
+    }
+    if !edge_ok {
+        if !reason_codes.iter().any(|c| c == "LONG_GEN_CLOUD_ONLY") {
+            reason_codes.push("LONG_GEN_CLOUD_ONLY".to_string());
+        }
+        return RouteTier::Cloud;
+    }
+
+    if super::keywords::edge_tps_is_low(edge_tps) {
+        if !reason_codes.iter().any(|c| c == "LONG_GEN_EDGE_TPS_LOW") {
+            reason_codes.push("LONG_GEN_EDGE_TPS_LOW".to_string());
+        }
+        if route == RouteTier::Cloud {
+            return route;
+        }
+        return RouteTier::Cloud;
+    }
+
+    if !reason_codes.iter().any(|c| c == "LONG_GEN_EDGE") {
+        reason_codes.push("LONG_GEN_EDGE".to_string());
+    }
+    RouteTier::Edge
+}
+
+fn apply_edge_intent_route(
+    route: RouteTier,
+    signals: &super::signals::RequestSignals,
+    config: &AppConfig,
+    reason_codes: &mut Vec<String>,
+) -> RouteTier {
+    if !signals.intent_edge
+        || signals.intent_cloud
+        || signals.intent_long_gen
+        || !edge_configured(config)
+    {
+        return route;
+    }
+    if !reason_codes.iter().any(|c| c == "EDGE_INTENT") {
+        reason_codes.push("EDGE_INTENT".to_string());
+    }
+    if route == RouteTier::Edge {
+        return route;
+    }
+    RouteTier::Edge
 }
 
 fn apply_casual_no_cascade(
@@ -514,6 +608,7 @@ fn finish(
             rare_lexical: signals.rare_lexical,
             special_lexical: signals.special_lexical,
         },
+        routing_log_id: None,
     }
 }
 

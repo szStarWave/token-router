@@ -45,6 +45,7 @@
     "allow-configure-hermes-flash-agent",
     "allow-configure-claude-code-agent",
     "allow-configure-codex-agent",
+    "allow-configure-opencode-agent",
     "allow-read-inbound-auth-key",
     "allow-check-agent-initialized",
     "allow-check-agent-deployed"

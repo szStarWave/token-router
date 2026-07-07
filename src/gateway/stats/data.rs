@@ -8,7 +8,7 @@ use crate::gateway::error::AppError;
 use crate::gateway::routing::{RouteDecision, RouteTier, StepKind};
 use crate::gateway::stats::metrics::{FinalResponseMetrics, UpstreamCallMetrics};
 
-pub const STATS_VERSION: u32 = 2;
+pub const STATS_VERSION: u32 = 3;
 
 /// Cumulative counters; legacy JSON load/save used for migration only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,6 +95,31 @@ pub struct StatsData {
     pub edge_served_responses: u64,
     #[serde(default)]
     pub cloud_served_responses: u64,
+    // --- v3: per-request max tokens (absolute, not cumulative) ---
+    #[serde(default)]
+    pub edge_max_input: u64,
+    #[serde(default)]
+    pub edge_max_output: u64,
+    #[serde(default)]
+    pub edge_at_max_input_output: u64,
+    #[serde(default)]
+    pub edge_at_max_input_total: u64,
+    #[serde(default)]
+    pub edge_at_max_output_input: u64,
+    #[serde(default)]
+    pub edge_at_max_output_total: u64,
+    #[serde(default)]
+    pub cloud_max_input: u64,
+    #[serde(default)]
+    pub cloud_max_output: u64,
+    #[serde(default)]
+    pub cloud_at_max_input_output: u64,
+    #[serde(default)]
+    pub cloud_at_max_input_total: u64,
+    #[serde(default)]
+    pub cloud_at_max_output_input: u64,
+    #[serde(default)]
+    pub cloud_at_max_output_total: u64,
 }
 
 impl StatsData {
@@ -181,19 +206,71 @@ impl StatsData {
                 .max(1);
             let tps_x1000 =
                 (m.completion_tokens as u64 * 1000 * 1000).saturating_div(gen_ms);
-            self.tps_sum_x1000 += tps_x1000;
+            self.tps_sum_x1000 = tps_x1000;
             self.tps_count += 1;
             match m.tier {
                 "edge" => {
-                    self.edge_tps_sum_x1000 += tps_x1000;
+                    self.edge_tps_sum_x1000 = tps_x1000;
                     self.edge_tps_count += 1;
                 }
                 "cloud" => {
-                    self.cloud_tps_sum_x1000 += tps_x1000;
+                    self.cloud_tps_sum_x1000 = tps_x1000;
                     self.cloud_tps_count += 1;
                 }
                 _ => {}
             }
+        }
+        self.observe_per_request_max(m);
+    }
+
+    fn observe_per_request_max(&mut self, m: &UpstreamCallMetrics) {
+        let prompt = m.prompt_tokens as u64;
+        let completion = m.completion_tokens as u64;
+        match m.tier {
+            "edge" => Self::observe_tier_max(
+                &mut self.edge_max_input,
+                &mut self.edge_at_max_input_output,
+                &mut self.edge_at_max_input_total,
+                &mut self.edge_max_output,
+                &mut self.edge_at_max_output_input,
+                &mut self.edge_at_max_output_total,
+                prompt,
+                completion,
+            ),
+            "cloud" => Self::observe_tier_max(
+                &mut self.cloud_max_input,
+                &mut self.cloud_at_max_input_output,
+                &mut self.cloud_at_max_input_total,
+                &mut self.cloud_max_output,
+                &mut self.cloud_at_max_output_input,
+                &mut self.cloud_at_max_output_total,
+                prompt,
+                completion,
+            ),
+            _ => {}
+        }
+    }
+
+    fn observe_tier_max(
+        max_input: &mut u64,
+        at_max_input_output: &mut u64,
+        at_max_input_total: &mut u64,
+        max_output: &mut u64,
+        at_max_output_input: &mut u64,
+        at_max_output_total: &mut u64,
+        prompt: u64,
+        completion: u64,
+    ) {
+        let total = prompt.saturating_add(completion);
+        if prompt > *max_input {
+            *max_input = prompt;
+            *at_max_input_output = completion;
+            *at_max_input_total = total;
+        }
+        if completion > *max_output {
+            *max_output = completion;
+            *at_max_output_input = prompt;
+            *at_max_output_total = total;
         }
     }
 
@@ -239,6 +316,15 @@ impl StatsData {
             AppError::Upstream(_) => self.errors_upstream += 1,
             AppError::BadRequest(_) => self.errors_bad_request += 1,
             AppError::Internal(_) => {}
+        }
+    }
+
+    /// Latest edge generation TPS (tokens/s) from the most recent edge upstream sample.
+    pub fn edge_tps(&self) -> Option<f64> {
+        if self.edge_tps_count == 0 {
+            None
+        } else {
+            Some((self.edge_tps_sum_x1000 as f64) / 1000.0)
         }
     }
 }

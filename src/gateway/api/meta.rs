@@ -168,7 +168,7 @@ pub fn log_route_decision(
     user_preview: &str,
     stream: bool,
     agent_id: Option<&str>,
-) {
+) -> Option<i64> {
     let summary = summarize_route_reasons(decision);
     let user_preview = truncate_user_preview_for_log(user_preview);
     let message = format!(
@@ -195,15 +195,20 @@ pub fn log_route_decision(
         user_preview = %user_preview,
         "{message}"
     );
-    if let Some(store) = store {
-        if let Err(e) = store.record_decision(decision, model, user_preview.as_str(), stream, agent_id)
-        {
-            tracing::warn!(error = %e, "routing log db write failed");
-        }
-    }
+    store.and_then(|store| {
+        store
+            .record_decision(decision, model, user_preview.as_str(), stream, agent_id)
+            .map(Some)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "routing log db write failed");
+                None
+            })
+    })
 }
 
 pub fn log_upstream_served(
+    store: Option<&crate::gateway::routing_log::RoutingLogStore>,
+    routing_log_id: Option<i64>,
     decision: &RouteDecision,
     served_tier: &str,
     fallback: bool,
@@ -231,6 +236,11 @@ pub fn log_upstream_served(
         reason_codes = %decision.reason_codes.join(","),
         "{message}"
     );
+    if let (Some(store), Some(id)) = (store, routing_log_id) {
+        if let Err(e) = store.mark_served(id, served_tier) {
+            tracing::warn!(error = %e, routing_log_id = id, "routing log served update failed");
+        }
+    }
 }
 
 pub fn step_kind_name(k: StepKind) -> &'static str {
@@ -310,6 +320,7 @@ mod tests {
             classifier_features: None,
             casual_quality_fallback: true,
             lexical_learn: Default::default(),
+            routing_log_id: None,
         }
     }
 

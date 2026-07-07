@@ -233,7 +233,7 @@ src/
 | `ToolResultDigest` | `last_role_tool == true` | -0.45 | Work |
 | `InitialPlan` | `n_turns == 0 && !is_casual` | +0.35 | **云端** |
 | `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
-| `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 1` | +0.55 | **云端 / cascade** |
+| `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 3` | +0.55 | **云端 / cascade** |
 | `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
 | `MemoryCompact` | transcript 含真实压缩标记（**不含** system 里的 `# Dynamic Project Context` 缓存边界） | +0.20 | Work |
 | `CronBackground` | `cron_background == true` | -0.15 | Work |
@@ -257,7 +257,7 @@ src/
 | `GATE_USER_REJECT` | 最新 user 否定上一轮 assistant（中/英/日/韩/粤关键词，见 `routing/keywords.rs` → `contains_reject_intent`） | **cloud** |
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
-| `GATE_TOOL_ERROR_STREAK` | 连续 2+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
+| `GATE_TOOL_ERROR_STREAK` | 连续 3+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
 | `GATE_RISKY_TOOL` | 删除/移动文件（`Delete` 工具或 `exec` 中 `rm`/`mv`/`git mv` 等）且步态为 `ToolSelect`/`ToolArgFill`、尚无 tool result；reason 附带 `GATE_RISKY_TOOL:exec,delete` | **cloud** |
 | `GATE_OPENCLAW_COMPACT` | `MemoryCompact` 且 `tok_total_in > 80% × ctx_edge_max_tokens` | **cloud** |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
@@ -285,7 +285,7 @@ d = 1.0 / (1.0 + e^(-raw))
 - `step_kind.bias()` 见上表
 - `experience_bias` 来自 `ExperienceStore::bias_for(step_kind)`
 - `assistant_failed_recent_bonus`：assistant turn 失败时 +0.15
-- `tool_error_streak_bias`：连续 tool 失败渐进加成 — streak 1 → +0.15，2 → +0.30，3+ → +0.40（封顶）
+- `tool_error_streak_bias`：连续 tool 失败渐进加成 — 1 次 → 0，2 → +0.15，3 → +0.30，4+ → +0.40（封顶）；连续 3 次才进入 Recovery / 硬门控升云
 - `tool_loop_bias`：自上次 user 以来 tool result 条数渐进加成 — 0–4 → 0，5–6 → +0.10，7 → +0.18，8+ → +0.25（封顶）
 - `risky_tool_soft_bias`：Soft 工具（`browser`/`message`/`sessions_spawn`）→ +0.22；reason code：`RISKY_TOOL_SOFT:browser,...`
 - `lexical_rarity_bias`：词汇稀有度渐进加成（非硬门控）— 仅 rare → +0.08，仅 special → +0.12，两者皆有 → +0.18（封顶）；reason code：`LEXICAL_RARE` / `LEXICAL_SPECIAL` / `LEXICAL_BOTH`；分类器特征 bucket：`lexical:none|rare|special|both`
@@ -1241,6 +1241,7 @@ make check
 STATIC_END_MARKER = "# Dynamic Project Context"   # OpenClaw 缓存边界；非 memory_compact 信号
 INBOUND_MARKER    = "## Inbound Context"
 RUNTIME_MARKER    = "## Runtime"
+UNTRUSTED_SENDER  = Sender (untrusted metadata)   # 仅最新 user 消息开头剥离一次（含 inbound 时间戳）；历史消息不改动；不修改上游
 HEARTBEAT_USER    = /^\[OpenClaw heartbeat poll\]/
 ASSISTANT_FAILED  = /\[assistant turn failed/
 ```

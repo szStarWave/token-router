@@ -95,6 +95,7 @@ async function fetchRoutingLogsFromFile(): Promise<RoutingLogsResponse> {
     id: entry.id,
     timestamp: entry.timestamp,
     route: entry.route,
+    served_route: entry.route,
     step_kind: entry.stepKind,
     model: entry.model ?? 'auto',
     user_preview: entry.userPreview,

@@ -48,7 +48,7 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::RecoveryAfterFailure;
     }
 
-    if signals.consecutive_tool_error_streak >= 1 {
+    if signals.consecutive_tool_error_streak >= super::signals::TOOL_ERROR_STREAK_ESCALATE {
         return StepKind::RecoveryAfterFailure;
     }
 
@@ -150,6 +150,9 @@ mod tests {
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: streak,
@@ -162,9 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_resolves_recovery_after_failure() {
+    fn tool_error_streak_resolves_recovery_after_failure_from_third() {
         let req = ChatCompletionRequest::default();
-        let signals = signals_with_tool_error_streak(1);
+        let signals = signals_with_tool_error_streak(2);
+        assert_ne!(
+            resolve_step_kind(&req, &signals),
+            StepKind::RecoveryAfterFailure
+        );
+        let signals = signals_with_tool_error_streak(3);
         assert_eq!(
             resolve_step_kind(&req, &signals),
             StepKind::RecoveryAfterFailure
@@ -216,6 +224,9 @@ mod tests {
             intent_hard: false,
             intent_easy: true,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: 0,

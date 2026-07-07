@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  effectiveRouteTier,
+  formatTimeLabel,
   isRoutingLogLine,
   parseRoutingLogLine,
   pickDisplayReasonCodes,
@@ -28,6 +30,21 @@ test('parses routing log line with user preview', () => {
 test('truncates preview at 80 chars', () => {
   const long = 'a'.repeat(100)
   assert.equal(truncatePreview(long).length, 81)
+})
+
+test('formatTimeLabel uses local timezone for UTC iso', () => {
+  const iso = '2026-07-03T07:00:00.000000Z'
+  const expected = new Date(iso).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+  assert.equal(formatTimeLabel(iso), expected)
+})
+
+test('prefers served route over decision route', () => {
+  assert.equal(effectiveRouteTier({ route: 'cloud', served_route: 'edge' }), 'edge')
 })
 
 test('picks decisive reason tags', () => {

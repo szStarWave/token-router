@@ -19,7 +19,7 @@ const ROUTING_MARKER = ' routing: '
 const SERVED_MARKER = ' served: '
 
 const TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/
-const ROUTE_FIELD_RE = /\broute=(edge|cloud|cascade)\b/
+const ROUTE_FIELD_RE = /\bserved=(edge|cloud|cascade)\b|\broute=(edge|cloud|cascade)\b/
 const ROUTE_ARROW_RE = /routing:\s[\w_]+\s→\s(edge|cloud|cascade)\b/
 const STEP_KIND_RE = /\bstep_kind=([\w_]+)\b/
 const MODEL_QUOTED_RE = /\bmodel="([^"]*)"/
@@ -57,15 +57,34 @@ export function truncatePreview(text: string, max = ROUTING_PREVIEW_MAX): string
 }
 
 export function formatTimeLabel(iso: string): string {
+  const d = new Date(iso)
+  if (!Number.isNaN(d.getTime())) {
+    return d.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+  }
   const match = iso.match(/T(\d{2}):(\d{2}):(\d{2})/)
   if (!match) return iso
   return `${match[1]}:${match[2]}:${match[3]}`
+}
+
+export function effectiveRouteTier(entry: {
+  route: string
+  served_route?: string | null
+}): RouteTier {
+  const raw = entry.served_route ?? entry.route
+  if (raw === 'edge' || raw === 'cloud' || raw === 'cascade') return raw
+  return 'edge'
 }
 
 export function mapApiRoutingEntry(entry: {
   id: number
   timestamp: string
   route: string
+  served_route?: string | null
   step_kind: string
   model: string
   user_preview: string
@@ -75,7 +94,7 @@ export function mapApiRoutingEntry(entry: {
     id: entry.id,
     timestamp: entry.timestamp,
     timeLabel: formatTimeLabel(entry.timestamp),
-    route: entry.route as RouteTier,
+    route: effectiveRouteTier(entry),
     stepKind: entry.step_kind,
     model: entry.model,
     userPreview: entry.user_preview,
@@ -101,8 +120,10 @@ export function parseRoutingLogLine(msg: string, id: number): RoutingLogEntry | 
   if (!isRoutingLogLine(msg)) return null
 
   const timestamp = TIMESTAMP_RE.exec(msg)?.[1] ?? ''
+  const routeMatch = ROUTE_FIELD_RE.exec(msg)
   const route =
-    (ROUTE_FIELD_RE.exec(msg)?.[1] as RouteTier | undefined) ??
+    (routeMatch?.[1] as RouteTier | undefined) ??
+    (routeMatch?.[2] as RouteTier | undefined) ??
     (ROUTE_ARROW_RE.exec(msg)?.[1] as RouteTier | undefined) ??
     'edge'
   const stepKind = STEP_KIND_RE.exec(msg)?.[1] ?? 'unknown'

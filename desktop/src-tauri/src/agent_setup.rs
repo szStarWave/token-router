@@ -13,6 +13,9 @@ const OPENCLAW_CONTEXT_WINDOW: u64 = 1_000_000;
 const OPENCLAW_TIMEOUT_SECONDS: u64 = 300;
 const CODEX_PROVIDER: &str = "token_router";
 const CODEX_PROVIDER_NAME: &str = "Token Router";
+const OPENCODE_PROVIDER: &str = "token-router";
+const OPENCODE_PROVIDER_NAME: &str = "Token Router";
+const OPENCODE_MODEL_DISPLAY: &str = "Token Router Auto Route";
 const DEFAULT_MODEL: &str = "auto";
 pub const ERR_AGENT_NOT_INITIALIZED: &str = "agent_not_initialized";
 
@@ -52,6 +55,7 @@ fn agent_config_path(agent: &str) -> Result<PathBuf, String> {
         "hermes-flash" => hermes_flash_config_path(),
         "claude-code" => claude_code_settings_path(),
         "codex" => codex_config_path(),
+        "opencode" => opencode_config_path(),
         _ => Err(format!("unknown agent: {agent}")),
     }
 }
@@ -62,6 +66,10 @@ fn agent_init_state(agent: &str) -> Result<(bool, PathBuf), String> {
             let settings = claude_code_settings_path()?;
             let legacy = home_dir()?.join(".claude.json");
             Ok((settings.is_file() || legacy.is_file(), settings))
+        }
+        "opencode" => {
+            let path = opencode_config_path()?;
+            Ok((true, path))
         }
         _ => {
             let path = agent_config_path(agent)?;
@@ -117,6 +125,14 @@ fn codex_home_dir() -> Result<PathBuf, String> {
 
 fn codex_config_path() -> Result<PathBuf, String> {
     Ok(codex_home_dir()?.join("config.toml"))
+}
+
+fn opencode_config_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".config").join("opencode"))
+}
+
+fn opencode_config_path() -> Result<PathBuf, String> {
+    Ok(opencode_config_dir()?.join("opencode.json"))
 }
 
 fn ensure_agent_initialized(agent: &str) -> Result<PathBuf, String> {
@@ -407,6 +423,68 @@ fn write_toml_file(path: &Path, value: &toml::Value) -> Result<(), String> {
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
+fn merge_opencode_config(existing: &mut Value, base_url: &str, model_id: &str, api_key: &str) {
+    if !existing.is_object() {
+        *existing = json!({});
+    }
+    let root = existing.as_object_mut().unwrap();
+    root.insert(
+        "$schema".to_string(),
+        json!("https://opencode.ai/config.json"),
+    );
+
+    let providers = root.entry("provider").or_insert_with(|| json!({}));
+    if !providers.is_object() {
+        *providers = json!({});
+    }
+
+    let provider = providers
+        .as_object_mut()
+        .unwrap()
+        .entry(OPENCODE_PROVIDER)
+        .or_insert_with(|| json!({}));
+    if !provider.is_object() {
+        *provider = json!({});
+    }
+    let provider_obj = provider.as_object_mut().unwrap();
+    provider_obj.insert("npm".to_string(), json!("@ai-sdk/openai-compatible"));
+    provider_obj.insert("name".to_string(), json!(OPENCODE_PROVIDER_NAME));
+
+    let options = provider_obj
+        .entry("options")
+        .or_insert_with(|| json!({}));
+    if !options.is_object() {
+        *options = json!({});
+    }
+    let options_obj = options.as_object_mut().unwrap();
+    options_obj.insert("baseURL".to_string(), json!(base_url));
+    options_obj.insert("apiKey".to_string(), json!(api_key));
+
+    let models = provider_obj
+        .entry("models")
+        .or_insert_with(|| json!({}));
+    if !models.is_object() {
+        *models = json!({});
+    }
+    let model_entry = models
+        .as_object_mut()
+        .unwrap()
+        .entry(model_id.to_string())
+        .or_insert_with(|| json!({}));
+    if !model_entry.is_object() {
+        *model_entry = json!({});
+    }
+    model_entry
+        .as_object_mut()
+        .unwrap()
+        .insert("name".to_string(), json!(OPENCODE_MODEL_DISPLAY));
+
+    root.insert(
+        "model".to_string(),
+        json!(format!("{OPENCODE_PROVIDER}/{model_id}")),
+    );
+}
+
 fn merge_codex_config(existing: &mut toml::Value, base_url: &str, model_id: &str, api_key: &str) {
     if !existing.is_table() {
         *existing = toml::Value::Table(toml::map::Map::new());
@@ -550,6 +628,29 @@ fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> 
     })
 }
 
+fn configure_opencode(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = opencode_config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let base_url = gateway_agent_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = read_json_file(&path)?;
+    merge_opencode_config(&mut doc, &base_url, &model, &key);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url,
+        agent: "opencode".to_string(),
+    })
+}
+
 fn non_empty_str(value: Option<&str>) -> bool {
     value.is_some_and(|s| !s.trim().is_empty())
 }
@@ -616,6 +717,25 @@ fn codex_has_token_router(path: &Path) -> Result<bool, String> {
     Ok(model_provider == Some(CODEX_PROVIDER) && has_provider)
 }
 
+fn opencode_has_token_router(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let doc = read_json_file(path)?;
+    let provider = doc.get("provider").and_then(|p| p.get(OPENCODE_PROVIDER));
+    let has_base = provider
+        .and_then(|p| p.get("options"))
+        .and_then(|o| o.get("baseURL"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    let model = doc
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.starts_with(&format!("{OPENCODE_PROVIDER}/")))
+        .unwrap_or(false);
+    Ok(has_base || model)
+}
+
 fn claude_code_deployed() -> Result<bool, String> {
     let settings = claude_code_settings_path()?;
     if settings.is_file() && claude_code_has_token_router(&settings)? {
@@ -644,6 +764,7 @@ fn agent_deploy_state(agent: &str) -> Result<AgentDeployStatus, String> {
         "hermes" | "hermes-flash" => hermes_has_token_router(&path)?,
         "claude-code" => claude_code_deployed()?,
         "codex" => codex_has_token_router(&path)?,
+        "opencode" => opencode_has_token_router(&path)?,
         _ => return Err(format!("unknown agent: {agent}")),
     };
 
@@ -687,6 +808,11 @@ pub fn configure_claude_code_agent(api_key: Option<String>) -> Result<AgentSetup
 #[tauri::command]
 pub fn configure_codex_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
     configure_codex(api_key)
+}
+
+#[tauri::command]
+pub fn configure_opencode_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+    configure_opencode(api_key)
 }
 
 #[tauri::command]
@@ -762,6 +888,26 @@ mod tests {
             "http://127.0.0.1:11080/anthropic"
         );
         assert_eq!(doc["env"]["ANTHROPIC_AUTH_TOKEN"], "test-key");
+    }
+
+    #[test]
+    fn merge_opencode_config_sets_token_router_provider() {
+        let mut doc = json!({
+            "theme": "dark"
+        });
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        assert_eq!(doc["theme"], "dark");
+        assert_eq!(
+            doc["provider"]["token-router"]["options"]["baseURL"],
+            "http://127.0.0.1:11080/v1"
+        );
+        assert_eq!(doc["model"], "token-router/auto");
+        let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        write_json_file(&path, &doc).unwrap();
+        assert!(opencode_has_token_router(&path).unwrap());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

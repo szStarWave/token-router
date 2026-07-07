@@ -65,6 +65,7 @@ export async function gatewayReadRoutingLogs(
       id: number
       timestamp: string
       route: string
+      served_route?: string | null
       step_kind: string
       model: string
       user_preview: string
@@ -131,6 +132,7 @@ export type AgentKind =
   | 'hermes-flash'
   | 'claude-code'
   | 'codex'
+  | 'opencode'
 
 export async function checkAgentInitialized(agent: AgentKind) {
   return tauriInvoke<AgentInitStatusPayload>('check_agent_initialized', { agent })
@@ -166,6 +168,12 @@ export async function configureClaudeCodeAgent(apiKey?: string | null) {
 
 export async function configureCodexAgent(apiKey?: string | null) {
   return tauriInvoke<AgentSetupResultPayload>('configure_codex_agent', {
+    apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureOpenCodeAgent(apiKey?: string | null) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_opencode_agent', {
     apiKey: apiKey ?? null,
   })
 }

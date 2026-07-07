@@ -20,6 +20,7 @@ use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseStream};
 use crate::gateway::upstream::verify::cloud_verifies_edge;
 use crate::gateway::api::meta::log_upstream_served;
+use crate::gateway::routing_log::RoutingLogStore;
 
 struct UpstreamTarget {
     base_url: Option<String>,
@@ -36,6 +37,7 @@ pub struct UpstreamClient {
     multimodal: Arc<MultimodalStore>,
     edge_load: Arc<EdgeInferenceTracker>,
     agent_usage: Arc<AgentCloudUsageStore>,
+    routing_logs: Arc<RoutingLogStore>,
 }
 
 impl UpstreamClient {
@@ -45,6 +47,7 @@ impl UpstreamClient {
         multimodal: Arc<MultimodalStore>,
         edge_load: Arc<EdgeInferenceTracker>,
         agent_usage: Arc<AgentCloudUsageStore>,
+        routing_logs: Arc<RoutingLogStore>,
     ) -> Self {
         Self {
             http: Client::new(),
@@ -53,6 +56,7 @@ impl UpstreamClient {
             multimodal,
             edge_load,
             agent_usage,
+            routing_logs,
         }
     }
 
@@ -611,7 +615,15 @@ impl UpstreamClient {
         );
         let fallback = tier_static == "cloud"
             && matches!(decision.route, RouteTier::Edge | RouteTier::Cascade);
-        log_upstream_served(decision, tier_static, fallback, true, agent_id);
+        log_upstream_served(
+            Some(self.routing_logs.as_ref()),
+            decision.routing_log_id,
+            decision,
+            tier_static,
+            fallback,
+            true,
+            agent_id,
+        );
         Ok(stream)
     }
 
@@ -649,7 +661,15 @@ impl UpstreamClient {
         if served_tier == "cloud" {
             self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
         }
-        log_upstream_served(decision, served_tier, fallback, false, agent_id);
+        log_upstream_served(
+            Some(self.routing_logs.as_ref()),
+            decision.routing_log_id,
+            decision,
+            served_tier,
+            fallback,
+            false,
+            agent_id,
+        );
         attach_meta(resp, decision, fallback)
     }
 

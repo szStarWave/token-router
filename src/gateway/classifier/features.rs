@@ -11,7 +11,10 @@ impl FeatureVector {
         let mut keys = Vec::with_capacity(20);
 
         keys.push(format!("step_kind:{}", step_kind_key(step_kind)));
-        keys.push(format!("ctx_bucket:{}", ctx_bucket(signals, ctx_edge_max)));
+        keys.push(format!(
+            "ctx_bucket:{}",
+            ctx_bucket(signals, step_kind, ctx_edge_max)
+        ));
         keys.push(format!("tool_bucket:{}", tool_bucket(signals.n_tool_defs)));
         keys.push(format!("loop_bucket:{}", loop_bucket(signals.loop_steps)));
         keys.push(format!("turn_bucket:{}", turn_bucket(signals.n_turns)));
@@ -65,11 +68,15 @@ fn step_kind_key(k: StepKind) -> &'static str {
     }
 }
 
-fn ctx_bucket(signals: &RequestSignals, ctx_edge_max: u32) -> &'static str {
+fn ctx_bucket(signals: &RequestSignals, step_kind: StepKind, ctx_edge_max: u32) -> &'static str {
     if ctx_edge_max == 0 {
         return "low";
     }
-    let ratio = signals.tok_loop_delta as f32 / ctx_edge_max as f32;
+    let ctx_tokens = match step_kind {
+        StepKind::DirectChat | StepKind::HeartbeatAck => signals.tok_rest,
+        _ => signals.tok_loop_delta,
+    };
+    let ratio = ctx_tokens as f32 / ctx_edge_max as f32;
     if ratio < 0.2 {
         "low"
     } else if ratio < 0.6 {
@@ -104,7 +111,13 @@ fn turn_bucket(n_turns: u32) -> &'static str {
 }
 
 fn intent_bucket(signals: &RequestSignals) -> &'static str {
-    if signals.intent_plan {
+    if signals.intent_cloud {
+        "cloud"
+    } else if signals.intent_long_gen {
+        "long_gen"
+    } else if signals.intent_edge {
+        "edge"
+    } else if signals.intent_plan {
         "plan"
     } else if signals.intent_hard {
         "hard"
@@ -177,11 +190,23 @@ mod tests {
     #[test]
     fn ctx_bucket_boundaries() {
         let (s, max) = signals_with_delta(1000, 10_000);
-        assert_eq!(ctx_bucket(&s, max), "low");
+        assert_eq!(ctx_bucket(&s, StepKind::InitialPlan, max), "low");
         let (s, max) = signals_with_delta(3000, 10_000);
-        assert_eq!(ctx_bucket(&s, max), "mid");
+        assert_eq!(ctx_bucket(&s, StepKind::InitialPlan, max), "mid");
         let (s, max) = signals_with_delta(7000, 10_000);
-        assert_eq!(ctx_bucket(&s, max), "high");
+        assert_eq!(ctx_bucket(&s, StepKind::InitialPlan, max), "high");
+    }
+
+    #[test]
+    fn ctx_bucket_direct_chat_uses_tok_rest_not_loop_delta() {
+        let (mut s, max) = signals_with_delta(29_000, 50_000);
+        s.tok_rest = 200;
+        assert_eq!(
+            ctx_bucket(&s, StepKind::DirectChat, max),
+            "low",
+            "large OpenClaw loop delta must not inflate casual ctx_bucket"
+        );
+        assert_eq!(ctx_bucket(&s, StepKind::InitialPlan, max), "mid");
     }
 
     #[test]

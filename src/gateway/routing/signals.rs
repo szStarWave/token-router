@@ -36,6 +36,12 @@ pub struct RequestSignals {
     pub intent_hard: bool,
     pub intent_easy: bool,
     pub intent_plan: bool,
+    /// Cloud/edge tier preference within the recent user-turn window (see `resolve_recent_tier_intent`).
+    pub intent_cloud: bool,
+    /// Latest user message or high max_tokens implies lengthy generation.
+    pub intent_long_gen: bool,
+    /// Edge tier preference within the recent user-turn window (see `resolve_recent_tier_intent`).
+    pub intent_edge: bool,
     /// Any message in the request carries image content.
     pub multimodal: bool,
     /// Latest user message carries image content (highest weight for difficulty).
@@ -53,6 +59,11 @@ pub struct RequestSignals {
     /// Ratio of rare tokens in the latest user message (0.0–1.0).
     pub rare_token_ratio: f32,
 }
+
+/// Consecutive trailing tool errors before difficulty bias / reason codes.
+pub const TOOL_ERROR_STREAK_DIFFICULTY: u32 = 2;
+/// Consecutive trailing tool errors before Recovery step kind and hard cloud gate.
+pub const TOOL_ERROR_STREAK_ESCALATE: u32 = 3;
 
 /// Short, tool-loop-free turn (daily chat). Tool definitions in the request are ignored.
 pub fn is_casual_chat(signals: &RequestSignals) -> bool {
@@ -117,8 +128,17 @@ impl SignalExtractor<'_> {
         let mut multimodal = false;
         let mut user_multimodal = false;
 
+        let last_user_idx = req
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::User);
+
         for (i, msg) in req.messages.iter().enumerate() {
-            let t = estimate_message_tokens(msg);
+            let t = if msg.role == Role::User {
+                user_message_tokens(msg, Some(i) == last_user_idx)
+            } else {
+                estimate_message_tokens(msg)
+            };
             if i == 0 && msg.role == Role::System {
                 tok_system = t;
             } else {
@@ -179,7 +199,7 @@ impl SignalExtractor<'_> {
         });
 
         let is_heartbeat_poll = last.is_some_and(|m| {
-            m.role == Role::User && message_text(m).trim() == "[OpenClaw heartbeat poll]"
+            m.role == Role::User && user_routing_text(m).trim() == "[OpenClaw heartbeat poll]"
         });
 
         let voice_repair_loop = last.is_some_and(|m| {
@@ -218,22 +238,31 @@ impl SignalExtractor<'_> {
             .find(|m| m.role == Role::User);
 
         let intent_hard = last_user
-            .map(|m| message_text(m))
+            .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_hard_intent(&t));
         let intent_easy = last_user
-            .map(|m| message_text(m))
+            .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_easy_intent(&t));
         let intent_plan = last_user
-            .map(|m| message_text(m))
+            .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_plan_intent(&t));
+        let tier_intent = resolve_recent_tier_intent(&req.messages);
+        let intent_cloud = tier_intent == TierIntent::Cloud;
+        let intent_long_gen = super::keywords::long_gen_from_max_tokens(
+            req.max_tokens,
+            req.max_completion_tokens,
+        ) || last_user
+            .map(user_routing_text)
+            .is_some_and(|t| super::keywords::contains_long_gen_intent(&t));
+        let intent_edge = tier_intent == TierIntent::Edge;
 
         let last_user_text = last_user
-            .map(|m| message_text(m))
+            .map(user_routing_text)
             .unwrap_or_default();
         let lexical = super::lexical::analyze_lexical(&last_user_text, self.wordfreq);
 
         let last_user_tok = last_user
-            .map(estimate_message_tokens)
+            .map(|m| estimate_tokens(&user_routing_text(m)))
             .unwrap_or(0);
 
         let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
@@ -244,7 +273,7 @@ impl SignalExtractor<'_> {
         let user_rejects_answer = req.messages.len() >= 2
             && req.messages[req.messages.len() - 1].role == Role::User
             && req.messages[req.messages.len() - 2].role == Role::Assistant
-            && super::reject_intent::contains_reject_intent(&message_text(
+            && super::reject_intent::contains_reject_intent(&user_routing_text(
                 &req.messages[req.messages.len() - 1],
             ));
 
@@ -284,6 +313,9 @@ impl SignalExtractor<'_> {
             intent_hard,
             intent_easy,
             intent_plan,
+            intent_cloud,
+            intent_long_gen,
+            intent_edge,
             multimodal,
             user_multimodal,
             consecutive_tool_error_streak,
@@ -359,13 +391,129 @@ fn estimate_message_tokens(msg: &Message) -> u32 {
     n
 }
 
+/// OpenClaw-injected wrappers stripped for routing signals only (not upstream).
+/// Only the latest user turn is stripped (once at the front); older user messages
+/// are kept verbatim so pasted metadata/timestamps in history are not removed.
+pub fn user_routing_text(msg: &Message) -> String {
+    if msg.role != Role::User {
+        return message_text(msg);
+    }
+    strip_openclaw_user_wrappers(&message_text(msg))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TierIntent {
+    None,
+    Cloud,
+    Edge,
+}
+
+/// Recent user turns scanned for cloud/edge tier preference (快速/云端/端侧等).
+pub const TIER_INTENT_RECENT_USER_TURNS: usize = 4;
+
+/// Within the last [`TIER_INTENT_RECENT_USER_TURNS`] user messages, walk newest-first and
+/// apply the latest explicit cloud/edge preference (neutral turns in between still inherit).
+/// Older preferences fall outside the window and reset.
+pub fn resolve_recent_tier_intent(messages: &[Message]) -> TierIntent {
+    resolve_recent_tier_intent_with_limit(messages, TIER_INTENT_RECENT_USER_TURNS)
+}
+
+pub fn resolve_recent_tier_intent_with_limit(
+    messages: &[Message],
+    max_user_turns: usize,
+) -> TierIntent {
+    for msg in messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .rev()
+        .take(max_user_turns)
+    {
+        let text = user_routing_text(msg);
+        let cloud = super::keywords::contains_cloud_intent(&text);
+        let edge = super::keywords::contains_edge_intent(&text);
+        if cloud || edge {
+            if cloud {
+                return TierIntent::Cloud;
+            }
+            return TierIntent::Edge;
+        }
+    }
+    TierIntent::None
+}
+
+fn user_message_tokens(msg: &Message, strip_wrappers: bool) -> u32 {
+    if strip_wrappers {
+        estimate_tokens(&user_routing_text(msg))
+    } else {
+        estimate_message_tokens(msg)
+    }
+}
+
+const SENDER_UNTRUSTED_METADATA: &str = "Sender (untrusted metadata):";
+
+/// Strip OpenClaw wrappers once at the message front: optional `Sender (untrusted metadata)`
+/// block, then optional inbound `[Mon YYYY-MM-DD HH:MM GMT±N]` prefix. Content after that
+/// is never touched (e.g. user-pasted metadata/timestamps later in the message).
+pub fn strip_openclaw_user_wrappers(text: &str) -> String {
+    let mut s = text.trim();
+    if let Some(prefix) = s.get(..SENDER_UNTRUSTED_METADATA.len()) {
+        if prefix.eq_ignore_ascii_case(SENDER_UNTRUSTED_METADATA) {
+            s = s
+                .get(SENDER_UNTRUSTED_METADATA.len()..)
+                .unwrap_or("")
+                .trim_start();
+            if s.starts_with("```") {
+                let mut i = 3;
+                while i < s.len() && s.as_bytes()[i] != b'\n' {
+                    i += 1;
+                }
+                if i < s.len() && s.as_bytes()[i] == b'\n' {
+                    i += 1;
+                }
+                if let Some(close) = s[i..].find("```") {
+                    s = s[i + close + 3..].trim_start();
+                }
+            }
+        }
+    }
+    strip_openclaw_timestamp_prefix(s).trim().to_string()
+}
+
+fn strip_openclaw_timestamp_prefix(s: &str) -> &str {
+    let s = s.trim_start();
+    if !s.starts_with('[') {
+        return s;
+    }
+    let Some(close) = s.find(']') else {
+        return s;
+    };
+    if looks_like_openclaw_timestamp(&s[1..close]) {
+        return s[close + 1..].trim_start();
+    }
+    s
+}
+
+fn looks_like_openclaw_timestamp(inner: &str) -> bool {
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    if parts.len() < 4 {
+        return false;
+    }
+    parts[0].len() == 3
+        && parts[0].chars().all(|c| c.is_ascii_alphabetic())
+        && parts[1].len() == 10
+        && parts[1].chars().nth(4).is_some_and(|c| c == '-')
+        && parts[1].chars().nth(7).is_some_and(|c| c == '-')
+        && parts[2].contains(':')
+        && parts[3].to_ascii_uppercase().starts_with("GMT")
+}
+
 /// Latest user message text for lexical learning context.
 pub fn last_user_message_text(req: &ChatCompletionRequest) -> String {
     req.messages
         .iter()
         .rev()
         .find(|m| m.role == Role::User)
-        .map(message_text)
+        .map(user_routing_text)
         .unwrap_or_default()
 }
 
@@ -402,13 +550,17 @@ fn message_text(msg: &Message) -> String {
         .unwrap_or_default()
 }
 
+fn transcript_text(m: &Message) -> String {
+    message_text(m)
+}
+
 /// True when the live transcript (not static system prompt) indicates memory compaction.
 fn memory_compact_in_transcript(req: &ChatCompletionRequest) -> bool {
     req.messages.iter().any(|m| {
         if m.role == Role::System {
             return false;
         }
-        let lower = message_text(m).to_ascii_lowercase();
+        let lower = transcript_text(m).to_ascii_lowercase();
         lower.contains("[openclaw memory compact]")
             || (matches!(m.role, Role::User | Role::Assistant)
                 && (lower.contains("memory compaction") || lower.contains("compaction")))
@@ -421,7 +573,7 @@ fn subagent_spawn_in_transcript(req: &ChatCompletionRequest) -> bool {
         if m.role == Role::System {
             return false;
         }
-        let t = message_text(m);
+        let t = transcript_text(m);
         t.contains("[Subagent Task]")
             || (m.role == Role::User
                 && (t.contains("sessions_spawn(")
@@ -519,6 +671,9 @@ mod tests {
             intent_hard: false,
             intent_easy: true,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: 0,
@@ -648,6 +803,9 @@ mod tests {
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: 0,
@@ -693,6 +851,9 @@ mod tests {
             intent_hard: false,
             intent_easy: true,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: 0,
@@ -838,6 +999,275 @@ mod tests {
     }
 
     #[test]
+    fn strip_only_once_at_front_preserves_body_timestamp() {
+        let text = "[Mon 2026-07-06 16:18 GMT+8] 你好\n\n参考：[Mon 2026-07-07 10:00 GMT+8] 另一段";
+        assert_eq!(
+            strip_openclaw_user_wrappers(text),
+            "你好\n\n参考：[Mon 2026-07-07 10:00 GMT+8] 另一段"
+        );
+    }
+
+    #[test]
+    fn historical_user_message_not_stripped_for_tokens() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let wrapped = "Sender (untrusted metadata):\n```json\n{}\n```\n\n[Mon 2026-07-06 16:18 GMT+8] 旧问题";
+        let latest = "Sender (untrusted metadata):\n```json\n{}\n```\n\n[Mon 2026-07-06 16:19 GMT+8] 新问题";
+        let extractor = SignalExtractor {
+            ctx_edge_max: 65536,
+            wordfreq: &WF,
+        };
+        let req = ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some(wrapped.into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("好的".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some(latest.into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert_eq!(last_user_message_text(&req), "新问题");
+        let hist_tok = estimate_message_tokens(&Message {
+            role: Role::User,
+            content: Some(wrapped.into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        let latest_stripped_tok = estimate_tokens("新问题");
+        let assistant_tok = estimate_tokens("好的");
+        assert!(
+            hist_tok > latest_stripped_tok,
+            "historical wrapped user text should count full size"
+        );
+        assert_eq!(
+            signals.tok_rest,
+            hist_tok + assistant_tok + latest_stripped_tok,
+            "only the latest user turn is stripped; historical wrapper stays in tok_rest"
+        );
+    }
+
+    #[test]
+    fn openclaw_wrapped_user_strips_before_lexical() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 50_000,
+            wordfreq: &WF,
+        };
+        let wrapped = "Sender (untrusted metadata):\n```json\n{\n  \"label\": \"FlowyAIPC (gateway-client)\",\n  \"id\": \"gateway-client\"\n}\n```\n\n[Mon 2026-07-06 16:18 GMT+8] 你能干什么？";
+        let req = ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some(wrapped.into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert!(!signals.rare_lexical, "metadata JSON must not inflate lexical rarity");
+        assert!(signals.last_user_tok < 20, "stripped user tok: {}", signals.last_user_tok);
+    }
+
+    #[test]
+    fn openclaw_untrusted_metadata_stripped_text() {
+        let wrapped = "Sender (untrusted metadata):\n```json\n{\n  \"label\": \"FlowyAIPC (gateway-client)\",\n  \"id\": \"gateway-client\",\n  \"name\": \"FlowyAIPC\",\n  \"username\": \"FlowyAIPC\"\n}\n```\n\n[Mon 2026-07-06 16:18 GMT+8] 你能干什么？";
+        assert_eq!(strip_openclaw_user_wrappers(wrapped), "你能干什么？");
+    }
+
+    #[test]
+    fn openclaw_timestamp_only_stripped() {
+        assert_eq!(
+            strip_openclaw_user_wrappers("[Mon 2026-07-06 16:18 GMT+8] 你好"),
+            "你好"
+        );
+    }
+
+    #[test]
+    fn plain_user_text_unchanged() {
+        assert_eq!(strip_openclaw_user_wrappers("你能干什么？"), "你能干什么？");
+    }
+
+    #[test]
+    fn recent_tier_intent_latest_edge_overrides_earlier_cloud() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("用云端快速回答".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: Some("好的".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some("用端侧省积分".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Edge);
+    }
+
+    #[test]
+    fn recent_tier_intent_latest_cloud_overrides_earlier_edge() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("走端侧".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: Some("ok".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some("太慢了，用云端".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Cloud);
+    }
+
+    #[test]
+    fn recent_tier_intent_carries_forward_within_window() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("用云端".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: Some("好的".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some("帮我写个函数".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Cloud);
+    }
+
+    #[test]
+    fn recent_tier_intent_resets_outside_window() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message {
+                role: Role::User,
+                content: Some(format!("闲聊 {i}")),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+            messages.push(Message {
+                role: Role::Assistant,
+                content: Some("嗯".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        messages[0] = Message {
+            role: Role::User,
+            content: Some("用云端".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::None);
+    }
+
+    #[test]
+    fn openclaw_heartbeat_poll_with_metadata_wrapper() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 65536,
+            wordfreq: &WF,
+        };
+        let wrapped = format!(
+            "Sender (untrusted metadata):\n```json\n{{\"id\":\"gateway-client\"}}\n```\n\n[Mon 2026-07-06 16:18 GMT+8] [OpenClaw heartbeat poll]"
+        );
+        let req = ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some(wrapped),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert!(signals.is_heartbeat_poll);
+    }
+
+    #[test]
     fn last_message_text_uses_latest_non_empty_any_role() {
         let req = ChatCompletionRequest {
             model: "test".into(),
@@ -865,10 +1295,7 @@ mod tests {
             last_message_text(&req),
             "Here is the summary you asked for."
         );
-        assert_eq!(
-            last_user_message_text(&req),
-            "Sender (untrusted metadata): ..."
-        );
+        assert_eq!(last_user_message_text(&req), "...");
     }
 }
 

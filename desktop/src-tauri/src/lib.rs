@@ -277,6 +277,7 @@ pub fn run() {
             agent_setup::configure_hermes_flash_agent,
             agent_setup::configure_claude_code_agent,
             agent_setup::configure_codex_agent,
+            agent_setup::configure_opencode_agent,
             agent_setup::read_inbound_auth_key_cmd,
             agent_setup::read_default_auth_key_cmd,
             agent_setup::check_agent_initialized,

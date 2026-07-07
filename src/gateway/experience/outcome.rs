@@ -74,6 +74,7 @@ mod tests {
             classifier_features: None,
             casual_quality_fallback,
             lexical_learn: Default::default(),
+            routing_log_id: None,
         }
     }
 

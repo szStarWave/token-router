@@ -13,6 +13,9 @@ const OPENCLAW_CONTEXT_WINDOW = 1_000_000
 const OPENCLAW_TIMEOUT_SECONDS = 300
 const CODEX_PROVIDER = 'token_router'
 const CODEX_PROVIDER_NAME = 'Token Router'
+const OPENCODE_PROVIDER = 'token-router'
+const OPENCODE_PROVIDER_NAME = 'Token Router'
+const OPENCODE_MODEL_DISPLAY = 'Token Router Auto Route'
 const DEFAULT_MODEL = 'auto'
 
 const CC_SWITCH_AGENT_MAP: Record<CcSwitchApp, AgentKind> = {
@@ -21,7 +24,7 @@ const CC_SWITCH_AGENT_MAP: Record<CcSwitchApp, AgentKind> = {
   openclaw: 'openclaw',
   hermes: 'hermes',
   gemini: 'claude-code',
-  opencode: 'codex',
+  opencode: 'opencode',
 }
 
 export interface CcSwitchExportParams {
@@ -87,12 +90,25 @@ function buildHermesJson(baseUrl: string, model: string, apiKey: string): string
   })
 }
 
-function buildOpenCodeJson(baseUrl: string, apiKey: string): string {
+function buildOpenCodeJson(baseUrl: string, model: string, apiKey: string): string {
   return JSON.stringify({
-    options: {
-      baseURL: baseUrl,
-      apiKey,
+    $schema: 'https://opencode.ai/config.json',
+    provider: {
+      [OPENCODE_PROVIDER]: {
+        npm: '@ai-sdk/openai-compatible',
+        name: OPENCODE_PROVIDER_NAME,
+        options: {
+          baseURL: baseUrl,
+          apiKey,
+        },
+        models: {
+          [model]: {
+            name: OPENCODE_MODEL_DISPLAY,
+          },
+        },
+      },
     },
+    model: `${OPENCODE_PROVIDER}/${model}`,
   })
 }
 
@@ -142,7 +158,7 @@ export function buildCcSwitchImportUrl(app: CcSwitchApp, opts: CcSwitchExportPar
     }
     case 'opencode': {
       params.set('configFormat', 'json')
-      params.set('config', utf8ToBase64(buildOpenCodeJson(opts.baseUrl, opts.apiKey)))
+      params.set('config', utf8ToBase64(buildOpenCodeJson(opts.baseUrl, opts.model, opts.apiKey)))
       params.set('endpoint', opts.baseUrl)
       params.set('apiKey', opts.apiKey)
       params.set('model', opts.model)

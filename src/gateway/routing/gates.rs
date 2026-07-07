@@ -44,7 +44,7 @@ pub fn check_hard_gates(
         });
     }
 
-    if signals.consecutive_tool_error_streak >= 2 {
+    if signals.consecutive_tool_error_streak >= super::signals::TOOL_ERROR_STREAK_ESCALATE {
         return Some(HardGate {
             code: "GATE_TOOL_ERROR_STREAK",
         });
@@ -117,6 +117,9 @@ mod tests {
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: 0,
@@ -129,9 +132,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_gate_fires() {
+    fn tool_error_streak_gate_fires_from_third() {
         let mut signals = empty_signals();
-        signals.consecutive_tool_error_streak = 2;
+        signals.consecutive_tool_error_streak = 3;
         let gate = check_hard_gates(
             &signals,
             StepKind::ToolResultDigest,
@@ -139,6 +142,19 @@ mod tests {
             true,
         );
         assert_eq!(gate.unwrap().code, "GATE_TOOL_ERROR_STREAK");
+    }
+
+    #[test]
+    fn two_tool_errors_do_not_trigger_gate() {
+        let mut signals = empty_signals();
+        signals.consecutive_tool_error_streak = 2;
+        assert!(check_hard_gates(
+            &signals,
+            StepKind::RecoveryAfterFailure,
+            65536,
+            true,
+        )
+        .is_none());
     }
 
     #[test]

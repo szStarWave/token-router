@@ -288,6 +288,7 @@ mod tests {
                     classifier_features: None,
                     casual_quality_fallback: false,
             lexical_learn: Default::default(),
+                    routing_log_id: None,
                 },
                 true
             ),

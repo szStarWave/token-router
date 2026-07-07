@@ -19,92 +19,6 @@ use crate::gateway::experience::ExperienceSnapshot;
 use crate::gateway::routing::RouteDecision;
 use crate::config::auth_keys::GatewayAuthKeyView;
 
-#[derive(Debug, Default, Clone)]
-struct PerRequestTokenMax {
-    edge_max_input: u64,
-    edge_max_output: u64,
-    edge_at_max_input_output: u64,
-    edge_at_max_input_total: u64,
-    edge_at_max_output_input: u64,
-    edge_at_max_output_total: u64,
-    cloud_max_input: u64,
-    cloud_max_output: u64,
-    cloud_at_max_input_output: u64,
-    cloud_at_max_input_total: u64,
-    cloud_at_max_output_input: u64,
-    cloud_at_max_output_total: u64,
-}
-
-impl PerRequestTokenMax {
-    fn observe(&mut self, m: &UpstreamCallMetrics) {
-        let prompt = m.prompt_tokens as u64;
-        let completion = m.completion_tokens as u64;
-        match m.tier {
-            "edge" => Self::observe_tier(
-                &mut self.edge_max_input,
-                &mut self.edge_at_max_input_output,
-                &mut self.edge_at_max_input_total,
-                &mut self.edge_max_output,
-                &mut self.edge_at_max_output_input,
-                &mut self.edge_at_max_output_total,
-                prompt,
-                completion,
-            ),
-            "cloud" => Self::observe_tier(
-                &mut self.cloud_max_input,
-                &mut self.cloud_at_max_input_output,
-                &mut self.cloud_at_max_input_total,
-                &mut self.cloud_max_output,
-                &mut self.cloud_at_max_output_input,
-                &mut self.cloud_at_max_output_total,
-                prompt,
-                completion,
-            ),
-            _ => {}
-        }
-    }
-
-    fn observe_tier(
-        max_input: &mut u64,
-        at_max_input_output: &mut u64,
-        at_max_input_total: &mut u64,
-        max_output: &mut u64,
-        at_max_output_input: &mut u64,
-        at_max_output_total: &mut u64,
-        prompt: u64,
-        completion: u64,
-    ) {
-        let total = prompt.saturating_add(completion);
-        if prompt > *max_input {
-            *max_input = prompt;
-            *at_max_input_output = completion;
-            *at_max_input_total = total;
-        }
-        if completion > *max_output {
-            *max_output = completion;
-            *at_max_output_input = prompt;
-            *at_max_output_total = total;
-        }
-    }
-}
-
-fn apply_per_request_max(breakdown: &mut TokenBreakdown, max: &PerRequestTokenMax) {
-    breakdown.edge.max_input = max.edge_max_input;
-    breakdown.edge.max_output = max.edge_max_output;
-    breakdown.edge.max_input_request_output = max.edge_at_max_input_output;
-    breakdown.edge.max_input_request_total = max.edge_at_max_input_total;
-    breakdown.edge.max_output_request_input = max.edge_at_max_output_input;
-    breakdown.edge.max_output_request_total = max.edge_at_max_output_total;
-    breakdown.cloud.max_input = max.cloud_max_input;
-    breakdown.cloud.max_output = max.cloud_max_output;
-    breakdown.cloud.max_input_request_output = max.cloud_at_max_input_output;
-    breakdown.cloud.max_input_request_total = max.cloud_at_max_input_total;
-    breakdown.cloud.max_output_request_input = max.cloud_at_max_output_input;
-    breakdown.cloud.max_output_request_total = max.cloud_at_max_output_total;
-    breakdown.total.max_input = max.edge_max_input.max(max.cloud_max_input);
-    breakdown.total.max_output = max.edge_max_output.max(max.cloud_max_output);
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsScope {
     Session,
@@ -141,8 +55,6 @@ pub struct GatewayStats {
     db: StatsDb,
     stats_json_path: PathBuf,
     pending_latency_ms: Mutex<Option<u64>>,
-    session_max_tokens: Mutex<PerRequestTokenMax>,
-    global_max_tokens: Mutex<PerRequestTokenMax>,
     session_started: Instant,
 }
 
@@ -154,8 +66,6 @@ impl GatewayStats {
             db,
             stats_json_path,
             pending_latency_ms: Mutex::new(None),
-            session_max_tokens: Mutex::new(PerRequestTokenMax::default()),
-            global_max_tokens: Mutex::new(PerRequestTokenMax::default()),
             session_started: Instant::now(),
         }))
     }
@@ -198,12 +108,6 @@ impl GatewayStats {
                 Some(metrics.latency_ms);
         }
         self.with_mut(|d| d.record_upstream_metrics(metrics));
-        if let Ok(mut session_max) = self.session_max_tokens.lock() {
-            session_max.observe(metrics);
-        }
-        if let Ok(mut global_max) = self.global_max_tokens.lock() {
-            global_max.observe(metrics);
-        }
         if let Some(ctx) = auth_key {
             self.auth_key_with_mut(ctx, |d| d.record_upstream_metrics(metrics));
         }
@@ -311,6 +215,14 @@ impl GatewayStats {
         self.db.flush()
     }
 
+    /// Latest session edge generation TPS from the most recent edge upstream sample.
+    pub fn session_edge_tps(&self) -> Option<f64> {
+        self.db
+            .load_totals(StatsScope::Session)
+            .ok()
+            .and_then(|d| d.edge_tps())
+    }
+
     pub fn snapshot(
         &self,
         scope: StatsScope,
@@ -349,19 +261,6 @@ impl GatewayStats {
         snap.latency.p95_ms = p95_ms;
         snap.latency.p99_ms = p99_ms;
         snap.auth_key_stats = self.build_auth_key_stats(scope, config_auth_keys);
-        let per_request_max = match scope {
-            StatsScope::Session => self
-                .session_max_tokens
-                .lock()
-                .map(|m| m.clone())
-                .unwrap_or_default(),
-            StatsScope::Global => self
-                .global_max_tokens
-                .lock()
-                .map(|m| m.clone())
-                .unwrap_or_default(),
-        };
-        apply_per_request_max(&mut snap.token_breakdown, &per_request_max);
         snap
     }
 
@@ -432,13 +331,35 @@ pub fn build_snapshot(
         data.edge_tokens_in,
         data.edge_tokens_out,
         data.edge_cached_tokens,
+        data.edge_max_input,
+        data.edge_max_output,
+        data.edge_at_max_input_output,
+        data.edge_at_max_input_total,
+        data.edge_at_max_output_input,
+        data.edge_at_max_output_total,
     );
     let mut cloud_tier = tier_token_stats(
         data.cloud_tokens_in,
         data.cloud_tokens_out,
         data.cloud_cached_tokens,
+        data.cloud_max_input,
+        data.cloud_max_output,
+        data.cloud_at_max_input_output,
+        data.cloud_at_max_input_total,
+        data.cloud_at_max_output_input,
+        data.cloud_at_max_output_total,
     );
-    let mut total_tier = tier_token_stats(total_in, total_out, total_cached);
+    let mut total_tier = tier_token_stats(
+        total_in,
+        total_out,
+        total_cached,
+        data.edge_max_input.max(data.cloud_max_input),
+        data.edge_max_output.max(data.cloud_max_output),
+        0,
+        0,
+        0,
+        0,
+    );
     fill_tier_shares(&mut edge_tier, &mut cloud_tier, &mut total_tier);
     let total_tokens = total_in + total_out;
     let edge_token_share = if total_tokens > 0 {
@@ -532,9 +453,9 @@ pub fn build_snapshot(
         latency: LatencyStats {
             avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
             avg_ttft_ms: avg(data.ttft_sum_ms, data.ttft_count),
-            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
-            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
-            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+            avg_tps: latest_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: latest_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: latest_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
             p95_ms: 0.0,
             p99_ms: 0.0,
             upstream_samples: data.latency_count,
@@ -666,9 +587,9 @@ fn auth_key_snapshot_from_data(
         },
         latency: AuthKeyLatencyStats {
             avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
-            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
-            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
-            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+            avg_tps: latest_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: latest_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: latest_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
         },
         routing: RouteCounts {
             edge: route_edge,
@@ -708,11 +629,11 @@ fn avg(sum: u64, count: u64) -> f64 {
     }
 }
 
-fn avg_tps(sum_x1000: u64, count: u64) -> f64 {
+fn latest_tps(tps_x1000: u64, count: u64) -> f64 {
     if count == 0 {
         0.0
     } else {
-        (sum_x1000 as f64) / 1000.0 / count as f64
+        (tps_x1000 as f64) / 1000.0
     }
 }
 
@@ -733,17 +654,27 @@ fn percentile(sorted: &[u64], p: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)] as f64
 }
 
-fn tier_token_stats(input: u64, output: u64, cached: u64) -> TierTokenStats {
+fn tier_token_stats(
+    input: u64,
+    output: u64,
+    cached: u64,
+    max_input: u64,
+    max_output: u64,
+    max_input_request_output: u64,
+    max_input_request_total: u64,
+    max_output_request_input: u64,
+    max_output_request_total: u64,
+) -> TierTokenStats {
     TierTokenStats {
         input,
         output,
         cached,
-        max_input: 0,
-        max_output: 0,
-        max_input_request_output: 0,
-        max_input_request_total: 0,
-        max_output_request_input: 0,
-        max_output_request_total: 0,
+        max_input,
+        max_output,
+        max_input_request_output,
+        max_input_request_total,
+        max_output_request_input,
+        max_output_request_total,
         input_pct: 0.0,
         output_pct: 0.0,
     }
@@ -1001,6 +932,7 @@ mod tests {
             classifier_features: None,
             casual_quality_fallback: false,
             lexical_learn: Default::default(),
+            routing_log_id: None,
         }
     }
 
@@ -1065,6 +997,116 @@ mod tests {
         assert_eq!(snap.served.edge, 1);
     }
 
+    fn expected_tps(completion_tokens: u32, latency_ms: u64, ttft_ms: Option<u64>) -> f64 {
+        let gen_ms = latency_ms.saturating_sub(ttft_ms.unwrap_or(0)).max(1);
+        (completion_tokens as f64 * 1000.0) / gen_ms as f64
+    }
+
+    #[test]
+    fn upstream_metrics_tps_uses_latest_request() {
+        let stats = GatewayStats::new_in_memory();
+        stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: "edge",
+                prompt_tokens: 10,
+                completion_tokens: 50,
+                cached_tokens: 0,
+                latency_ms: 200,
+                ttft_ms: Some(50),
+                stream: true,
+            },
+            None,
+        );
+        let first_edge_tps = expected_tps(50, 200, Some(50));
+        stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: "edge",
+                prompt_tokens: 10,
+                completion_tokens: 100,
+                cached_tokens: 0,
+                latency_ms: 200,
+                ttft_ms: Some(100),
+                stream: true,
+            },
+            None,
+        );
+        let second_edge_tps = expected_tps(100, 200, Some(100));
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
+        assert!((snap.latency.edge_tps - second_edge_tps).abs() < 0.01);
+        assert!((snap.latency.avg_tps - second_edge_tps).abs() < 0.01);
+        assert_ne!(first_edge_tps, second_edge_tps);
+
+        stats.record_upstream_metrics(
+            &UpstreamCallMetrics {
+                tier: "cloud",
+                prompt_tokens: 10,
+                completion_tokens: 80,
+                cached_tokens: 0,
+                latency_ms: 400,
+                ttft_ms: None,
+                stream: false,
+            },
+            None,
+        );
+        let cloud_tps = expected_tps(80, 400, None);
+        let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
+        assert!((snap.latency.edge_tps - second_edge_tps).abs() < 0.01);
+        assert!((snap.latency.cloud_tps - cloud_tps).abs() < 0.01);
+        assert!((snap.latency.avg_tps - cloud_tps).abs() < 0.01);
+    }
+
+    #[test]
+    fn global_max_tokens_survive_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "flowy-stats-max-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let stats = GatewayStats::open(&dir).unwrap();
+            stats.record_upstream_metrics(
+                &UpstreamCallMetrics {
+                    tier: "edge",
+                    prompt_tokens: 100,
+                    completion_tokens: 50,
+                    cached_tokens: 0,
+                    latency_ms: 200,
+                    ttft_ms: Some(50),
+                    stream: true,
+                },
+                None,
+            );
+            stats.record_upstream_metrics(
+                &UpstreamCallMetrics {
+                    tier: "cloud",
+                    prompt_tokens: 200,
+                    completion_tokens: 100,
+                    cached_tokens: 0,
+                    latency_ms: 500,
+                    ttft_ms: None,
+                    stream: false,
+                },
+                None,
+            );
+            stats.flush().unwrap();
+        }
+        {
+            let stats = GatewayStats::open(&dir).unwrap();
+            let global = stats.snapshot(StatsScope::Global, 10, None, None, None, None, &[]);
+            assert_eq!(global.token_breakdown.edge.max_input, 100);
+            assert_eq!(global.token_breakdown.edge.max_output, 50);
+            assert_eq!(global.token_breakdown.cloud.max_input, 200);
+            assert_eq!(global.token_breakdown.cloud.max_output, 100);
+
+            let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None, &[]);
+            assert_eq!(session.token_breakdown.edge.max_input, 0);
+            assert_eq!(session.token_breakdown.cloud.max_input, 0);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn snapshot_aggregates_decisions() {
         let stats = GatewayStats::new_in_memory();
@@ -1095,9 +1137,22 @@ mod tests {
         {
             let stats = GatewayStats::open(&dir).unwrap();
             stats.record_request(true);
+            stats.record_upstream_metrics(
+                &UpstreamCallMetrics {
+                    tier: "edge",
+                    prompt_tokens: 42,
+                    completion_tokens: 7,
+                    cached_tokens: 0,
+                    latency_ms: 100,
+                    ttft_ms: None,
+                    stream: false,
+                },
+                None,
+            );
             stats.flush().unwrap();
             let session = stats.snapshot(StatsScope::Session, 10, None, None, None, None, &[]);
             assert_eq!(session.requests_total, 1);
+            assert_eq!(session.token_breakdown.edge.max_input, 42);
         }
         {
             let stats = GatewayStats::open(&dir).unwrap();
@@ -1105,6 +1160,9 @@ mod tests {
             let global = stats.snapshot(StatsScope::Global, 10, None, None, None, None, &[]);
             assert_eq!(session.requests_total, 0, "new process session starts at 0");
             assert_eq!(global.requests_total, 1, "global survives restart");
+            assert_eq!(global.token_breakdown.edge.max_input, 42);
+            assert_eq!(global.token_breakdown.edge.max_output, 7);
+            assert_eq!(session.token_breakdown.edge.max_input, 0);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

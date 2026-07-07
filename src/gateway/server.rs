@@ -149,6 +149,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
             multimodal_for_upstream,
             edge_load.clone(),
             agent_usage.clone(),
+            routing_logs.clone(),
         ),
         runtime: runtime.clone(),
         stats: stats.clone(),

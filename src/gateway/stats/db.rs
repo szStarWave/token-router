@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::data::{self, StatsData};
 use super::StatsScope;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 const MIGRATION_FLAG_STATS_JSON: &str = "migrated_stats_json_v1";
 const COUNTER_COLS: &str = "requests_total, requests_stream, requests_non_stream, requests_cancelled, \
      route_edge, route_cloud, route_cascade, \
@@ -29,6 +29,24 @@ const COUNTER_COLS: &str = "requests_total, requests_stream, requests_non_stream
      edge_tps_sum_x1000, edge_tps_count, \
      cloud_tps_sum_x1000, cloud_tps_count, \
      edge_served_responses, cloud_served_responses";
+const MAX_COLS: &str = "edge_max_input, edge_max_output, edge_at_max_input_output, edge_at_max_input_total, \
+     edge_at_max_output_input, edge_at_max_output_total, \
+     cloud_max_input, cloud_max_output, cloud_at_max_input_output, cloud_at_max_input_total, \
+     cloud_at_max_output_input, cloud_at_max_output_total";
+const STATS_TOTALS_MAX_COLUMN_NAMES: [&str; 12] = [
+    "edge_max_input",
+    "edge_max_output",
+    "edge_at_max_input_output",
+    "edge_at_max_input_total",
+    "edge_at_max_output_input",
+    "edge_at_max_output_total",
+    "cloud_max_input",
+    "cloud_max_output",
+    "cloud_at_max_input_output",
+    "cloud_at_max_input_total",
+    "cloud_at_max_output_input",
+    "cloud_at_max_output_total",
+];
 
 fn counter_values(d: &StatsData) -> [i64; 47] {
     [
@@ -96,14 +114,41 @@ fn row_to_counter_values(row: &rusqlite::Row<'_>, start_idx: usize) -> rusqlite:
     Ok(vals)
 }
 
+fn max_values(d: &StatsData) -> [i64; 12] {
+    [
+        d.edge_max_input as i64,
+        d.edge_max_output as i64,
+        d.edge_at_max_input_output as i64,
+        d.edge_at_max_input_total as i64,
+        d.edge_at_max_output_input as i64,
+        d.edge_at_max_output_total as i64,
+        d.cloud_max_input as i64,
+        d.cloud_max_output as i64,
+        d.cloud_at_max_input_output as i64,
+        d.cloud_at_max_input_total as i64,
+        d.cloud_at_max_output_input as i64,
+        d.cloud_at_max_output_total as i64,
+    ]
+}
+
+fn row_to_max_values(row: &rusqlite::Row<'_>, start_idx: usize) -> rusqlite::Result<[i64; 12]> {
+    let mut vals = [0i64; 12];
+    for (i, v) in vals.iter_mut().enumerate() {
+        *v = row.get(start_idx + i)?;
+    }
+    Ok(vals)
+}
+
 fn counters_to_stats_data(
     version: u32,
     first: Option<u64>,
     last: Option<u64>,
     vals: [i64; 47],
+    max_vals: [i64; 12],
     step_kinds: HashMap<String, u64>,
 ) -> StatsData {
     let u = |i: usize| vals[i].max(0) as u64;
+    let m = |i: usize| max_vals[i].max(0) as u64;
     StatsData {
         version,
         first_record_at_unix: first,
@@ -156,6 +201,18 @@ fn counters_to_stats_data(
         edge_served_responses: u(45),
         cloud_served_responses: u(46),
         step_kinds,
+        edge_max_input: m(0),
+        edge_max_output: m(1),
+        edge_at_max_input_output: m(2),
+        edge_at_max_input_total: m(3),
+        edge_at_max_output_input: m(4),
+        edge_at_max_output_total: m(5),
+        cloud_max_input: m(6),
+        cloud_max_output: m(7),
+        cloud_at_max_input_output: m(8),
+        cloud_at_max_input_total: m(9),
+        cloud_at_max_output_input: m(10),
+        cloud_at_max_output_total: m(11),
     }
 }
 
@@ -252,7 +309,19 @@ impl StatsDb {
                cloud_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
                cloud_tps_count INTEGER NOT NULL DEFAULT 0,
                edge_served_responses INTEGER NOT NULL DEFAULT 0,
-               cloud_served_responses INTEGER NOT NULL DEFAULT 0
+               cloud_served_responses INTEGER NOT NULL DEFAULT 0,
+               edge_max_input INTEGER NOT NULL DEFAULT 0,
+               edge_max_output INTEGER NOT NULL DEFAULT 0,
+               edge_at_max_input_output INTEGER NOT NULL DEFAULT 0,
+               edge_at_max_input_total INTEGER NOT NULL DEFAULT 0,
+               edge_at_max_output_input INTEGER NOT NULL DEFAULT 0,
+               edge_at_max_output_total INTEGER NOT NULL DEFAULT 0,
+               cloud_max_input INTEGER NOT NULL DEFAULT 0,
+               cloud_max_output INTEGER NOT NULL DEFAULT 0,
+               cloud_at_max_input_output INTEGER NOT NULL DEFAULT 0,
+               cloud_at_max_input_total INTEGER NOT NULL DEFAULT 0,
+               cloud_at_max_output_input INTEGER NOT NULL DEFAULT 0,
+               cloud_at_max_output_total INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE IF NOT EXISTS stats_step_kinds (
                scope TEXT NOT NULL,
@@ -391,75 +460,90 @@ impl StatsDb {
                 "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )?;
-        } else if version.unwrap_or(0) < SCHEMA_VERSION {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS auth_key_meta (
-                   id TEXT PRIMARY KEY,
-                   name TEXT NOT NULL,
-                   key_preview TEXT NOT NULL,
-                   last_used_at_unix INTEGER
-                 );
-                 CREATE TABLE IF NOT EXISTS auth_key_totals (
-                   scope TEXT NOT NULL CHECK(scope IN ('session','global')),
-                   auth_key_id TEXT NOT NULL,
-                   first_record_at_unix INTEGER,
-                   last_updated_at_unix INTEGER,
-                   version INTEGER NOT NULL DEFAULT 2,
-                   requests_total INTEGER NOT NULL DEFAULT 0,
-                   requests_stream INTEGER NOT NULL DEFAULT 0,
-                   requests_non_stream INTEGER NOT NULL DEFAULT 0,
-                   requests_cancelled INTEGER NOT NULL DEFAULT 0,
-                   route_edge INTEGER NOT NULL DEFAULT 0,
-                   route_cloud INTEGER NOT NULL DEFAULT 0,
-                   route_cascade INTEGER NOT NULL DEFAULT 0,
-                   upstream_edge_calls INTEGER NOT NULL DEFAULT 0,
-                   upstream_cloud_calls INTEGER NOT NULL DEFAULT 0,
-                   cascade_edge_ok INTEGER NOT NULL DEFAULT 0,
-                   cascade_fallback INTEGER NOT NULL DEFAULT 0,
-                   errors_total INTEGER NOT NULL DEFAULT 0,
-                   errors_unauthorized INTEGER NOT NULL DEFAULT 0,
-                   errors_unavailable INTEGER NOT NULL DEFAULT 0,
-                   errors_upstream INTEGER NOT NULL DEFAULT 0,
-                   errors_bad_request INTEGER NOT NULL DEFAULT 0,
-                   tokens_in_estimate INTEGER NOT NULL DEFAULT 0,
-                   tokens_out_estimate INTEGER NOT NULL DEFAULT 0,
-                   cloud_input_saved_estimate INTEGER NOT NULL DEFAULT 0,
-                   difficulty_sum INTEGER NOT NULL DEFAULT 0,
-                   difficulty_count INTEGER NOT NULL DEFAULT 0,
-                   edge_tokens_in INTEGER NOT NULL DEFAULT 0,
-                   edge_tokens_out INTEGER NOT NULL DEFAULT 0,
-                   edge_cached_tokens INTEGER NOT NULL DEFAULT 0,
-                   cloud_tokens_in INTEGER NOT NULL DEFAULT 0,
-                   cloud_tokens_out INTEGER NOT NULL DEFAULT 0,
-                   cloud_cached_tokens INTEGER NOT NULL DEFAULT 0,
-                   cloud_tokens_saved_input INTEGER NOT NULL DEFAULT 0,
-                   cloud_tokens_saved_output INTEGER NOT NULL DEFAULT 0,
-                   cache_hit_requests INTEGER NOT NULL DEFAULT 0,
-                   cached_tokens_total INTEGER NOT NULL DEFAULT 0,
-                   latency_sum_ms INTEGER NOT NULL DEFAULT 0,
-                   latency_count INTEGER NOT NULL DEFAULT 0,
-                   stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
-                   stream_latency_count INTEGER NOT NULL DEFAULT 0,
-                   non_stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
-                   non_stream_latency_count INTEGER NOT NULL DEFAULT 0,
-                   ttft_sum_ms INTEGER NOT NULL DEFAULT 0,
-                   ttft_count INTEGER NOT NULL DEFAULT 0,
-                   tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
-                   tps_count INTEGER NOT NULL DEFAULT 0,
-                   edge_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
-                   edge_tps_count INTEGER NOT NULL DEFAULT 0,
-                   cloud_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
-                   cloud_tps_count INTEGER NOT NULL DEFAULT 0,
-                   edge_served_responses INTEGER NOT NULL DEFAULT 0,
-                   cloud_served_responses INTEGER NOT NULL DEFAULT 0,
-                   PRIMARY KEY (scope, auth_key_id)
-                 );
-                 CREATE INDEX IF NOT EXISTS idx_auth_key_totals_scope ON auth_key_totals(scope, auth_key_id);",
-            )?;
-            conn.execute(
-                "UPDATE schema_version SET version = ?1",
-                params![SCHEMA_VERSION],
-            )?;
+        } else {
+            let mut ver = version.unwrap_or(0);
+            if ver < 2 {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS auth_key_meta (
+                       id TEXT PRIMARY KEY,
+                       name TEXT NOT NULL,
+                       key_preview TEXT NOT NULL,
+                       last_used_at_unix INTEGER
+                     );
+                     CREATE TABLE IF NOT EXISTS auth_key_totals (
+                       scope TEXT NOT NULL CHECK(scope IN ('session','global')),
+                       auth_key_id TEXT NOT NULL,
+                       first_record_at_unix INTEGER,
+                       last_updated_at_unix INTEGER,
+                       version INTEGER NOT NULL DEFAULT 2,
+                       requests_total INTEGER NOT NULL DEFAULT 0,
+                       requests_stream INTEGER NOT NULL DEFAULT 0,
+                       requests_non_stream INTEGER NOT NULL DEFAULT 0,
+                       requests_cancelled INTEGER NOT NULL DEFAULT 0,
+                       route_edge INTEGER NOT NULL DEFAULT 0,
+                       route_cloud INTEGER NOT NULL DEFAULT 0,
+                       route_cascade INTEGER NOT NULL DEFAULT 0,
+                       upstream_edge_calls INTEGER NOT NULL DEFAULT 0,
+                       upstream_cloud_calls INTEGER NOT NULL DEFAULT 0,
+                       cascade_edge_ok INTEGER NOT NULL DEFAULT 0,
+                       cascade_fallback INTEGER NOT NULL DEFAULT 0,
+                       errors_total INTEGER NOT NULL DEFAULT 0,
+                       errors_unauthorized INTEGER NOT NULL DEFAULT 0,
+                       errors_unavailable INTEGER NOT NULL DEFAULT 0,
+                       errors_upstream INTEGER NOT NULL DEFAULT 0,
+                       errors_bad_request INTEGER NOT NULL DEFAULT 0,
+                       tokens_in_estimate INTEGER NOT NULL DEFAULT 0,
+                       tokens_out_estimate INTEGER NOT NULL DEFAULT 0,
+                       cloud_input_saved_estimate INTEGER NOT NULL DEFAULT 0,
+                       difficulty_sum INTEGER NOT NULL DEFAULT 0,
+                       difficulty_count INTEGER NOT NULL DEFAULT 0,
+                       edge_tokens_in INTEGER NOT NULL DEFAULT 0,
+                       edge_tokens_out INTEGER NOT NULL DEFAULT 0,
+                       edge_cached_tokens INTEGER NOT NULL DEFAULT 0,
+                       cloud_tokens_in INTEGER NOT NULL DEFAULT 0,
+                       cloud_tokens_out INTEGER NOT NULL DEFAULT 0,
+                       cloud_cached_tokens INTEGER NOT NULL DEFAULT 0,
+                       cloud_tokens_saved_input INTEGER NOT NULL DEFAULT 0,
+                       cloud_tokens_saved_output INTEGER NOT NULL DEFAULT 0,
+                       cache_hit_requests INTEGER NOT NULL DEFAULT 0,
+                       cached_tokens_total INTEGER NOT NULL DEFAULT 0,
+                       latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                       latency_count INTEGER NOT NULL DEFAULT 0,
+                       stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                       stream_latency_count INTEGER NOT NULL DEFAULT 0,
+                       non_stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                       non_stream_latency_count INTEGER NOT NULL DEFAULT 0,
+                       ttft_sum_ms INTEGER NOT NULL DEFAULT 0,
+                       ttft_count INTEGER NOT NULL DEFAULT 0,
+                       tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                       tps_count INTEGER NOT NULL DEFAULT 0,
+                       edge_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                       edge_tps_count INTEGER NOT NULL DEFAULT 0,
+                       cloud_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                       cloud_tps_count INTEGER NOT NULL DEFAULT 0,
+                       edge_served_responses INTEGER NOT NULL DEFAULT 0,
+                       cloud_served_responses INTEGER NOT NULL DEFAULT 0,
+                       PRIMARY KEY (scope, auth_key_id)
+                     );
+                     CREATE INDEX IF NOT EXISTS idx_auth_key_totals_scope ON auth_key_totals(scope, auth_key_id);",
+                )?;
+                ver = 2;
+            }
+            if ver < 3 {
+                for col in STATS_TOTALS_MAX_COLUMN_NAMES {
+                    let sql = format!(
+                        "ALTER TABLE stats_totals ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
+                    );
+                    let _ = conn.execute(&sql, []);
+                }
+                ver = 3;
+            }
+            if ver < SCHEMA_VERSION {
+                conn.execute(
+                    "UPDATE schema_version SET version = ?1",
+                    params![SCHEMA_VERSION],
+                )?;
+            }
         }
         Ok(())
     }
@@ -500,7 +584,13 @@ impl StatsDb {
                tps_sum_x1000 = 0, tps_count = 0,
                edge_tps_sum_x1000 = 0, edge_tps_count = 0,
                cloud_tps_sum_x1000 = 0, cloud_tps_count = 0,
-               edge_served_responses = 0, cloud_served_responses = 0
+               edge_served_responses = 0, cloud_served_responses = 0,
+               edge_max_input = 0, edge_max_output = 0,
+               edge_at_max_input_output = 0, edge_at_max_input_total = 0,
+               edge_at_max_output_input = 0, edge_at_max_output_total = 0,
+               cloud_max_input = 0, cloud_max_output = 0,
+               cloud_at_max_input_output = 0, cloud_at_max_input_total = 0,
+               cloud_at_max_output_input = 0, cloud_at_max_output_total = 0
              WHERE scope = ?1",
             params![scope],
         )?;
@@ -512,7 +602,7 @@ impl StatsDb {
     pub fn load_totals(&self, scope: StatsScope) -> anyhow::Result<StatsData> {
         let conn = self.conn.lock().expect("stats db mutex");
         let sql = format!(
-            "SELECT first_record_at_unix, last_updated_at_unix, version, {COUNTER_COLS}
+            "SELECT first_record_at_unix, last_updated_at_unix, version, {COUNTER_COLS}, {MAX_COLS}
              FROM stats_totals WHERE scope = ?1"
         );
         let row = conn.query_row(&sql, params![scope.as_str()], |row| {
@@ -520,11 +610,13 @@ impl StatsDb {
             let last: Option<i64> = row.get(1)?;
             let version: i32 = row.get(2)?;
             let vals = row_to_counter_values(row, 3)?;
+            let max_vals = row_to_max_values(row, 50)?;
             Ok((
                 first.map(|v| v.max(0) as u64),
                 last.map(|v| v.max(0) as u64),
                 version.max(0) as u32,
                 vals,
+                max_vals,
             ))
         })?;
         let step_kinds = self.load_step_kinds_locked(&conn, scope)?;
@@ -533,6 +625,7 @@ impl StatsDb {
             row.0,
             row.1,
             row.3,
+            row.4,
             step_kinds,
         ))
     }
@@ -611,7 +704,11 @@ impl StatsDb {
         let step_delta = step_kind_delta(&before.step_kinds, &after.step_kinds);
 
         self.save_totals_in_tx(tx, scope, &after)?;
-        let deltas = delta_values(&before, &after);
+        let mut deltas = delta_values(&before, &after);
+        // TPS sum fields store latest value (overwrite), not cumulative — skip hourly sum deltas.
+        for idx in [39usize, 41, 43] {
+            deltas[idx] = 0;
+        }
         if deltas.iter().any(|&v| v > 0) {
             self.upsert_hourly_delta(tx, scope, bucket_ts, &deltas)?;
         }
@@ -631,7 +728,7 @@ impl StatsDb {
         scope: StatsScope,
     ) -> anyhow::Result<StatsData> {
         let sql = format!(
-            "SELECT first_record_at_unix, last_updated_at_unix, version, {COUNTER_COLS}
+            "SELECT first_record_at_unix, last_updated_at_unix, version, {COUNTER_COLS}, {MAX_COLS}
              FROM stats_totals WHERE scope = ?1"
         );
         let row = tx.query_row(&sql, params![scope.as_str()], |row| {
@@ -639,11 +736,13 @@ impl StatsDb {
             let last: Option<i64> = row.get(1)?;
             let version: i32 = row.get(2)?;
             let vals = row_to_counter_values(row, 3)?;
+            let max_vals = row_to_max_values(row, 50)?;
             Ok((
                 first.map(|v| v.max(0) as u64),
                 last.map(|v| v.max(0) as u64),
                 version.max(0) as u32,
                 vals,
+                max_vals,
             ))
         })?;
         let mut stmt = tx.prepare("SELECT kind, count FROM stats_step_kinds WHERE scope = ?1")?;
@@ -655,7 +754,7 @@ impl StatsDb {
             let (k, v) = row?;
             step_kinds.insert(k, v);
         }
-        Ok(counters_to_stats_data(row.2, row.0, row.1, row.3, step_kinds))
+        Ok(counters_to_stats_data(row.2, row.0, row.1, row.3, row.4, step_kinds))
     }
 
     fn save_totals_in_tx(
@@ -665,6 +764,7 @@ impl StatsDb {
         data: &StatsData,
     ) -> anyhow::Result<()> {
         let vals = counter_values(data);
+        let max_vals = max_values(data);
         tx.execute(
             &format!(
                 "UPDATE stats_totals SET
@@ -686,7 +786,13 @@ impl StatsDb {
                    tps_sum_x1000 = ?43, tps_count = ?44,
                    edge_tps_sum_x1000 = ?45, edge_tps_count = ?46,
                    cloud_tps_sum_x1000 = ?47, cloud_tps_count = ?48,
-                   edge_served_responses = ?49, cloud_served_responses = ?50
+                   edge_served_responses = ?49, cloud_served_responses = ?50,
+                   edge_max_input = ?52, edge_max_output = ?53,
+                   edge_at_max_input_output = ?54, edge_at_max_input_total = ?55,
+                   edge_at_max_output_input = ?56, edge_at_max_output_total = ?57,
+                   cloud_max_input = ?58, cloud_max_output = ?59,
+                   cloud_at_max_input_output = ?60, cloud_at_max_input_total = ?61,
+                   cloud_at_max_output_input = ?62, cloud_at_max_output_total = ?63
                  WHERE scope = ?51"
             ),
             params![
@@ -700,6 +806,8 @@ impl StatsDb {
                 vals[33], vals[34], vals[35], vals[36], vals[37], vals[38], vals[39], vals[40],
                 vals[41], vals[42], vals[43], vals[44], vals[45], vals[46],
                 scope.as_str(),
+                max_vals[0], max_vals[1], max_vals[2], max_vals[3], max_vals[4], max_vals[5],
+                max_vals[6], max_vals[7], max_vals[8], max_vals[9], max_vals[10], max_vals[11],
             ],
         )?;
         Ok(())
@@ -985,6 +1093,7 @@ impl StatsDb {
                 first.map(|v| v.max(0) as u64),
                 last.map(|v| v.max(0) as u64),
                 vals,
+                [0i64; 12],
                 HashMap::new(),
             ))
         }) {
@@ -1358,6 +1467,10 @@ mod tests {
         assert_eq!(totals.requests_total, 1);
         assert_eq!(totals.edge_tokens_in, 100);
         assert_eq!(totals.edge_tokens_out, 50);
+        assert_eq!(totals.edge_max_input, 100);
+        assert_eq!(totals.edge_max_output, 50);
+        assert_eq!(totals.edge_at_max_input_output, 50);
+        assert_eq!(totals.edge_at_max_input_total, 150);
 
         let timeline = db
             .query_timeline(StatsScope::Global, TimelineRange::H24, 0)
@@ -1392,6 +1505,102 @@ mod tests {
         let db2 = StatsDb::open(&dir, &json).unwrap();
         let totals2 = db2.load_totals(StatsScope::Global).unwrap();
         assert_eq!(totals2.edge_tokens_in, 500);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn schema_v2_db_migrates_max_columns() {
+        let dir = std::env::temp_dir().join(format!("flowy-stats-v2-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("stats.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (2);
+                 CREATE TABLE stats_totals (
+                   scope TEXT PRIMARY KEY CHECK(scope IN ('session','global')),
+                   first_record_at_unix INTEGER,
+                   last_updated_at_unix INTEGER,
+                   version INTEGER NOT NULL DEFAULT 2,
+                   requests_total INTEGER NOT NULL DEFAULT 0,
+                   requests_stream INTEGER NOT NULL DEFAULT 0,
+                   requests_non_stream INTEGER NOT NULL DEFAULT 0,
+                   requests_cancelled INTEGER NOT NULL DEFAULT 0,
+                   route_edge INTEGER NOT NULL DEFAULT 0,
+                   route_cloud INTEGER NOT NULL DEFAULT 0,
+                   route_cascade INTEGER NOT NULL DEFAULT 0,
+                   upstream_edge_calls INTEGER NOT NULL DEFAULT 0,
+                   upstream_cloud_calls INTEGER NOT NULL DEFAULT 0,
+                   cascade_edge_ok INTEGER NOT NULL DEFAULT 0,
+                   cascade_fallback INTEGER NOT NULL DEFAULT 0,
+                   errors_total INTEGER NOT NULL DEFAULT 0,
+                   errors_unauthorized INTEGER NOT NULL DEFAULT 0,
+                   errors_unavailable INTEGER NOT NULL DEFAULT 0,
+                   errors_upstream INTEGER NOT NULL DEFAULT 0,
+                   errors_bad_request INTEGER NOT NULL DEFAULT 0,
+                   tokens_in_estimate INTEGER NOT NULL DEFAULT 0,
+                   tokens_out_estimate INTEGER NOT NULL DEFAULT 0,
+                   cloud_input_saved_estimate INTEGER NOT NULL DEFAULT 0,
+                   difficulty_sum INTEGER NOT NULL DEFAULT 0,
+                   difficulty_count INTEGER NOT NULL DEFAULT 0,
+                   edge_tokens_in INTEGER NOT NULL DEFAULT 0,
+                   edge_tokens_out INTEGER NOT NULL DEFAULT 0,
+                   edge_cached_tokens INTEGER NOT NULL DEFAULT 0,
+                   cloud_tokens_in INTEGER NOT NULL DEFAULT 0,
+                   cloud_tokens_out INTEGER NOT NULL DEFAULT 0,
+                   cloud_cached_tokens INTEGER NOT NULL DEFAULT 0,
+                   cloud_tokens_saved_input INTEGER NOT NULL DEFAULT 0,
+                   cloud_tokens_saved_output INTEGER NOT NULL DEFAULT 0,
+                   cache_hit_requests INTEGER NOT NULL DEFAULT 0,
+                   cached_tokens_total INTEGER NOT NULL DEFAULT 0,
+                   latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                   latency_count INTEGER NOT NULL DEFAULT 0,
+                   stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                   stream_latency_count INTEGER NOT NULL DEFAULT 0,
+                   non_stream_latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                   non_stream_latency_count INTEGER NOT NULL DEFAULT 0,
+                   ttft_sum_ms INTEGER NOT NULL DEFAULT 0,
+                   ttft_count INTEGER NOT NULL DEFAULT 0,
+                   tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                   tps_count INTEGER NOT NULL DEFAULT 0,
+                   edge_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                   edge_tps_count INTEGER NOT NULL DEFAULT 0,
+                   cloud_tps_sum_x1000 INTEGER NOT NULL DEFAULT 0,
+                   cloud_tps_count INTEGER NOT NULL DEFAULT 0,
+                   edge_served_responses INTEGER NOT NULL DEFAULT 0,
+                   cloud_served_responses INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO stats_totals (scope, version) VALUES ('global', 2);
+                 INSERT INTO stats_totals (scope, version) VALUES ('session', 2);",
+            )
+            .unwrap();
+        }
+
+        let json = dir.join("stats.json");
+        let db = StatsDb::open(&dir, &json).unwrap();
+        db.with_mut(
+            |d| {
+                d.record_upstream_metrics(&UpstreamCallMetrics {
+                    tier: "cloud",
+                    prompt_tokens: 300,
+                    completion_tokens: 20,
+                    cached_tokens: 0,
+                    latency_ms: 90,
+                    ttft_ms: None,
+                    stream: false,
+                });
+            },
+            hour_bucket_ts(data::now_unix()),
+            None,
+        )
+        .unwrap();
+
+        let totals = db.load_totals(StatsScope::Global).unwrap();
+        assert_eq!(totals.cloud_max_input, 300);
+        assert_eq!(totals.cloud_max_output, 20);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -73,7 +73,8 @@ pub async fn chat_completions_core(
         state.experience.as_ref(),
         state.stats.as_ref(),
     );
-    let decision = crate::gateway::routing::decide(
+    let edge_tps = state.stats.session_edge_tps();
+    let mut decision = crate::gateway::routing::decide(
         &state.config(),
         &req,
         state.sessions.as_ref(),
@@ -81,6 +82,7 @@ pub async fn chat_completions_core(
         Some(state.multimodal.as_ref()),
         &routing,
         Some(state.edge_load.as_ref()),
+        edge_tps,
         Some(state.classifier.as_ref()),
         state.wordfreq.as_ref(),
     );
@@ -93,7 +95,7 @@ pub async fn chat_completions_core(
     let conv_key = decision.conversation_key.clone();
     let assistant_failed = decision.assistant_failed_recent;
 
-    log_route_decision(
+    decision.routing_log_id = log_route_decision(
         Some(state.routing_logs.as_ref()),
         &decision,
         &req.model,
@@ -211,12 +213,16 @@ fn record_learning(
         outcome,
     );
     if let Some(features) = decision.classifier_features.as_ref() {
-        state.classifier.record(
-            features,
-            outcome,
-            decision.route,
-            decision.work_strategy,
-        );
+        let skip_classifier =
+            decision.casual_quality_fallback && outcome.cascade_fallback;
+        if !skip_classifier {
+            state.classifier.record(
+                features,
+                outcome,
+                decision.route,
+                decision.work_strategy,
+            );
+        }
     }
     state.sessions.apply_outcome(
         conv_key,

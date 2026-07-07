@@ -24,6 +24,11 @@ description = "Writes Token Router provider config into Codex config.toml."
 commands.allow = ["configure_codex_agent"]
 
 [[permission]]
+identifier = "allow-configure-opencode-agent"
+description = "Writes Token Router provider config into OpenCode opencode.json."
+commands.allow = ["configure_opencode_agent"]
+
+[[permission]]
 identifier = "allow-read-inbound-auth-key"
 description = "Reads inbound gateway auth keys from config.toml for agent setup."
 commands.allow = ["read_inbound_auth_key_cmd", "read_default_auth_key_cmd"]

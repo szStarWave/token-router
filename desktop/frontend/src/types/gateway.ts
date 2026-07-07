@@ -184,6 +184,7 @@ export interface RoutingLogApiEntry {
   id: number
   timestamp: string
   route: string
+  served_route?: string | null
   step_kind: string
   model: string
   user_preview: string

@@ -24,6 +24,9 @@ impl DifficultyScore {
             + 0.25 * user_ctx_ratio.min(1.0)
             + 0.10 * tool_ratio.min(1.0)
             + 0.30 * if signals.intent_hard { 1.0 } else { 0.0 }
+            + 0.25 * if signals.intent_cloud { 1.0 } else { 0.0 }
+            + 0.25 * if signals.intent_long_gen { 1.0 } else { 0.0 }
+            - 0.30 * if signals.intent_edge { 1.0 } else { 0.0 }
             - 0.40 * if signals.intent_easy { 1.0 } else { 0.0 }
             + 0.12 * if signals.user_multimodal { 1.0 } else { 0.0 }
             + code_hint
@@ -46,9 +49,9 @@ impl DifficultyScore {
 
 fn tool_error_streak_bias(streak: u32) -> f32 {
     match streak {
-        0 => 0.0,
-        1 => 0.15,
-        2 => 0.30,
+        0..=1 => 0.0,
+        2 => 0.15,
+        3 => 0.30,
         _ => 0.40,
     }
 }
@@ -121,6 +124,9 @@ mod tests {
             intent_hard: false,
             intent_easy: false,
             intent_plan: false,
+            intent_cloud: false,
+            intent_long_gen: false,
+            intent_edge: false,
             multimodal: false,
             user_multimodal: false,
             consecutive_tool_error_streak: streak,
@@ -139,24 +145,29 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_increases_difficulty() {
+    fn tool_error_streak_increases_difficulty_from_second() {
         let ctx_max = 65536;
-        let d0 = DifficultyScore::compute(&base_signals(0), StepKind::ToolResultDigest, ctx_max, 0.0);
-        let d1 = DifficultyScore::compute(&base_signals(1), StepKind::RecoveryAfterFailure, ctx_max, 0.0);
-        let d2 = DifficultyScore::compute(&base_signals(2), StepKind::RecoveryAfterFailure, ctx_max, 0.0);
-        let d3 = DifficultyScore::compute(&base_signals(3), StepKind::RecoveryAfterFailure, ctx_max, 0.0);
-        assert!(d1.0 > d0.0);
-        assert!(d2.0 > d1.0);
+        let step = StepKind::ToolResultDigest;
+        let d0 = DifficultyScore::compute(&base_signals(0), step, ctx_max, 0.0);
+        let d1 = DifficultyScore::compute(&base_signals(1), step, ctx_max, 0.0);
+        let d2 = DifficultyScore::compute(&base_signals(2), step, ctx_max, 0.0);
+        assert_eq!(d1.0, d0.0);
+        assert!(d2.0 > d0.0);
+        let d3 = DifficultyScore::compute(
+            &base_signals(3),
+            StepKind::RecoveryAfterFailure,
+            ctx_max,
+            0.0,
+        );
         assert!(d3.0 > d2.0);
-        let d5 = DifficultyScore::compute(&base_signals(5), StepKind::RecoveryAfterFailure, ctx_max, 0.0);
-        assert_eq!(d3.0, d5.0);
     }
 
     #[test]
     fn tool_error_streak_bias_values() {
         assert_eq!(tool_error_streak_bias(0), 0.0);
-        assert_eq!(tool_error_streak_bias(1), 0.15);
-        assert_eq!(tool_error_streak_bias(2), 0.30);
+        assert_eq!(tool_error_streak_bias(1), 0.0);
+        assert_eq!(tool_error_streak_bias(2), 0.15);
+        assert_eq!(tool_error_streak_bias(3), 0.30);
         assert_eq!(tool_error_streak_bias(5), 0.40);
     }
 

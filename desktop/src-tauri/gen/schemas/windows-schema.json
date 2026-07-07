@@ -387,6 +387,12 @@
           "markdownDescription": "Writes Token Router provider config into OpenClaw openclaw.json."
         },
         {
+          "description": "Writes Token Router provider config into OpenCode opencode.json.",
+          "type": "string",
+          "const": "allow-configure-opencode-agent",
+          "markdownDescription": "Writes Token Router provider config into OpenCode opencode.json."
+        },
+        {
           "description": "Returns the desktop app version for feedback.",
           "type": "string",
           "const": "allow-feedback-app-version",
