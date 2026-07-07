@@ -8,6 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::gateway::agent_usage::AgentCloudUsageStore;
+use crate::gateway::api::compat::CodexChatHistoryStore;
 use crate::gateway::api::auth_keys;
 use crate::gateway::api::admin;
 use crate::gateway::api::anthropic::anthropic_messages_handler;
@@ -41,6 +42,7 @@ pub struct AppState {
     pub agent_usage: Arc<AgentCloudUsageStore>,
     pub wordfreq: Arc<WordFreqStore>,
     pub routing_logs: Arc<RoutingLogStore>,
+    pub codex_history: Arc<CodexChatHistoryStore>,
 }
 
 impl AppState {

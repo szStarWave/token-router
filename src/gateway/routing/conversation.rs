@@ -46,6 +46,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
         for i in 0..n {
             messages.push(Message {
@@ -54,6 +55,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
             messages.push(Message {
                 role: Role::Assistant,
@@ -61,6 +63,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
         }
         ChatCompletionRequest {

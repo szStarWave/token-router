@@ -1,6 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::gateway::api::compat::finalize_upstream_request;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -28,6 +30,16 @@ pub struct ChatCompletionRequest {
     pub store: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 impl Default for ChatCompletionRequest {
@@ -42,61 +54,25 @@ impl Default for ChatCompletionRequest {
             max_completion_tokens: None,
             store: None,
             stream_options: None,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+            top_p: None,
+            parallel_tool_calls: None,
         }
     }
 }
 
 impl ChatCompletionRequest {
     /// Normalize messages for upstream providers that only accept string `content`,
-    /// and reorder so system messages come first (required by some Jinja2 chat templates).
-    pub fn for_upstream(&self) -> Self {
-        let mut req = self.clone();
-        req.messages = {
-            let mut msgs: Vec<_> = req
-                .messages
-                .iter()
-                .map(Message::normalized_for_upstream)
-                .collect();
-            msgs.sort_by_key(|m| match m.role {
-                Role::System => 0,
-                _ => 1,
-            });
-            msgs
-        };
-        req
+    /// merge system prompts, and apply thinking-model compatibility fixes.
+    pub fn for_upstream(&self, upstream_base: Option<&str>) -> Self {
+        finalize_upstream_request(self.clone(), upstream_base)
     }
 
-    /// Edge-side: merge all system messages into a single first system message.
-    /// Some edge models only accept one system message.
-    pub fn for_edge_upstream(&self) -> Self {
-        let mut req = self.clone();
-        let msgs: Vec<_> = req
-            .messages
-            .iter()
-            .map(Message::normalized_for_upstream)
-            .collect();
-
-        let (systems, others): (Vec<_>, Vec<_>) =
-            msgs.into_iter().partition(|m| m.role == Role::System);
-
-        let mut merged = Vec::with_capacity(1 + others.len());
-        if !systems.is_empty() {
-            let content = systems
-                .iter()
-                .filter_map(|m| m.content.as_deref())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            merged.push(Message {
-                role: Role::System,
-                content: if content.is_empty() { None } else { Some(content) },
-                content_parts: None,
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        }
-        merged.extend(others);
-        req.messages = merged;
-        req
+    /// Edge-side normalization (same as cloud; edge models also benefit from merged system).
+    pub fn for_edge_upstream(&self, upstream_base: Option<&str>) -> Self {
+        self.for_upstream(upstream_base)
     }
 }
 
@@ -111,6 +87,8 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +107,8 @@ struct MessageRaw {
     tool_calls: Option<Vec<ToolCall>>,
     #[serde(default)]
     tool_call_id: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 impl From<MessageRaw> for Message {
@@ -148,6 +128,7 @@ impl From<MessageRaw> for Message {
             content_parts,
             tool_calls: raw.tool_calls,
             tool_call_id: raw.tool_call_id,
+            reasoning_content: raw.reasoning_content,
         }
     }
 }
@@ -173,6 +154,15 @@ impl Message {
             }
         }
         msg.content_parts = None;
+        if msg.role == Role::Assistant
+            && msg
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty())
+            && msg.content.as_deref().unwrap_or("").is_empty()
+        {
+            msg.content = None;
+        }
         msg
     }
 }

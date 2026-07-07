@@ -1,8 +1,9 @@
-pub mod auth_keys;
 pub mod admin;
 pub mod anthropic;
 pub mod auth;
+pub mod auth_keys;
 pub mod chat;
+pub mod compat;
 pub mod meta;
 pub mod openai;
 pub mod responses;

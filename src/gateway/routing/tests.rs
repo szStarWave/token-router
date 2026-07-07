@@ -136,6 +136,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -143,6 +144,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -162,6 +164,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: true,
@@ -193,6 +196,7 @@ mod tests {
                 ]),
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -212,6 +216,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -222,6 +227,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -247,6 +253,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![ToolDefinition {
                 tool_type: "function".into(),
@@ -369,6 +376,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -376,6 +384,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -383,6 +392,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -390,6 +400,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("call_1".into()),
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -397,6 +408,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -522,6 +534,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -529,6 +542,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools,
@@ -715,6 +729,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -722,6 +737,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -729,6 +745,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -736,6 +753,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -793,6 +811,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -800,6 +819,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -827,6 +847,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -834,6 +855,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -841,6 +863,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -848,6 +871,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -903,6 +927,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: initial_plan_request().tools.clone(),
                 stream: false,
@@ -932,6 +957,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -939,6 +965,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("e1".into()),
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -946,6 +973,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("e2".into()),
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -953,6 +981,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("e3".into()),
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -980,6 +1009,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -987,6 +1017,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("e1".into()),
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -1117,6 +1148,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
         for i in 0..tool_count {
             messages.push(Message {
@@ -1132,6 +1164,7 @@ mod tests {
                     },
                 }]),
                 tool_call_id: None,
+            reasoning_content: None,
             });
             messages.push(Message {
                 role: Role::Tool,
@@ -1139,6 +1172,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{i}")),
+            reasoning_content: None,
             });
         }
         ChatCompletionRequest {
@@ -1321,6 +1355,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![ToolDefinition {
                 tool_type: "function".into(),
@@ -1351,6 +1386,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1385,6 +1421,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1419,6 +1456,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1454,6 +1492,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                     Message {
                         role: Role::Assistant,
@@ -1461,6 +1500,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                     Message {
                         role: Role::User,
@@ -1468,6 +1508,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                 ],
                 tools: vec![],
@@ -1508,6 +1549,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                     Message {
                         role: Role::Assistant,
@@ -1515,6 +1557,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                     Message {
                         role: Role::User,
@@ -1522,6 +1565,7 @@ mod tests {
                         content_parts: None,
                         tool_calls: None,
                         tool_call_id: None,
+            reasoning_content: None,
                     },
                 ],
                 tools: vec![],
@@ -1554,6 +1598,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
             messages.push(Message {
                 role: Role::Assistant,
@@ -1561,6 +1606,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
         }
         messages[0] = Message {
@@ -1569,6 +1615,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         };
         let decision = decide_test(
             &cfg,
@@ -1606,6 +1653,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1640,6 +1688,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1673,6 +1722,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1707,6 +1757,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1761,6 +1812,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: plan_intent_request().tools.clone(),
                 stream: false,
@@ -1784,6 +1836,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -1819,6 +1872,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1846,6 +1900,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -1853,6 +1908,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("t1".into()),
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -1893,6 +1949,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -1925,6 +1982,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 }],
                 tools: vec![],
                 stream: false,
@@ -2123,6 +2181,7 @@ mod tests {
                 ]),
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![ToolDefinition {
                 tool_type: "function".into(),
@@ -2507,6 +2566,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -2514,6 +2574,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -2521,6 +2582,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -2528,6 +2590,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -2729,6 +2792,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -2736,6 +2800,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -2743,6 +2808,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -2835,6 +2901,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -2849,6 +2916,7 @@ mod tests {
                         },
                     }]),
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -2874,6 +2942,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: Some("call_1".into()),
+            reasoning_content: None,
         });
         req
     }

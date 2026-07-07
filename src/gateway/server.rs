@@ -11,8 +11,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::gateway::api::router;
-use crate::gateway::api::routes::AppState;
+use crate::gateway::api::compat::CodexChatHistoryStore;
+use crate::gateway::api::routes::{router, AppState};
 use crate::gateway::config::AppConfig;
 use crate::gateway::config_manager::ConfigManager;
 use crate::gateway::daemon;
@@ -136,6 +136,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let adaptive_tuner = Arc::new(AdaptiveTuner::new(compute_effective_routing(&config)));
     let edge_load = EdgeInferenceTracker::new();
     let config_mgr = ConfigManager::new(config.clone());
+    let codex_history = Arc::new(CodexChatHistoryStore::default());
     let state = AppState {
         config_mgr: config_mgr.clone(),
         sessions: sessions.clone(),
@@ -158,6 +159,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
         agent_usage,
         wordfreq,
         routing_logs,
+        codex_history,
     };
 
     let app = router(state)

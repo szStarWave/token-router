@@ -8,6 +8,11 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 
 use crate::gateway::api::chat::{chat_completions_core, ChatOutputFormat};
+use crate::gateway::api::compat::{
+    apply_anthropic_upstream_options, finalize_chat_request_value,
+    inject_stream_include_usage, strip_leading_anthropic_billing_header,
+    ANTHROPIC_REDACTED_THINKING_PLACEHOLDER, TOOL_CALL_REASONING_PLACEHOLDER,
+};
 use crate::gateway::api::openai::ChatCompletionRequest;
 use crate::gateway::api::routes::AppState;
 use crate::gateway::api::sse_transform::{anthropic_sse_event, SseTransform};
@@ -60,15 +65,26 @@ pub fn anthropic_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequ
     }
 
     if let Some(tools) = obj.get("tools").and_then(|t| t.as_array()) {
-        oai.insert("tools".into(), json!(convert_tools(tools)));
-    }
-    if let Some(tc) = obj.get("tool_choice") {
-        oai.insert("tool_choice".into(), convert_tool_choice(tc));
+        let converted = convert_tools(tools);
+        if !converted.is_empty() {
+            oai.insert("tools".into(), json!(converted));
+            if let Some(tc) = obj.get("tool_choice") {
+                oai.insert("tool_choice".into(), convert_tool_choice(tc));
+            }
+        }
     }
 
     oai.insert("messages".into(), json!(build_messages(obj)));
 
-    serde_json::from_value(Value::Object(oai))
+    let model = obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    apply_anthropic_upstream_options(&mut oai, body, model);
+    inject_stream_include_usage(&mut oai);
+
+    let finalized = finalize_chat_request_value(oai, model);
+    serde_json::from_value(finalized)
         .map_err(|e| AppError::BadRequest(format!("invalid anthropic request: {e}")))
 }
 
@@ -106,6 +122,13 @@ pub fn chat_json_to_anthropic(body: &[u8], fallback_model: &str) -> Value {
         .unwrap_or_default();
 
     let mut content_blocks = Vec::new();
+    if let Some(reasoning) = message
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        content_blocks.push(json!({"type": "thinking", "thinking": reasoning}));
+    }
     if let Some(text) = content_str.filter(|s| !s.is_empty()) {
         content_blocks.push(json!({"type": "text", "text": text}));
     }
@@ -167,20 +190,151 @@ pub fn chat_json_to_anthropic(body: &[u8], fallback_model: &str) -> Value {
 
 pub struct AnthropicSseTransform {
     model: String,
-    role_sent: bool,
-    content_start: bool,
-    text_block: bool,
+    message_id: String,
+    sent_message_start: bool,
+    next_content_index: u32,
+    non_tool_block_index: Option<u32>,
+    non_tool_block_kind: Option<&'static str>,
+    tool_blocks: std::collections::HashMap<i32, ToolBlockState>,
+    has_emitted_message_delta: bool,
+    pending_message_delta: Option<(String, Value)>,
+    sent_message_stop: bool,
     done: bool,
+    latest_usage: Value,
+}
+
+#[derive(Default)]
+struct ToolBlockState {
+    anthropic_index: u32,
+    id: String,
+    name: String,
+    started: bool,
+    pending_args: String,
 }
 
 impl AnthropicSseTransform {
     pub fn new(model: String) -> Self {
         Self {
             model,
-            role_sent: false,
-            content_start: false,
-            text_block: false,
+            message_id: String::new(),
+            sent_message_start: false,
+            next_content_index: 0,
+            non_tool_block_index: None,
+            non_tool_block_kind: None,
+            tool_blocks: std::collections::HashMap::new(),
+            has_emitted_message_delta: false,
+            pending_message_delta: None,
+            sent_message_stop: false,
             done: false,
+            latest_usage: json!({"input_tokens": 0, "output_tokens": 0}),
+        }
+    }
+
+    fn emit_event(&self, event_type: &str, payload: Value) -> Bytes {
+        anthropic_sse_event(
+            event_type,
+            serde_json::to_vec(&payload).unwrap_or_default().as_slice(),
+        )
+    }
+
+    fn ensure_message_start(&mut self, out: &mut Vec<Bytes>) {
+        if self.sent_message_start {
+            return;
+        }
+        self.sent_message_start = true;
+        if self.message_id.is_empty() {
+            self.message_id = format!("msg_{:x}", hash_bytes(self.model.as_bytes()));
+        }
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": self.message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": self.model,
+                "stop_reason": null,
+                "stop_sequence": null,
+                "usage": self.latest_usage,
+            }
+        });
+        out.push(self.emit_event("message_start", start));
+    }
+
+    fn close_non_tool_block(&mut self, out: &mut Vec<Bytes>) {
+        let Some(index) = self.non_tool_block_index.take() else {
+            self.non_tool_block_kind = None;
+            return;
+        };
+        self.non_tool_block_kind = None;
+        out.push(self.emit_event(
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": index}),
+        ));
+    }
+
+    fn start_non_tool_block(&mut self, out: &mut Vec<Bytes>, kind: &'static str, empty: Value) {
+        self.close_non_tool_block(out);
+        let index = self.next_content_index;
+        self.next_content_index += 1;
+        self.non_tool_block_index = Some(index);
+        self.non_tool_block_kind = Some(kind);
+        out.push(self.emit_event(
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": empty,
+            }),
+        ));
+    }
+
+    fn update_usage_from_chunk(&mut self, chunk: &Value) {
+        let Some(usage) = chunk.get("usage").and_then(|u| u.as_object()) else {
+            return;
+        };
+        let prompt = usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let completion = usage
+            .get("completion_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        self.latest_usage = json!({
+            "input_tokens": prompt,
+            "output_tokens": completion,
+        });
+    }
+
+    fn reasoning_delta(delta: &Value) -> Option<&str> {
+        delta
+            .get("reasoning_content")
+            .or_else(|| delta.get("reasoning"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn queue_message_delta(&mut self, stop_reason: &str) {
+        if self.has_emitted_message_delta {
+            if let Some((_, usage)) = self.pending_message_delta.as_mut() {
+                *usage = self.latest_usage.clone();
+            }
+            return;
+        }
+        self.has_emitted_message_delta = true;
+        self.pending_message_delta = Some((stop_reason.to_string(), self.latest_usage.clone()));
+    }
+
+    fn emit_pending_close(&mut self, out: &mut Vec<Bytes>) {
+        self.close_non_tool_block(out);
+        for state in self.tool_blocks.values() {
+            if state.started {
+                out.push(self.emit_event(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": state.anthropic_index}),
+                ));
+            }
         }
     }
 }
@@ -192,8 +346,11 @@ impl SseTransform for AnthropicSseTransform {
         }
 
         let trimmed = trim_line(line);
-        if trimmed.is_empty() || trimmed == DATA_DONE {
+        if trimmed.is_empty() {
             return Vec::new();
+        }
+        if trimmed == DATA_DONE {
+            return self.finish();
         }
         if !trimmed.starts_with(DATA_PREFIX) {
             return Vec::new();
@@ -204,152 +361,214 @@ impl SseTransform for AnthropicSseTransform {
             return Vec::new();
         };
 
+        if let Some(id) = chunk.get("id").and_then(|v| v.as_str()) {
+            if !id.is_empty() {
+                self.message_id = id.to_string();
+            }
+        }
+        self.update_usage_from_chunk(&chunk);
+
         let choices = chunk.get("choices").and_then(|c| c.as_array());
-        let Some(choices) = choices else {
+        let Some(choices) = choices.filter(|c| !c.is_empty()) else {
             return Vec::new();
         };
-        if choices.is_empty() {
-            return Vec::new();
-        }
         let choice = &choices[0];
         let delta = choice.get("delta").cloned().unwrap_or(json!({}));
 
         let mut out = Vec::new();
 
         let role = delta.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        if !self.role_sent && role == "assistant" {
-            self.role_sent = true;
-            let msg_id = format!("msg_{:x}", hash_bytes(json_data));
-            let start = json!({
-                "type": "message_start",
-                "message": {
-                    "id": msg_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": self.model,
-                    "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": {"input_tokens": 0, "output_tokens": 0}
-                }
-            });
-            out.push(anthropic_sse_event(
-                "message_start",
-                serde_json::to_vec(&start).unwrap_or_default().as_slice(),
-            ));
+        if role == "assistant" {
+            self.ensure_message_start(&mut out);
+        } else if !self.sent_message_start
+            && (Self::reasoning_delta(&delta).is_some()
+                || delta.get("content").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+                || delta.get("tool_calls").and_then(|v| v.as_array()).is_some_and(|t| !t.is_empty()))
+        {
+            self.ensure_message_start(&mut out);
         }
 
-        let content = delta.get("content").and_then(|v| v.as_str());
-        let has_text = content.is_some_and(|c| !c.is_empty());
-        let tool_calls = delta
-            .get("tool_calls")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let has_tool = !tool_calls.is_empty();
-
-        if (has_text || has_tool) && !self.content_start {
-            self.content_start = true;
-        }
-
-        if has_text {
-            if !self.text_block {
-                self.text_block = true;
-                let cb = json!({
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""}
-                });
-                out.push(anthropic_sse_event(
-                    "content_block_start",
-                    serde_json::to_vec(&cb).unwrap_or_default().as_slice(),
+        if let Some(reasoning) = Self::reasoning_delta(&delta) {
+            self.ensure_message_start(&mut out);
+            if self.non_tool_block_kind != Some("thinking") {
+                self.start_non_tool_block(
+                    &mut out,
+                    "thinking",
+                    json!({"type": "thinking", "thinking": ""}),
+                );
+            }
+            if let Some(index) = self.non_tool_block_index {
+                out.push(self.emit_event(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "thinking_delta", "thinking": reasoning},
+                    }),
                 ));
             }
-            let delta_evt = json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": content.unwrap_or("")}
-            });
-            out.push(anthropic_sse_event(
-                "content_block_delta",
-                serde_json::to_vec(&delta_evt).unwrap_or_default().as_slice(),
-            ));
         }
 
-        for tc in tool_calls {
-            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let func = tc.get("function");
-            let name = func
-                .and_then(|f| f.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let args = func
-                .and_then(|f| f.get("arguments"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            if !id.is_empty() || !name.is_empty() {
-                let cb = json!({
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": id,
-                        "name": name,
-                        "input": {}
-                    }
-                });
-                out.push(anthropic_sse_event(
-                    "content_block_start",
-                    serde_json::to_vec(&cb).unwrap_or_default().as_slice(),
-                ));
-                if !args.is_empty() {
-                    let delta_evt = json!({
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {"type": "input_json_delta", "partial_json": args}
-                    });
-                    out.push(anthropic_sse_event(
+        if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+            if !content.is_empty() {
+                self.ensure_message_start(&mut out);
+                if self.non_tool_block_kind != Some("text") {
+                    self.start_non_tool_block(
+                        &mut out,
+                        "text",
+                        json!({"type": "text", "text": ""}),
+                    );
+                }
+                if let Some(index) = self.non_tool_block_index {
+                    out.push(self.emit_event(
                         "content_block_delta",
-                        serde_json::to_vec(&delta_evt).unwrap_or_default().as_slice(),
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {"type": "text_delta", "text": content},
+                        }),
                     ));
                 }
-            } else if !args.is_empty() {
-                let delta_evt = json!({
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "input_json_delta", "partial_json": args}
-                });
-                out.push(anthropic_sse_event(
-                    "content_block_delta",
-                    serde_json::to_vec(&delta_evt).unwrap_or_default().as_slice(),
-                ));
+            }
+        }
+
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            self.ensure_message_start(&mut out);
+            self.close_non_tool_block(&mut out);
+            for tc in tool_calls {
+                let index = tc.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let mut emit_start = None;
+                let mut emit_delta = None;
+
+                {
+                    let state = self.tool_blocks.entry(index).or_insert_with(|| {
+                        let anthropic_index = self.next_content_index;
+                        self.next_content_index += 1;
+                        ToolBlockState {
+                            anthropic_index,
+                            ..Default::default()
+                        }
+                    });
+                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                        if !id.is_empty() {
+                            state.id = id.to_string();
+                        }
+                    }
+                    if let Some(name) = tc
+                        .pointer("/function/name")
+                        .and_then(|v| v.as_str())
+                    {
+                        if !name.is_empty() {
+                            state.name = name.to_string();
+                        }
+                    }
+                    let args = tc
+                        .pointer("/function/arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !args.is_empty() {
+                        if state.started {
+                            emit_delta = Some((state.anthropic_index, args.to_string()));
+                        } else {
+                            state.pending_args.push_str(args);
+                        }
+                    }
+                    let should_start =
+                        !state.started && !state.id.is_empty() && !state.name.is_empty();
+                    if should_start {
+                        state.started = true;
+                        let pending = std::mem::take(&mut state.pending_args);
+                        emit_start = Some((
+                            state.anthropic_index,
+                            state.id.clone(),
+                            state.name.clone(),
+                            pending,
+                        ));
+                    }
+                }
+
+                if let Some((anthropic_index, id, name, pending)) = emit_start {
+                    out.push(self.emit_event(
+                        "content_block_start",
+                        json!({
+                            "type": "content_block_start",
+                            "index": anthropic_index,
+                            "content_block": {
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": {},
+                            },
+                        }),
+                    ));
+                    if !pending.is_empty() {
+                        out.push(self.emit_event(
+                            "content_block_delta",
+                            json!({
+                                "type": "content_block_delta",
+                                "index": anthropic_index,
+                                "delta": {"type": "input_json_delta", "partial_json": pending},
+                            }),
+                        ));
+                    }
+                }
+                if let Some((anthropic_index, args)) = emit_delta {
+                    out.push(self.emit_event(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": anthropic_index,
+                            "delta": {"type": "input_json_delta", "partial_json": args},
+                        }),
+                    ));
+                }
             }
         }
 
         if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-            let stop_reason = map_finish_reason(finish);
-            if self.content_start {
-                let sd = json!({"type": "content_block_stop", "index": 0});
-                out.push(anthropic_sse_event(
-                    "content_block_stop",
-                    serde_json::to_vec(&sd).unwrap_or_default().as_slice(),
-                ));
-            }
-            let md = json!({
-                "type": "message_delta",
-                "delta": {"stop_reason": stop_reason, "stop_sequence": null},
-                "usage": {"output_tokens": 0}
-            });
-            out.push(anthropic_sse_event(
+            self.emit_pending_close(&mut out);
+            self.queue_message_delta(map_finish_reason(finish));
+        }
+
+        out
+    }
+
+    fn finish(&mut self) -> Vec<Bytes> {
+        if self.done {
+            return Vec::new();
+        }
+        self.done = true;
+        let mut out = Vec::new();
+
+        if !self.sent_message_start {
+            self.ensure_message_start(&mut out);
+        }
+
+        self.emit_pending_close(&mut out);
+
+        if let Some((stop_reason, usage)) = self.pending_message_delta.take() {
+            out.push(self.emit_event(
                 "message_delta",
-                serde_json::to_vec(&md).unwrap_or_default().as_slice(),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": null},
+                    "usage": usage,
+                }),
             ));
-            out.push(anthropic_sse_event(
-                "message_stop",
-                br#"{"type":"message_stop"}"#,
+        } else if self.has_emitted_message_delta {
+            out.push(self.emit_event(
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                    "usage": self.latest_usage,
+                }),
             ));
-            self.done = true;
+        }
+
+        if !self.sent_message_stop {
+            out.push(self.emit_event("message_stop", json!({"type": "message_stop"})));
+            self.sent_message_stop = true;
         }
 
         out
@@ -371,6 +590,13 @@ fn convert_tools(tools: &[Value]) -> Vec<Value> {
         .iter()
         .filter_map(|t| {
             let tool = t.as_object()?;
+            if tool
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "BatchTool")
+            {
+                return None;
+            }
             let mut func = serde_json::Map::new();
             if let Some(name) = tool.get("name") {
                 func.insert("name".into(), name.clone());
@@ -450,16 +676,22 @@ fn build_messages(obj: &serde_json::Map<String, Value>) -> Vec<Value> {
 }
 
 fn extract_system_text(sys: &Value) -> Option<String> {
-    match sys {
-        Value::String(s) => Some(s.clone()),
+    let text = match sys {
+        Value::String(s) => s.clone(),
         Value::Array(parts) => {
             let text: Vec<_> = parts
                 .iter()
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect();
-            Some(text.join(""))
+            text.join("")
         }
-        _ => None,
+        _ => return None,
+    };
+    let stripped = strip_leading_anthropic_billing_header(&text);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
     }
 }
 
@@ -492,6 +724,7 @@ fn convert_assistant_message(role: &str, content: Option<&Value>) -> Value {
 
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut reasoning_parts = Vec::new();
 
     for block in blocks {
         let Some(b) = block.as_object() else { continue };
@@ -500,6 +733,16 @@ fn convert_assistant_message(role: &str, content: Option<&Value>) -> Value {
                 if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
                     text_parts.push(t);
                 }
+            }
+            "thinking" => {
+                if let Some(t) = b.get("thinking").and_then(|v| v.as_str()) {
+                    if !t.is_empty() {
+                        reasoning_parts.push(t.to_string());
+                    }
+                }
+            }
+            "redacted_thinking" => {
+                reasoning_parts.push(ANTHROPIC_REDACTED_THINKING_PLACEHOLDER.to_string());
             }
             "tool_use" => {
                 let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -523,6 +766,15 @@ fn convert_assistant_message(role: &str, content: Option<&Value>) -> Value {
     }
     if !tool_calls.is_empty() {
         msg.insert("tool_calls".into(), json!(tool_calls));
+        if text_parts.is_empty() {
+            msg.insert("content".into(), Value::Null);
+        }
+        let reasoning_content = if reasoning_parts.is_empty() {
+            TOOL_CALL_REASONING_PLACEHOLDER.to_string()
+        } else {
+            reasoning_parts.join("\n")
+        };
+        msg.insert("reasoning_content".into(), json!(reasoning_content));
     }
     Value::Object(msg)
 }
@@ -634,11 +886,64 @@ mod tests {
     }
 
     #[test]
-    fn converts_non_stream_response() {
-        let oai = br#"{"id":"chat-1","model":"m","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
+    fn converts_tool_use_with_thinking_to_reasoning_content() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "I should call the tool."},
+                    {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "Paris"}}
+                ]
+            }]
+        });
+        let req = anthropic_request_to_openai(&body).unwrap();
+        let msg = &req.messages[0];
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("I should call the tool.")
+        );
+    }
+
+    #[test]
+    fn converts_redacted_thinking_placeholder() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "redacted_thinking", "data": "opaque"},
+                    {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}}
+                ]
+            }]
+        });
+        let req = anthropic_request_to_openai(&body).unwrap();
+        assert_eq!(
+            req.messages[0].reasoning_content.as_deref(),
+            Some(ANTHROPIC_REDACTED_THINKING_PLACEHOLDER)
+        );
+    }
+
+    #[test]
+    fn strips_billing_header_from_system() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "max_tokens": 1024,
+            "system": "x-anthropic-billing-header: cch=abc\n\nBe helpful.",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req = anthropic_request_to_openai(&body).unwrap();
+        assert_eq!(req.messages[0].content.as_deref(), Some("Be helpful."));
+    }
+
+    #[test]
+    fn converts_reasoning_content_in_response() {
+        let oai = br#"{"id":"chat-1","model":"m","choices":[{"message":{"role":"assistant","reasoning_content":"plan","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
         let anth = chat_json_to_anthropic(oai, "m");
-        assert_eq!(anth["type"], "message");
-        assert_eq!(anth["stop_reason"], "end_turn");
-        assert_eq!(anth["content"][0]["text"], "hi");
+        assert_eq!(anth["content"][0]["type"], "thinking");
+        assert_eq!(anth["content"][0]["thinking"], "plan");
+        assert_eq!(anth["content"][1]["text"], "hi");
     }
 }

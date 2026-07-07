@@ -642,6 +642,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -649,6 +650,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -656,6 +658,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t2".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(consecutive_tool_error_tail(&messages), 2);
@@ -670,6 +673,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -677,6 +681,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t2".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(consecutive_tool_error_tail(&messages), 1);
@@ -755,6 +760,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -762,6 +768,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -769,6 +776,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t2".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(count_tool_invocations_since_last_user(&messages), 2);
@@ -783,6 +791,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -790,6 +799,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t2".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(count_tool_invocations_since_last_user(&messages), 2);
@@ -804,6 +814,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -811,6 +822,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t0".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -818,6 +830,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -825,6 +838,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(count_tool_invocations_since_last_user(&messages), 1);
@@ -955,6 +969,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -962,6 +977,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: Some("t1".into()),
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -983,6 +999,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -1015,6 +1032,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -1022,6 +1040,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -1055,6 +1074,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -1096,6 +1116,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -1103,6 +1124,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -1110,6 +1132,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -1124,6 +1147,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
         let latest_stripped_tok = estimate_tokens("新问题");
         let assistant_tok = estimate_tokens("好的");
@@ -1159,6 +1183,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -1197,6 +1222,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1204,6 +1230,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -1211,6 +1238,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
         ];
         assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Edge);
@@ -1225,6 +1253,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1232,6 +1261,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -1239,6 +1269,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
         ];
         assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Cloud);
@@ -1253,6 +1284,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1260,6 +1292,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -1267,6 +1300,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
         ];
         assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::Cloud);
@@ -1282,6 +1316,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
             messages.push(Message {
                 role: Role::Assistant,
@@ -1289,6 +1324,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             });
         }
         messages[0] = Message {
@@ -1297,6 +1333,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         };
         assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::None);
     }
@@ -1310,6 +1347,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -1317,6 +1355,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t0".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::User,
@@ -1324,6 +1363,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -1331,6 +1371,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(consecutive_tool_errors_since_last_user(&messages), 1);
@@ -1345,6 +1386,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -1352,6 +1394,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t1".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -1359,6 +1402,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t2".into()),
+            reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -1366,6 +1410,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some("t3".into()),
+            reasoning_content: None,
             },
         ];
         assert_eq!(consecutive_tool_errors_since_last_user(&messages), 1);
@@ -1392,6 +1437,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -1399,6 +1445,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -1406,6 +1453,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],
@@ -1441,6 +1489,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,
@@ -1461,6 +1510,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::Assistant,
@@ -1468,6 +1518,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![],

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -10,7 +11,11 @@ use bytes::Bytes;
 use serde_json::{json, Map, Value};
 
 use crate::gateway::api::chat::{chat_completions_core, ChatOutputFormat};
-use crate::gateway::api::openai::ChatCompletionResponse;
+use crate::gateway::api::compat::{
+    apply_reasoning_options, convert_responses_input_to_messages, finalize_chat_request_value,
+    response_id_from_chat_id, CodexChatHistoryStore,
+};
+use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, Role};
 use crate::gateway::api::routes::AppState;
 use crate::gateway::api::sse_transform::{responses_sse_event, SseTransform};
 use crate::gateway::error::{AppError, AppResult};
@@ -29,10 +34,35 @@ macro_rules! event_map {
 pub async fn responses_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> AppResult<impl IntoResponse> {
+    let original_body = body.clone();
+    let input_before = body
+        .get("input")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    state.codex_history.enrich_request(&mut body);
+    let input_after = body
+        .get("input")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let restored_calls = input_after.saturating_sub(input_before);
+    state.codex_history.record_calls_from_input(&body);
     let agent_id = super::routes::extract_agent_id(&headers);
-    let req = responses_request_to_openai(&body)?;
+    let base_url = state.config_mgr.get().cloud_base_url.clone();
+    let req = responses_request_to_openai_with_base(&body, base_url.as_deref())?;
+    log_responses_convert(&body, &req, restored_calls);
+    tracing::info!(
+        original = %serde_json::to_string(&original_body).unwrap_or_default(),
+        "responses raw request"
+    );
+    let converted_json = serde_json::to_value(&req).unwrap_or_default();
+    tracing::info!(
+        converted = %serde_json::to_string(&converted_json).unwrap_or_default(),
+        "responses converted request"
+    );
     chat_completions_core(
         state,
         headers,
@@ -43,7 +73,64 @@ pub async fn responses_handler(
     .await
 }
 
+fn log_responses_convert(body: &Value, req: &ChatCompletionRequest, restored_calls: usize) {
+    let previous_response_id = body
+        .get("previous_response_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let input_items = body
+        .get("input")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let tool_calls_in_req = req
+        .tools
+        .len();
+    let assistant_tool_calls = req
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == Role::Assistant
+                && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+        })
+        .count();
+    let reasoning_placeholders = req
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == Role::Assistant
+                && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+                && m.reasoning_content.as_deref() == Some(crate::gateway::api::compat::TOOL_CALL_REASONING_PLACEHOLDER)
+        })
+        .count();
+    let missing_reasoning = req
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == Role::Assistant
+                && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+                && m.reasoning_content.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+        })
+        .count();
+
+    tracing::info!(
+        previous_response_id = %previous_response_id,
+        input_items,
+        messages = req.messages.len(),
+        tools = tool_calls_in_req,
+        restored_calls,
+        assistant_tool_calls,
+        reasoning_placeholders,
+        missing_reasoning,
+        "responses convert"
+    );
+}
+
 pub fn responses_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequest> {
+    responses_request_to_openai_with_base(body, None)
+}
+
+pub fn responses_request_to_openai_with_base(body: &Value, upstream_base: Option<&str>) -> AppResult<ChatCompletionRequest> {
     let obj = body
         .as_object()
         .ok_or_else(|| AppError::BadRequest("invalid request body".into()))?;
@@ -92,24 +179,30 @@ pub fn responses_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequ
     let instructions = obj
         .get("instructions")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .map(|s| crate::gateway::api::compat::strip_leading_anthropic_billing_header(s).to_string())
+        .unwrap_or_default();
     if let Some(input) = obj.get("input") {
         result.insert(
             "messages".into(),
-            json!(convert_input_to_messages(input, instructions)),
+            json!(convert_responses_input_to_messages(input, &instructions)),
         );
     } else if !instructions.trim().is_empty() {
         result.insert(
             "messages".into(),
-            json!(convert_input_to_messages(&Value::Null, instructions)),
+            json!(convert_responses_input_to_messages(&Value::Null, &instructions)),
         );
     }
 
-    serde_json::from_value(Value::Object(result))
+    let model = obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    apply_reasoning_options(&mut result, body, model, upstream_base);
+
+    let finalized = finalize_chat_request_value(result, model);
+    serde_json::from_value(finalized)
         .map_err(|e| AppError::BadRequest(format!("invalid responses request: {e}")))
 }
-
-use crate::gateway::api::openai::ChatCompletionRequest;
 
 pub fn chat_response_to_responses(resp: &ChatCompletionResponse) -> Value {
     let body = serde_json::to_value(resp).unwrap_or(json!({}));
@@ -117,7 +210,8 @@ pub fn chat_response_to_responses(resp: &ChatCompletionResponse) -> Value {
 }
 
 pub fn chat_json_to_responses(chat: &Value) -> Value {
-    let id = chat.get("id").cloned().unwrap_or(json!(""));
+    let id_raw = chat.get("id").and_then(|v| v.as_str());
+    let responses_id = json!(response_id_from_chat_id(id_raw));
     let model = chat.get("model").cloned().unwrap_or(json!(""));
     let created = as_i64(chat.get("created").unwrap_or(&Value::Null));
 
@@ -126,7 +220,7 @@ pub fn chat_json_to_responses(chat: &Value) -> Value {
         for (i, choice) in choices.iter().enumerate() {
             if let Some(msg) = choice.get("message") {
                 output.extend(convert_chat_message_to_responses_output_items(
-                    chat.get("id").cloned().unwrap_or(json!("")),
+                    &responses_id,
                     i,
                     msg,
                 ));
@@ -135,7 +229,7 @@ pub fn chat_json_to_responses(chat: &Value) -> Value {
     }
 
     let mut responses = Map::new();
-    responses.insert("id".into(), id);
+    responses.insert("id".into(), responses_id);
     responses.insert("object".into(), json!("response"));
     responses.insert("created_at".into(), json!(created));
     responses.insert("model".into(), model);
@@ -184,6 +278,10 @@ pub struct ResponsesSseTransform {
     prompt_tokens: i64,
     completion_tokens: i64,
     cached_tokens: i64,
+    reasoning_text: String,
+    reasoning_started: bool,
+    reasoning_output_index: i32,
+    codex_history: Option<Arc<CodexChatHistoryStore>>,
 }
 
 #[derive(Clone)]
@@ -197,6 +295,10 @@ struct ToolCallState {
 
 impl ResponsesSseTransform {
     pub fn new() -> Self {
+        Self::with_codex_history(None)
+    }
+
+    pub fn with_codex_history(codex_history: Option<Arc<CodexChatHistoryStore>>) -> Self {
         Self {
             sent_created: false,
             text_started: false,
@@ -215,6 +317,10 @@ impl ResponsesSseTransform {
             prompt_tokens: 0,
             completion_tokens: 0,
             cached_tokens: 0,
+            reasoning_text: String::new(),
+            reasoning_started: false,
+            reasoning_output_index: -1,
+            codex_history,
         }
     }
 
@@ -343,6 +449,18 @@ impl SseTransform for ResponsesSseTransform {
                     }
                 }
 
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+                    if !reasoning.is_empty() {
+                        self.ensure_created(&mut out);
+                        if !self.reasoning_started {
+                            self.reasoning_output_index = self.next_output_index;
+                            self.next_output_index += 1;
+                            self.reasoning_started = true;
+                        }
+                        self.reasoning_text.push_str(reasoning);
+                    }
+                }
+
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                     for tc in tool_calls {
                         let index = tc.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -446,6 +564,20 @@ impl SseTransform for ResponsesSseTransform {
         let mut output_items: Vec<Option<Value>> =
             vec![None; self.next_output_index.max(0) as usize];
 
+        if self.reasoning_started {
+            let reasoning = std::mem::take(&mut self.reasoning_text);
+            let item_id = format!("reason_{}", self.message_id);
+            let item = json!({
+                "id": item_id,
+                "type": "reasoning",
+                "status": "completed",
+                "content": [{"type": "text", "text": reasoning, "annotations": []}],
+            });
+            if self.reasoning_output_index >= 0 {
+                output_items[self.reasoning_output_index as usize] = Some(item);
+            }
+        }
+
         if self.text_started {
             let text = self.output_text.clone();
             out.push(self.emit(
@@ -512,22 +644,71 @@ impl SseTransform for ResponsesSseTransform {
                     "item".into() => item.clone(),
                 },
             ));
+            if let Some(store) = &self.codex_history {
+                store.record_call_item(&self.response_id, &item);
+            }
             output_items[state.output_index as usize] = Some(item);
         }
 
+        let function_calls = self.tool_calls.len();
+        let text_blocks = if self.text_started { 1 } else { 0 };
+
+        // Log upstream accumulated response
+        let mut upstream_choices = Vec::new();
+        let upstream_message = json!({
+            "role": self.role,
+            "content": self.output_text,
+            "tool_calls": self.tool_calls.values().map(|tc| json!({
+                "id": tc.call_id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": tc.arguments}
+            })).collect::<Vec<_>>(),
+        });
+        upstream_choices.push(json!({
+            "index": 0,
+            "message": upstream_message,
+            "finish_reason": "stop",
+        }));
+        let upstream_response = json!({
+            "id": self.response_id.trim_start_matches("resp_"),
+            "object": "chat.completion",
+            "created": self.created_at,
+            "model": self.model,
+            "choices": upstream_choices,
+            "usage": {
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+            },
+        });
+        tracing::info!(
+            upstream = %serde_json::to_string(&upstream_response).unwrap_or_default(),
+            "responses sse upstream accumulated"
+        );
+
         let compact: Vec<Value> = output_items.into_iter().flatten().collect();
+        let completed_response = responses_completed_response(
+            &self.response_id,
+            &self.model,
+            self.created_at,
+            &compact,
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.cached_tokens,
+        );
+        if let Some(store) = &self.codex_history {
+            store.record_response(&completed_response);
+        }
+        tracing::info!(
+            response_id = %self.response_id,
+            function_calls,
+            text_blocks,
+            body = %serde_json::to_string(&completed_response).unwrap_or_default(),
+            "responses sse recorded"
+        );
         out.push(self.emit(
             "response.completed",
-                        event_map! {
-                "response".into() => responses_completed_response(
-                    &self.response_id,
-                    &self.model,
-                    self.created_at,
-                    &compact,
-                    self.prompt_tokens,
-                    self.completion_tokens,
-                    self.cached_tokens,
-                ),
+            event_map! {
+                "response".into() => completed_response,
             },
         ));
 
@@ -544,109 +725,6 @@ fn tool_call_item(state: &ToolCallState, completed: bool) -> Value {
         "name": state.name,
         "arguments": state.arguments,
     })
-}
-
-fn convert_input_to_messages(input: &Value, instructions: &str) -> Vec<Value> {
-    let mut messages = Vec::new();
-    if !instructions.trim().is_empty() {
-        messages.push(json!({"role": "system", "content": instructions}));
-    }
-
-    match input {
-        Value::String(s) => messages.push(json!({"role": "user", "content": s})),
-        Value::Array(items) => {
-            for item in items {
-                let Some(msg) = item.as_object() else { continue };
-                let item_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-                if item_type == "function_call" {
-                    let call_id = msg.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let arguments = msg.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
-                    if !call_id.is_empty() && !name.is_empty() {
-                        messages.push(json!({
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": call_id,
-                                "type": "function",
-                                "function": {"name": name, "arguments": arguments}
-                            }]
-                        }));
-                    }
-                    continue;
-                }
-
-                if item_type == "function_call_output" {
-                    let call_id = msg.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let output = stringify_function_output(msg.get("output"));
-                    if !call_id.is_empty() {
-                        messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": output,
-                        }));
-                    }
-                    continue;
-                }
-
-                let mut role = msg
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("user")
-                    .to_string();
-                if role == "developer" {
-                    role = "user".to_string();
-                }
-                let content = msg.get("content");
-
-                match content {
-                    Some(Value::String(s)) => {
-                        messages.push(json!({"role": role, "content": s}));
-                    }
-                    Some(Value::Array(parts)) => {
-                        let chat_content = convert_input_content_parts(parts);
-                        if !chat_content.is_empty() {
-                            messages.push(json!({"role": role, "content": chat_content}));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-
-    let has_non_system = messages.iter().any(|m| {
-        m.get("role")
-            .and_then(|r| r.as_str())
-            .is_some_and(|r| r != "system")
-    });
-    if !has_non_system {
-        messages.push(json!({"role": "user", "content": ""}));
-    }
-    messages
-}
-
-fn convert_input_content_parts(parts: &[Value]) -> Vec<Value> {
-    let mut out = Vec::new();
-    for part in parts {
-        let Some(p) = part.as_object() else { continue };
-        match p.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-            "input_text" => {
-                if let Some(text) = p.get("text").and_then(|v| v.as_str()) {
-                    out.push(json!({"type": "text", "text": text}));
-                }
-            }
-            "input_image" => {
-                if let Some(url) = p.get("image_url") {
-                    out.push(json!({"type": "image_url", "image_url": url}));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 fn convert_responses_tools_to_chat(tools: &[Value]) -> Vec<Value> {
@@ -743,11 +821,25 @@ fn stringify_function_output(output: Option<&Value>) -> String {
 }
 
 fn convert_chat_message_to_responses_output_items(
-    chat_id: Value,
+    chat_id: &Value,
     choice_index: usize,
     msg: &Value,
 ) -> Vec<Value> {
     let mut output = Vec::new();
+
+    if let Some(reasoning) = msg
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        output.push(json!({
+            "id": format!("reason_{chat_id}_{choice_index}"),
+            "type": "reasoning",
+            "status": "completed",
+            "content": [{"type": "text", "text": reasoning, "annotations": []}],
+        }));
+    }
+
     if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
         for (i, tool_call) in tool_calls.iter().enumerate() {
             let call_id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -900,6 +992,7 @@ fn trim_line(line: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::api::openai::Message;
 
     #[test]
     fn converts_instructions_and_input() {
@@ -937,8 +1030,177 @@ mod tests {
             "usage": {"prompt_tokens": 3, "completion_tokens": 2}
         });
         let resp = chat_json_to_responses(&chat);
+        assert_eq!(resp["id"], "resp_chatcmpl-tools");
         let output = resp["output"].as_array().unwrap();
         assert_eq!(output[0]["type"], "function_call");
         assert_eq!(output[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_json_to_responses_adds_reasoning_item() {
+        let chat = json!({
+            "id": "chatcmpl-r",
+            "model": "deepseek",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello",
+                    "reasoning_content": "Let me think..."
+                }
+            }]
+        });
+        let resp = chat_json_to_responses(&chat);
+        let output = resp["output"].as_array().unwrap();
+        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(output[0]["content"][0]["text"], "Let me think...");
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn chat_json_to_responses_reasoning_before_tool_calls() {
+        let chat = json!({
+            "id": "chatcmpl-rt",
+            "model": "deepseek",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "I need to search",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"}
+                    }]
+                }
+            }]
+        });
+        let resp = chat_json_to_responses(&chat);
+        let output = resp["output"].as_array().unwrap();
+        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(output[1]["type"], "function_call");
+    }
+
+    #[test]
+    fn response_id_gets_resp_prefix_from_chat() {
+        let chat = json!({
+            "id": "chatcmpl-abc123",
+            "model": "gpt-4",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+        });
+        let resp = chat_json_to_responses(&chat);
+        assert_eq!(resp["id"], "resp_chatcmpl-abc123");
+    }
+
+    #[test]
+    fn instructions_strips_billing_header() {
+        let body = json!({
+            "model": "gpt-4",
+            "instructions": "x-anthropic-billing-header: cch=abc\n\nBe concise.",
+            "input": "hi"
+        });
+        let req = responses_request_to_openai(&body).unwrap();
+        assert_eq!(req.messages[0].content.as_deref(), Some("Be concise."));
+    }
+
+    // --- DeepSeek reasoning preservation tests ---
+
+    #[test]
+    fn responses_deepseek_preserves_reasoning_effort_medium_maps_to_high() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": "hello",
+            "reasoning": {"effort": "medium"}
+        });
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn responses_deepseek_turn2_auto_enables_thinking() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                {"role": "assistant", "reasoning_content": "I think...", "content": "Answer"},
+                {"role": "user", "content": "follow-up"}
+            ]
+        });
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn responses_deepseek_explicit_disable_no_reasoning_effort() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": "hello",
+            "reasoning": {"effort": "none"}
+        });
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        assert_eq!(req.thinking, Some(json!({"type": "disabled"})));
+        assert!(req.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn responses_deepseek_xhigh_effort_maps_to_max() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": "hello",
+            "reasoning": {"effort": "xhigh"}
+        });
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn responses_deepseek_serialized_upstream_includes_thinking() {
+        let req = ChatCompletionRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hi".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            thinking: Some(json!({"type": "enabled"})),
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["thinking"], json!({"type": "enabled"}));
+        assert_eq!(value["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn responses_deepseek_no_reasoning_field_does_not_inject_thinking() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": "hello"
+        });
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        assert!(req.thinking.is_none());
+        assert!(req.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn converts_custom_tool_call_input() {
+        let body = json!({
+            "model": "gpt-4",
+            "input": [
+                {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "arguments": "{}"},
+                {"type": "custom_tool_call_output", "call_id": "c1", "output": "done"}
+            ]
+        });
+        let req = responses_request_to_openai(&body).unwrap();
+        let assistant = req.messages.iter().find(|m| m.role == Role::Assistant).unwrap();
+        assert!(assistant.tool_calls.is_some());
+        assert_eq!(assistant.tool_calls.as_ref().unwrap().len(), 1);
+        let tool_msg = req.messages.iter().find(|m| m.role == Role::Tool).unwrap();
+        assert_eq!(tool_msg.content.as_deref(), Some("done"));
     }
 }

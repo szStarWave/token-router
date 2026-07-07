@@ -180,6 +180,7 @@ mod tests {
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: None,
+            reasoning_content: None,
             }],
             tools: vec![],
             stream: false,

@@ -1,4 +1,4 @@
-﻿use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256};
 
 use crate::gateway::api::openai::ChatCompletionRequest;
 use serde_json::Value;
@@ -58,6 +58,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
                 Message {
                     role: Role::User,
@@ -65,6 +66,7 @@ mod tests {
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
+            reasoning_content: None,
                 },
             ],
             tools: vec![ToolDefinition {
@@ -81,6 +83,11 @@ mod tests {
             max_completion_tokens: None,
             store: None,
             stream_options: None,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+            top_p: None,
+            parallel_tool_calls: None,
         }
     }
 
@@ -93,6 +100,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
         a.messages.push(Message {
             role: Role::User,
@@ -100,6 +108,7 @@ mod tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
         let h0 = request_context_hash(&a);
         a.messages[2].content = Some("mid-changed".into());

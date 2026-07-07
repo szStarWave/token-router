@@ -115,7 +115,12 @@ pub async fn chat_completions_core(
                 let byte_stream = match &output {
                     ChatOutputFormat::OpenAi => byte_stream,
                     ChatOutputFormat::Responses => {
-                        wrap_sse_transform(byte_stream, ResponsesSseTransform::new())
+                        wrap_sse_transform(
+                            byte_stream,
+                            ResponsesSseTransform::with_codex_history(Some(
+                                state.codex_history.clone(),
+                            )),
+                        )
                     }
                     ChatOutputFormat::Anthropic { model } => {
                         wrap_sse_transform(byte_stream, AnthropicSseTransform::new(model.clone()))
@@ -175,7 +180,17 @@ pub async fn chat_completions_core(
                         Ok(Json(resp).into_response())
                     }
                     ChatOutputFormat::Responses => {
+                        let original_json = serde_json::to_value(&resp).unwrap_or_default();
                         let body = chat_response_to_responses(&resp);
+                        tracing::info!(
+                            original = %serde_json::to_string(&original_json).unwrap_or_default(),
+                            "responses raw response"
+                        );
+                        tracing::info!(
+                            converted = %serde_json::to_string(&body).unwrap_or_default(),
+                            "responses converted response"
+                        );
+                        state.codex_history.record_response(&body);
                         Ok(Json(body).into_response())
                     }
                     ChatOutputFormat::Anthropic { model } => {

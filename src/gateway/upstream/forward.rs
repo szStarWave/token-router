@@ -19,6 +19,9 @@ use crate::gateway::stats::metrics::{
 use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseStream};
 use crate::gateway::upstream::verify::cloud_verifies_edge;
+use crate::gateway::api::compat::{
+    count_assistant_tool_calls_missing_reasoning, truncate_preview, upstream_error_message_hint,
+};
 use crate::gateway::api::meta::log_upstream_served;
 use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::session::SessionStore;
@@ -476,7 +479,8 @@ impl UpstreamClient {
         self.record_upstream_call(tier);
         let start = Instant::now();
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-        let upstream_req = apply_upstream_model(req, endpoint_model, tier);
+        let url_preview = url.clone();
+        let upstream_req = apply_upstream_model(req, endpoint_model, tier, Some(base));
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -490,6 +494,21 @@ impl UpstreamClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let hint = upstream_error_message_hint(&body);
+            let missing_reasoning = count_assistant_tool_calls_missing_reasoning(req);
+            tracing::warn!(
+                tier,
+                url = %truncate_preview(&url_preview, 120),
+                status = status.as_u16(),
+                messages = req.messages.len(),
+                tools = req.tools.len(),
+                model = %req.model,
+                stream = false,
+                missing_reasoning,
+                error_hint = %hint.as_deref().unwrap_or("(none)"),
+                error_body_preview = %truncate_preview(&body, 512),
+                "upstream HTTP error"
+            );
             return Err(AppError::Upstream(format!("{status}: {body}")));
         }
 
@@ -555,7 +574,8 @@ impl UpstreamClient {
         let edge_guard = self.edge_guard_for_tier(tier);
         self.record_upstream_call(tier);
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-        let upstream_req = apply_upstream_model(req, endpoint_model, tier);
+        let url_preview = url.clone();
+        let upstream_req = apply_upstream_model(req, endpoint_model, tier, Some(base));
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -569,6 +589,21 @@ impl UpstreamClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let hint = upstream_error_message_hint(&body);
+            let missing_reasoning = count_assistant_tool_calls_missing_reasoning(req);
+            tracing::warn!(
+                tier,
+                url = %truncate_preview(&url_preview, 120),
+                status = status.as_u16(),
+                messages = req.messages.len(),
+                tools = req.tools.len(),
+                model = %req.model,
+                stream = true,
+                missing_reasoning,
+                error_hint = %hint.as_deref().unwrap_or("(none)"),
+                error_body_preview = %truncate_preview(&body, 512),
+                "upstream HTTP error"
+            );
             return Err(AppError::Upstream(format!("{status}: {body}")));
         }
 
@@ -755,11 +790,16 @@ impl UpstreamClient {
     }
 }
 
-fn apply_upstream_model(req: &ChatCompletionRequest, endpoint_model: Option<&str>, tier: &str) -> ChatCompletionRequest {
+fn apply_upstream_model(
+    req: &ChatCompletionRequest,
+    endpoint_model: Option<&str>,
+    tier: &str,
+    upstream_base: Option<&str>,
+) -> ChatCompletionRequest {
     let mut upstream_req = if tier == "edge" {
-        req.for_edge_upstream()
+        req.for_edge_upstream(upstream_base)
     } else {
-        req.for_upstream()
+        req.for_upstream(upstream_base)
     };
     if let Some(model) = endpoint_model {
         let m = model.trim();
@@ -920,6 +960,7 @@ mod cascade_gate_tests {
                 },
             }]),
             tool_call_id: None,
+            reasoning_content: None,
         });
         assert!(cascade_gate_pass(&resp));
     }
@@ -932,6 +973,7 @@ mod cascade_gate_tests {
             content_parts: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
         assert!(!cascade_gate_pass(&resp));
     }
