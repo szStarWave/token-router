@@ -1,5 +1,7 @@
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicIsize;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,6 +9,8 @@ use token_router::embedded;
 use token_router::gateway::AppConfig;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\Token-Router-status";
+#[cfg(unix)]
+pub const SOCKET_NAME: &str = "Token-Router-status.sock";
 const APP_NAME: &str = "Token Router";
 const BUF_SIZE: u32 = 4096;
 
@@ -79,6 +83,27 @@ pub fn start() {
             thread: Some(thread),
         });
     }
+    #[cfg(all(unix, not(windows)))]
+    {
+        let mut guard = service_slot().lock().expect("status pipe lock poisoned");
+        if guard.is_some() {
+            return;
+        }
+        sync_gateway_state_inner();
+        let server_running = Arc::new(AtomicBool::new(true));
+        let state = Arc::new(Mutex::new(current_pipe_state()));
+        let running_for_thread = Arc::clone(&server_running);
+        let state_for_thread = Arc::clone(&state);
+        let thread = thread::Builder::new()
+            .name("token-router-status-socket".into())
+            .spawn(move || listen_loop(running_for_thread, state_for_thread))
+            .expect("spawn status socket thread");
+        *guard = Some(PipeService {
+            server_running,
+            state,
+            thread: Some(thread),
+        });
+    }
 }
 
 pub fn stop() {
@@ -97,11 +122,36 @@ pub fn stop() {
             }
         }
     }
+    #[cfg(all(unix, not(windows)))]
+    {
+        let mut guard = service_slot().lock().expect("status pipe mutex poisoned");
+        if let Some(mut service) = guard.take() {
+            service.server_running.store(false, Ordering::SeqCst);
+            remove_status_socket();
+            if let Some(thread) = service.thread.take() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(thread.join());
+                });
+                let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+            }
+        }
+    }
 }
 
 pub fn sync_gateway_state() {
     sync_gateway_state_inner();
     #[cfg(windows)]
+    {
+        if let Ok(guard) = service_slot().lock() {
+            if let Some(service) = guard.as_ref() {
+                if let Ok(mut state) = service.state.lock() {
+                    *state = current_pipe_state();
+                }
+            }
+        }
+    }
+    #[cfg(all(unix, not(windows)))]
     {
         if let Ok(guard) = service_slot().lock() {
             if let Some(service) = guard.as_ref() {
@@ -418,8 +468,111 @@ fn handle_connection(
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 fn listen_loop(_server_running: Arc<AtomicBool>, _state: Arc<Mutex<PipeState>>) {}
+
+#[cfg(all(unix, not(windows)))]
+fn status_socket_path() -> std::path::PathBuf {
+    AppConfig::load()
+        .map(|config| config.data_dir.join(SOCKET_NAME))
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join(".token-router-desktop")
+                .join(SOCKET_NAME)
+        })
+}
+
+#[cfg(all(unix, not(windows)))]
+fn remove_status_socket() {
+    let path = status_socket_path();
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(all(unix, not(windows)))]
+fn listen_loop(server_running: Arc<AtomicBool>, _state: Arc<Mutex<PipeState>>) {
+    use std::os::unix::net::UnixListener;
+
+    let path = status_socket_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::remove_file(&path);
+
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("status socket bind failed ({}): {err}", path.display());
+            return;
+        }
+    };
+
+    while server_running.load(Ordering::SeqCst) {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(err) => {
+                if !server_running.load(Ordering::SeqCst) {
+                    break;
+                }
+                eprintln!("status socket accept error: {err}");
+                continue;
+            }
+        };
+        if let Err(err) = handle_unix_connection(stream) {
+            eprintln!("status socket connection error: {err}");
+        }
+    }
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(all(unix, not(windows)))]
+fn handle_unix_connection(mut stream: std::os::unix::net::UnixStream) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+
+    let mut buf = vec![0u8; BUF_SIZE as usize];
+    let read = stream.read(&mut buf).map_err(|e| e.to_string())?;
+    if read == 0 {
+        return Ok(());
+    }
+
+    let command = String::from_utf8_lossy(&buf[..read]).trim().to_string();
+    let response = if command == "/status" {
+        build_status_response(&current_pipe_state())
+    } else if command == "/exit" {
+        let body = r#"{"message":"connection closed"}"#;
+        stream
+            .write_all(body.as_bytes())
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    } else {
+        r#"{"error":"unknown command"}"#.to_string()
+    };
+
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn status_socket_display_path() -> String {
+    #[cfg(all(unix, not(windows)))]
+    {
+        return status_socket_path().display().to_string();
+    }
+    #[cfg(windows)]
+    {
+        return PIPE_NAME.to_string();
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        String::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {

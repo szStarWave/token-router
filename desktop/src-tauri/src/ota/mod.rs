@@ -17,7 +17,7 @@ const OTA_CHANNEL: &str = env!("OTA_CHANNEL");
 const OTA_WITH_ACCOUNT: &str = env!("OTA_WITH_ACCOUNT");
 
 pub fn ota_enabled() -> bool {
-    cfg!(windows) && !cfg!(debug_assertions)
+    (cfg!(windows) || cfg!(target_os = "macos")) && !cfg!(debug_assertions)
 }
 
 pub fn ota_config_summary() -> String {
@@ -30,19 +30,25 @@ pub fn build_ota_manifest_url() -> String {
     build_ota_url("latest.json")
 }
 
-pub fn build_download_url(file_name: &str) -> String {
-    build_ota_url(file_name)
-}
-
-fn build_ota_url(file_name: &str) -> String {
+fn ota_manifest_prefix() -> String {
     let account_dir = if OTA_WITH_ACCOUNT == "true" {
         "with_account"
     } else {
         "without_account"
     };
-    format!(
-        "{OTA_BASE_URL}/{OTA_REGION_SCOPE}/{OTA_CHANNEL}/{account_dir}/{file_name}"
-    )
+    if cfg!(target_os = "macos") {
+        format!("{OTA_REGION_SCOPE}/{OTA_CHANNEL}/{account_dir}/macos")
+    } else {
+        format!("{OTA_REGION_SCOPE}/{OTA_CHANNEL}/{account_dir}")
+    }
+}
+
+pub fn build_download_url(file_name: &str) -> String {
+    build_ota_url(file_name)
+}
+
+fn build_ota_url(file_name: &str) -> String {
+    format!("{OTA_BASE_URL}/{}/{}", ota_manifest_prefix(), file_name)
 }
 
 /// Convert git-describe style `v0.1.6-10-g083d26b` to semver `v0.1.6-10+g083d26b`.

@@ -39,7 +39,18 @@ impl OtaState {
         let replace_exe = std::env::current_exe()
             .ok()
             .and_then(|p| p.canonicalize().ok())
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|p| {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(bundle) = super::apply::app_bundle_path(&p) {
+                        if let Ok(canonical) = bundle.canonicalize() {
+                            return canonical.to_string_lossy().into_owned();
+                        }
+                        return bundle.to_string_lossy().into_owned();
+                    }
+                }
+                p.to_string_lossy().into_owned()
+            })
             .unwrap_or_default();
         Self {
             inner: Mutex::new(OtaInner {
@@ -73,7 +84,7 @@ fn clone_version(v: &VersionInfo) -> VersionInfo {
 
 pub fn start_background_checks(app: AppHandle) {
     if !ota_enabled() {
-        ota_info("background check skipped: OTA disabled (non-Windows release build)");
+        ota_info("background check skipped: OTA disabled (non-release build or unsupported platform)");
         return;
     }
     ota_info(format!(
@@ -186,7 +197,7 @@ pub fn ota_app_version() -> String {
 #[tauri::command]
 pub fn ota_check_now(app: AppHandle) -> Result<(), String> {
     if !ota_enabled() {
-        return Err("OTA is only available on Windows release builds".into());
+        return Err("OTA is only available on Windows and macOS release builds".into());
     }
     ota_info("manual check requested");
     run_check_once(&app);
@@ -196,7 +207,7 @@ pub fn ota_check_now(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn ota_download_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), String> {
     if !ota_enabled() {
-        return Err("OTA is only available on Windows release builds".into());
+        return Err("OTA is only available on Windows and macOS release builds".into());
     }
 
     let pending = {
@@ -314,7 +325,7 @@ pub fn ota_download_update(app: AppHandle, state: State<'_, OtaState>) -> Result
 #[tauri::command]
 pub fn ota_do_update(app: AppHandle, state: State<'_, OtaState>) -> Result<(), String> {
     if !ota_enabled() {
-        return Err("OTA is only available on Windows release builds".into());
+        return Err("OTA is only available on Windows and macOS release builds".into());
     }
 
     let (dl, downloaded_version, replace_exe) = {

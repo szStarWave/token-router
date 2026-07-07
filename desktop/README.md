@@ -5,8 +5,9 @@
 ## 前置条件
 
 - [Rust](https://rustup.rs/)（`cargo`）
-- Node.js 18+
-- Windows：WebView2（Win10/11 通常已自带）
+- Node.js 18+ 与 [pnpm](https://pnpm.io/)
+- **Windows**：WebView2（Win10/11 通常已自带）
+- **macOS**：Xcode Command Line Tools（`xcode-select --install`）
 
 ## 网络代理（下载 crates 时）
 
@@ -17,53 +18,112 @@ $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 ```
 
+macOS / Linux：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890
+export HTTP_PROXY=http://127.0.0.1:7890
+```
+
 ## 开发
 
-```powershell
+```bash
 cd desktop
-npm install
-npm run tauri:dev
+pnpm install
+pnpm --dir frontend install
+pnpm run tauri:dev
 ```
 
 或从仓库根目录：
 
-```powershell
+```bash
 make tauri-dev
 ```
 
-- 前端：`index.html`（Vite 开发服 `http://localhost:1420`）
-- 浏览器预览：`demo.html` 或 `npm run dev` 后打开 `http://localhost:1420`
+- 前端：`desktop/frontend/`（Vite 开发服 `http://localhost:1420`）
 - 后端：`src-tauri/`（Rust 命令 + 托盘）
 
 ## 构建安装包
 
-```powershell
+### macOS
+
+```bash
 cd desktop
-npm run tauri:build
+pnpm --dir frontend install
+pnpm run tauri:build
+# 或
+make tauri-build-macos
 ```
 
-产物：`src-tauri/target/release/bundle/`（安装包）及 `token-router-desktop.exe`。
+产物：
+
+| 类型 | 路径 |
+|------|------|
+| `.app` | `desktop/src-tauri/target/release/bundle/macos/Token Router.app` |
+| `.dmg` | `desktop/src-tauri/target/release/bundle/dmg/Token Router_<version>_aarch64.dmg` |
+
+数据目录：`~/.token-router-desktop/`（配置、日志、Gateway 状态）。
+
+### Windows
+
+```powershell
+cd desktop
+pnpm run tauri:build
+```
+
+产物：`src-tauri/target/release/bundle/`（NSIS 安装包）及 `token-router-desktop.exe`。
 
 ## 功能说明
 
 | 能力 | 说明 |
 |------|------|
 | Gateway | 启动时自动 `embedded::start()`，无需单独 CLI 守护进程；数据目录 `~/.token-router-desktop/`（Windows：`%USERPROFILE%\.token-router-desktop\`） |
-| UI | `index.html`（Tauri）；`demo.html`（纯浏览器演示） |
+| Agent 快捷配置 | 一键写入 OpenClaw / Hermes / Claude Code / Codex / OpenCode 配置（macOS / Windows 桌面版） |
+| Herdsman 集成 | Windows：命名管道 + HTTP；**macOS**：HTTP 探测 + `.app` 启动检测 |
+| WSL Agent 配置 | 仅 Windows 桌面版 |
+| UI | React + Vite 前端 |
 | 托盘 | 右键菜单：Show / 显示、Quit / 退出；左键显示窗口 |
 | 关闭窗口 | 隐藏到托盘，不退出进程（托盘 Quit 退出） |
+| OTA 更新 | Windows / macOS 发布版（开发模式不启用后台检查） |
 
-## IPC Status Pipe（Windows）
+## IPC Status（Gateway 发现）
 
-Token Router 桌面版在 Windows 上提供命名管道，供第三方客户端发现 Gateway URL（协议与 [Herdsman](https://github.com/szStarWave/herdsman) 对称）。
+第三方客户端可查询 Gateway URL，协议与 [Herdsman](https://github.com/szStarWave/herdsman) 对称。
+
+### Windows（命名管道）
 
 | 项目 | 值 |
 |------|-----|
 | 管道路径 | `\\.\pipe\Token-Router-status` |
 | 命令 | `/status` → JSON；`/exit` → 关闭连接 |
-| 权限 | 本地任意进程可连接 |
 
-### `/status` 响应示例
+PowerShell 示例：
+
+```powershell
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "Token-Router-status", [System.IO.Pipes.PipeDirection]::InOut)
+$pipe.Connect(3000)
+$writer = New-Object System.IO.StreamWriter($pipe)
+$reader = New-Object System.IO.StreamReader($pipe)
+$writer.Write("/status")
+$writer.Flush()
+$reader.ReadToEnd()
+$pipe.Close()
+```
+
+### macOS / Linux（Unix Domain Socket）
+
+| 项目 | 值 |
+|------|-----|
+| Socket 路径 | `~/.token-router-desktop/Token-Router-status.sock` |
+| 命令 | `/status` → JSON；`/exit` → 关闭连接 |
+
+macOS 示例：
+
+```bash
+printf '/status' | nc -U ~/.token-router-desktop/Token-Router-status.sock
+```
+
+`/status` 响应示例：
 
 ```json
 {
@@ -81,22 +141,7 @@ Token Router 桌面版在 Windows 上提供命名管道，供第三方客户端�
 }
 ```
 
-`running: false` 时各 URL 字段为空字符串。管道随桌面应用启动，Gateway 启停后状态自动更新。
-
-### PowerShell 客户端示例
-
-```powershell
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "Token-Router-status", [System.IO.Pipes.PipeDirection]::InOut)
-$pipe.Connect(3000)
-$writer = New-Object System.IO.StreamWriter($pipe)
-$reader = New-Object System.IO.StreamReader($pipe)
-$writer.Write("/status")
-$writer.Flush()
-$reader.ReadToEnd()
-$pipe.Close()
-```
-
-实现参考：`src-tauri/src/status_pipe.rs`（服务端）、`src-tauri/src/herdsman.rs`（客户端模式，连接 Herdsman 管道）。
+实现参考：`src-tauri/src/status_pipe.rs`（服务端）、`src-tauri/src/herdsman.rs`（Herdsman 客户端）。
 
 ## Tauri 命令（前端 `invoke`）
 
@@ -108,42 +153,41 @@ $pipe.Close()
 | `gateway_is_running` | 是否运行中 |
 | `gateway_url` | 当前 `http://host:port` |
 | `gateway_status` | `{ running, url, version }` |
+| `configure_*_agent` | 写入各 Agent 配置文件 |
+| `wsl_*` | WSL Agent 配置（Windows only） |
 | `show_main_window` | 显示主窗口 |
-| `feedback_app_version` / `feedback_submit` | 意见反馈（企业微信 Webhook + Gateway 日志） |
-| `ota_*` | Windows 发布版 OTA 检查、下载、安装（开发模式不启用后台检查） |
+| `feedback_app_version` / `feedback_submit` | 意见反馈 |
+| `ota_*` | Windows / macOS 发布版 OTA（开发模式不启用后台检查） |
 
-## OTA 发布（Windows）
+## OTA 发布
 
-1. 创建 ModelScope 数据集（一次性）：
+### Windows
 
-```powershell
-$env:MODELSCOPE_TOKEN = "<your-token>"
-uv run --with modelscope python scripts/publish_ota/init_dataset.py
+见仓库根目录 `Makefile` 的 `build-ota` / `push` 目标。
+
+Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`
+
+### macOS
+
+1. 构建 DMG：`make tauri-build-macos`
+2. 上传至 ModelScope（`macos` 子目录）：
+
+```bash
+export MODELSCOPE_TOKEN=<token>
+uv run --with modelscope python scripts/publish_ota/publish.py \
+  --platform macos \
+  --channel flowy --region-scope CN --version v0.15.1 \
+  --enable-account-system true \
+  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.15.1_aarch64.dmg"
 ```
 
-2. 构建 release 并复制 NSIS setup 为版本化文件名，例如 `Token-Router-v0.15.1-flowy-CN-with_account-setup.exe`。
+Manifest：`{region}/{channel}/{with_account|without_account}/macos/latest.json`
 
-3. 上传 setup 安装包与 `latest.json`：
-
-```powershell
-uv run --with modelscope python scripts/publish_ota/publish.py `
-  --channel flowy --region-scope CN --version v0.15.1 `
-  --enable-account-system true `
-  --setup-path "path\to\Token-Router-v0.15.1-flowy-CN-with_account-setup.exe"
-```
-
-更新说明维护在仓库根目录 [`docs/ota-release-notes.json`](../docs/ota-release-notes.json)。
-
-Manifest URL 示例：
-
-`https://modelscope.cn/datasets/flowy2025/token_router_versions/resolve/master/CN/flowy/with_account/latest.json`
+更新说明维护在 [`docs/ota-release-notes.json`](../docs/ota-release-notes.json)。
 
 ```
 desktop/
-  index.html           # Tauri 主界面
-  demo.html            # 浏览器演示（无 Tauri）
+  frontend/            # React + Vite UI
   package.json
-  vite.config.ts
-  dist/                # Vite 构建产物
   src-tauri/           # Tauri Rust 后端
 ```

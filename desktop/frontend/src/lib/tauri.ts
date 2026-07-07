@@ -223,3 +223,13 @@ export function isWindowsTauri(): boolean {
   if (!isTauri()) return false
   return typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
 }
+
+export function isMacTauri(): boolean {
+  if (!isTauri()) return false
+  return typeof navigator !== 'undefined' && /Macintosh|Mac OS X/i.test(navigator.userAgent)
+}
+
+/** Desktop release builds with OTA (Windows + macOS). */
+export function isOtaDesktop(): boolean {
+  return isWindowsTauri() || isMacTauri()
+}

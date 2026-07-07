@@ -7,7 +7,7 @@ import {
   feedbackAppVersion,
   invokeErrorMessage,
   isTauri,
-  isWindowsTauri,
+  isOtaDesktop,
   otaCheckNow,
   type OtaEventPayload,
 } from '../lib/tauri'
@@ -273,7 +273,7 @@ function AboutPanel() {
 
   const checkUpdate = async () => {
     if (checkingUpdate) return
-    if (!isWindowsTauri()) {
+    if (!isOtaDesktop()) {
       showToast('ota.installFailed', false)
       return
     }
@@ -295,7 +295,7 @@ function AboutPanel() {
       <div className="about-version-row">
         <span className="about-version-label">{t('settings.appVersion')}</span>
         <code className="about-version-code">{formatAppVersion(version)}</code>
-        {isWindowsTauri() && (
+        {isOtaDesktop() && (
           <button
             type="button"
             className="btn btn-ghost btn-sm"

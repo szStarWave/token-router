@@ -326,11 +326,22 @@ pub fn run_ota_apply_cli(args: &[String]) -> i32 {
         return 0;
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = super::apply::macos::run_apply(&target, &package, &temp_dir) {
+            ota_error(format!("apply cli failed: {e}"));
+            eprintln!("{e}");
+            return 1;
+        }
+        ota_info("apply cli complete");
+        return 0;
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (target, package, temp_dir);
-        ota_error("apply cli failed: OTA apply is only supported on Windows");
-        eprintln!("OTA apply is only supported on Windows");
+        ota_error("apply cli failed: OTA apply is not supported on this platform");
+        eprintln!("OTA apply is not supported on this platform");
         1
     }
 }

@@ -19,6 +19,8 @@ ARM64_TARGET        := aarch64-unknown-linux-gnu
 ARM64_RELEASE       := $(TARGET)/$(ARM64_TARGET)/release/$(BIN)
 ARM64_MUSL_TARGET   := aarch64-unknown-linux-musl
 ARM64_MUSL_RELEASE  := $(TARGET)/$(ARM64_MUSL_TARGET)/release/$(BIN)
+MACOS_APP           := desktop/src-tauri/target/release/bundle/macos/Token Router.app
+MACOS_DMG           := desktop/src-tauri/target/release/bundle/dmg/Token Router_$(DESKTOP_VERSION)_aarch64.dmg
 
 # Override: make start CONFIG=example/config.toml
 CONFIG      ?=
@@ -64,7 +66,7 @@ endif
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh \
         package-electron-win clean-package-electron-win \
-        ui-build tauri-dev tauri-build \
+        ui-build tauri-dev tauri-build tauri-build-macos \
         ota-check-windows ota-stage build-ota ota-publish push version
 
 help:
@@ -86,6 +88,7 @@ help:
 	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
 	@echo "  tauri-build      Build Tauri desktop app (release)"
+	@echo "  tauri-build-macos  Build Tauri desktop app on macOS (.app + .dmg)"
 	@echo "  build-ota        Build Tauri release and stage OTA NSIS setup (Windows)"
 	@echo "  push             Build, stage, and publish OTA setup (needs MODELSCOPE_TOKEN)"
 	@echo "  version X.Y.Z    Bump app version across manifests (e.g. make version 0.4.0 or VER=0.4.0)"
@@ -219,6 +222,18 @@ tauri-dev:
 tauri-build:
 	$(PNPM) --dir $(DESKTOP) run icons:generate
 	$(PNPM) --dir $(DESKTOP) run tauri:build
+
+tauri-build-macos:
+ifeq ($(UNAME_S),Darwin)
+	$(PNPM) --dir $(DESKTOP)/frontend install
+	$(PNPM) --dir $(DESKTOP) run icons:generate
+	$(PNPM) --dir $(DESKTOP) run tauri:build
+	@echo "Built $(MACOS_APP)"
+	@test -f "$(MACOS_DMG)" && echo "DMG: $(MACOS_DMG)" || true
+else
+	@echo "ERROR: tauri-build-macos requires macOS (Darwin)"
+	@exit 1
+endif
 
 # OTA publish (Windows release desktop → ModelScope)
 OTA_CHANNEL          ?= flowy

@@ -607,7 +607,36 @@ fn read_herdsman_config_candidates(candidates: &mut Vec<String>) {
 }
 
 #[cfg(not(windows))]
-fn read_herdsman_config_candidates(_candidates: &mut Vec<String>) {}
+fn read_herdsman_config_candidates(candidates: &mut Vec<String>) {
+    use std::fs;
+
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let dir = home.join(".herdsman");
+    if !dir.is_dir() {
+        return;
+    }
+
+    for name in ["config.json", "settings.json", "status.json"] {
+        let path = dir.join(name);
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        if let Some(ep) = json.get("endpoint").and_then(|v| v.as_str()) {
+            push_api_base_candidate(candidates, ep);
+        }
+        if let Some(ep) = json.get("openai_endpoint").and_then(|v| v.as_str()) {
+            push_api_base_candidate(candidates, ep);
+        }
+        if let Some(port) = json.get("port").and_then(|v| v.as_u64()) {
+            push_api_base_candidate(candidates, &format!("http://127.0.0.1:{port}"));
+        }
+    }
+}
 
 fn collect_http_probe_candidates() -> Vec<String> {
     let mut candidates = Vec::new();
@@ -698,35 +727,32 @@ fn clear_connected_state(app: &AppHandle) {
 
 fn probe_and_update(app: &AppHandle) -> HerdsmanStatusSnapshot {
     #[cfg(windows)]
-    {
-        if let Some(status) = read_status_from_pipe() {
-            let client_endpoint = normalize_client_http_url(&status.endpoint);
-            let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
-            let models = fetch_models_from_status(&status);
-            apply_connected_state(
-                app,
-                client_endpoint,
-                client_openai_endpoint,
-                models,
-                "pipe",
-            );
-            return herdsman_get_status();
-        }
-
-        if let Some(result) = probe_http_status() {
-            apply_connected_state(
-                app,
-                normalize_client_http_url(&result.base),
-                result.openai_endpoint,
-                result.models,
-                "http",
-            );
-            return herdsman_get_status();
-        }
-
-        clear_connected_state(app);
+    if let Some(status) = read_status_from_pipe() {
+        let client_endpoint = normalize_client_http_url(&status.endpoint);
+        let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
+        let models = fetch_models_from_status(&status);
+        apply_connected_state(
+            app,
+            client_endpoint,
+            client_openai_endpoint,
+            models,
+            "pipe",
+        );
+        return herdsman_get_status();
     }
 
+    if let Some(result) = probe_http_status() {
+        apply_connected_state(
+            app,
+            normalize_client_http_url(&result.base),
+            result.openai_endpoint,
+            result.models,
+            "http",
+        );
+        return herdsman_get_status();
+    }
+
+    clear_connected_state(app);
     herdsman_get_status()
 }
 
@@ -756,12 +782,9 @@ fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
 }
 
 fn run_discovery(app: &AppHandle) {
-    #[cfg(windows)]
-    {
-        herdsman_info("running installation discovery");
-        let launcher = resolve_herdsman_launcher();
-        apply_launcher_discovery(app, launcher);
-    }
+    herdsman_info("running installation discovery");
+    let launcher = resolve_herdsman_launcher();
+    apply_launcher_discovery(app, launcher);
 }
 
 fn discovery_loop(app: AppHandle) {
@@ -774,7 +797,6 @@ fn discovery_loop(app: AppHandle) {
     }
 }
 
-#[cfg(windows)]
 fn poll_models_during_session(
     app: &AppHandle,
     endpoint: &str,
@@ -862,7 +884,6 @@ fn run_connection_session(app: &AppHandle) -> bool {
     true
 }
 
-#[cfg(windows)]
 fn run_http_session(app: &AppHandle) {
     let Some(result) = probe_http_status() else {
         clear_connected_state(app);
@@ -921,9 +942,7 @@ fn service_loop(app: AppHandle) {
         }
         #[cfg(not(windows))]
         {
-            emit_connected(&app, false);
-            emit_models(&app, &[]);
-            break;
+            run_http_session(&app);
         }
 
         if SERVICE_RUNNING.load(Ordering::SeqCst) {
@@ -959,17 +978,9 @@ pub fn herdsman_get_status() -> HerdsmanStatusSnapshot {
 
 #[tauri::command]
 pub fn herdsman_refresh_status(app: tauri::AppHandle) -> HerdsmanStatusSnapshot {
-    #[cfg(windows)]
-    {
-        run_discovery(&app);
-        request_immediate_probe();
-        return probe_and_update(&app);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        herdsman_get_status()
-    }
+    run_discovery(&app);
+    request_immediate_probe();
+    probe_and_update(&app)
 }
 
 #[cfg(windows)]
@@ -1332,14 +1343,101 @@ fn resolve_herdsman_launcher() -> Option<String> {
 }
 
 #[cfg(not(windows))]
+fn resolve_from_callme_file() -> Option<String> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let home = dirs::home_dir()?;
+    let callme = home.join(".herdsman").join("callme");
+    let content = fs::read_to_string(&callme).ok()?.trim().to_string();
+    if content.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(&content);
+    if is_valid_herdsman_launcher(&path) {
+        Some(content)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn resolve_known_install_paths() -> Option<String> {
+    use std::path::PathBuf;
+
+    fn push_if_exists(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+        if path.exists() {
+            candidates.push(path);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        push_if_exists(
+            &mut candidates,
+            home.join("Applications").join("Herdsman.app"),
+        );
+        push_if_exists(
+            &mut candidates,
+            home.join("Applications").join("牧马人.app"),
+        );
+    }
+    for name in ["Herdsman.app", "牧马人.app", "Flowy Herdsman.app"] {
+        push_if_exists(
+            &mut candidates,
+            PathBuf::from("/Applications").join(name),
+        );
+    }
+
+    candidates
+        .into_iter()
+        .find_map(|path| launcher_path_from_bundle(&path))
+}
+
+#[cfg(not(windows))]
+fn launcher_path_from_bundle(path: &std::path::Path) -> Option<String> {
+    if path.extension().and_then(|ext| ext.to_str()) == Some("app") && path.is_dir() {
+        return Some(path.to_string_lossy().into_owned());
+    }
+    if path.is_file() {
+        return Some(path.to_string_lossy().into_owned());
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn is_valid_herdsman_launcher(path: &std::path::Path) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    path.extension().and_then(|ext| ext.to_str()) == Some("app") && path.is_dir()
+}
+
+#[cfg(not(windows))]
 fn resolve_herdsman_launcher() -> Option<String> {
+    let strategies: [(&str, fn() -> Option<String>); 2] = [
+        ("callme file", resolve_from_callme_file),
+        ("known install paths", resolve_known_install_paths),
+    ];
+
+    for (name, resolver) in strategies {
+        match resolver() {
+            Some(path) => {
+                herdsman_info(format!("detected via {name}: {path}"));
+                return Some(path);
+            }
+            None => herdsman_info(format!("{name}: not found")),
+        }
+    }
+
+    herdsman_info("installation not detected by any strategy");
     None
 }
 
 fn cached_launcher_or_discover() -> Option<String> {
     if let Ok(guard) = runtime_state().lock() {
         if let Some(ref path) = guard.launcher_path {
-            if std::path::Path::new(path).is_file() {
+            if is_launcher_present(std::path::Path::new(path)) {
                 return Some(path.clone());
             }
         }
@@ -1360,7 +1458,7 @@ fn spawn_herdsman(launcher: &str) -> Result<(), String> {
     use std::process::Command;
 
     let path = Path::new(launcher);
-    if !path.is_file() {
+    if !is_launcher_present(path) {
         herdsman_warn(format!("launcher path no longer exists: {launcher}"));
         update_runtime_state(|state| {
             state.launcher_path = None;
@@ -1369,13 +1467,36 @@ fn spawn_herdsman(launcher: &str) -> Result<(), String> {
         return Err("Herdsman executable not found".into());
     }
 
-    let work_dir = path.parent().unwrap_or_else(|| Path::new("."));
     herdsman_info(format!("spawning Herdsman: {launcher}"));
+    #[cfg(target_os = "macos")]
+    if path.extension().and_then(|ext| ext.to_str()) == Some("app") {
+        return Command::new("open")
+            .arg("-a")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+
+    let work_dir = path.parent().unwrap_or_else(|| Path::new("."));
     Command::new(path)
         .current_dir(work_dir)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn is_launcher_present(path: &std::path::Path) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("app") && path.is_dir() {
+            return true;
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -1397,23 +1518,20 @@ pub async fn herdsman_open_or_install(app: tauri::AppHandle) -> Result<HerdsmanO
         .map(|state| state.connected)
         .unwrap_or(false);
 
-    #[cfg(windows)]
-    {
-        if let Some(launcher) = cached_launcher_or_discover() {
-            if connected {
-                tauri_plugin_opener::open_path(launcher.clone(), None::<&str>)
-                    .map_err(|e| e.to_string())?;
-                return Ok(HerdsmanOpenResult {
-                    opened: "app".into(),
-                    target: launcher,
-                });
-            }
-            spawn_herdsman(&launcher)?;
+    if let Some(launcher) = cached_launcher_or_discover() {
+        if connected {
+            tauri_plugin_opener::open_path(launcher.clone(), None::<&str>)
+                .map_err(|e| e.to_string())?;
             return Ok(HerdsmanOpenResult {
-                opened: "started".into(),
+                opened: "app".into(),
                 target: launcher,
             });
         }
+        spawn_herdsman(&launcher)?;
+        return Ok(HerdsmanOpenResult {
+            opened: "started".into(),
+            target: launcher,
+        });
     }
 
     tauri_plugin_opener::open_url(DEFAULT_INSTALL_URL, None::<&str>)

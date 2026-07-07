@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OTA publish script — upload Token Router Windows NSIS setup to ModelScope dataset.
+OTA publish script — upload Token Router installers to ModelScope dataset.
 """
 
 import argparse
@@ -36,7 +36,14 @@ def parse_args():
         dest="setup_path",
         type=str,
         required=True,
-        help="Path to NSIS setup installer (legacy alias: --exe-path)",
+        help="Path to installer package (.exe on Windows, .dmg on macOS; legacy alias: --exe-path)",
+    )
+    parser.add_argument(
+        "--platform",
+        type=str,
+        default="windows",
+        choices=("windows", "macos"),
+        help="Target platform subdirectory (macos uploads to .../macos/latest.json)",
     )
     parser.add_argument(
         "--release-notes-file",
@@ -185,6 +192,7 @@ def main() -> None:
     print(f"EnableAccountSystem: {args.enable_account_system}")
     print(f"SetupPath: {args.setup_path}")
     print(f"SetupFilename: {setup_filename}")
+    print(f"Platform: {args.platform}")
     print(f"ReleaseNotesFile: {args.release_notes_file}")
     print(f"ManifestOnly: {args.manifest_only}")
 
@@ -202,6 +210,8 @@ def main() -> None:
 
     account_dir = "with_account" if args.enable_account_system == "true" else "without_account"
     path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}"
+    if args.platform == "macos":
+        path_in_repo = f"{path_in_repo}/macos"
     manifest_version = args.version if args.version.startswith("v") else f"v{args.version}"
 
     staging_dir = Path(tempfile.mkdtemp(prefix="token_router_ota_publish_"))
