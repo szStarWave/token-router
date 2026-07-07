@@ -1455,6 +1455,7 @@ mod tests {
                     cached_tokens: 0,
                     latency_ms: 120,
                     ttft_ms: Some(30),
+                    last_token_ms: None,
                     stream: true,
                 });
             },
@@ -1590,6 +1591,7 @@ mod tests {
                     cached_tokens: 0,
                     latency_ms: 90,
                     ttft_ms: None,
+                    last_token_ms: None,
                     stream: false,
                 });
             },
@@ -1645,6 +1647,7 @@ mod tests {
                     cached_tokens: 0,
                     latency_ms: 80,
                     ttft_ms: None,
+                    last_token_ms: None,
                     stream: true,
                 });
             },

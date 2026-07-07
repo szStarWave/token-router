@@ -1,0 +1,1238 @@
+{
+  "ANALYSIS_INTENT": {
+    "ZH": [
+      [
+        "分析一下",
+        "分析",
+        "解析",
+        "解读",
+        "研判",
+        "剖析",
+        "评估一下",
+        "行情"
+      ],
+      [
+        "股票",
+        "美股",
+        "A股",
+        "港股",
+        "基金",
+        "证券",
+        "股市",
+        "大盘"
+      ],
+      [
+        "板块",
+        "个股",
+        "财经",
+        "投资",
+        "估值",
+        "财报",
+        "财务",
+        "走势"
+      ],
+      [
+        "宏观",
+        "利率",
+        "通胀",
+        "市场",
+        "指数",
+        "纳斯达克",
+        "标普",
+        "道琼斯"
+      ],
+      [
+        "看一下",
+        "了解一下",
+        "帮我看看",
+        "近况",
+        "形势",
+        "趋势",
+        "波动",
+        "涨跌"
+      ],
+      [
+        "基本面",
+        "技术面",
+        "K线",
+        "成交量",
+        "市盈率",
+        "市净率",
+        "股息",
+        "龙头"
+      ],
+      [
+        "行业分析",
+        "板块分析",
+        "市场分析",
+        "数据解读",
+        "对比分析",
+        "深度分析",
+        "全面分析",
+        "详细分析"
+      ],
+      [
+        "外汇",
+        "期货",
+        "期权",
+        "债券",
+        "加密货币",
+        "比特币",
+        "以太坊",
+        "大宗商品"
+      ]
+    ],
+    "EN": [
+      [
+        "analyze",
+        "analysis",
+        "examine",
+        "assess",
+        "evaluate",
+        "interpret",
+        "break down",
+        "deep dive into"
+      ],
+      [
+        "stock",
+        "stocks",
+        "equity",
+        "equities",
+        "nasdaq",
+        "s&p",
+        "dow jones",
+        "market outlook"
+      ],
+      [
+        "financial report",
+        "earnings",
+        "revenue",
+        "profit margin",
+        "valuation",
+        "portfolio",
+        "macro",
+        "fed rate"
+      ],
+      [
+        "market trend",
+        "price action",
+        "sector",
+        "index fund",
+        "mutual fund",
+        "dividend",
+        "pe ratio",
+        "bull market"
+      ],
+      [
+        "bear market",
+        "volatility",
+        "trading volume",
+        "fundamentals",
+        "technical analysis",
+        "chart pattern",
+        "market cap",
+        "ipo"
+      ],
+      [
+        "forex",
+        "futures",
+        "options",
+        "bond yield",
+        "inflation rate",
+        "interest rate",
+        "economic data",
+        "market sentiment"
+      ],
+      [
+        "industry analysis",
+        "sector analysis",
+        "market analysis",
+        "financial analysis",
+        "compare stocks",
+        "stock pick",
+        "market review",
+        "outlook"
+      ],
+      [
+        "crypto",
+        "bitcoin",
+        "ethereum",
+        "commodities",
+        "oil price",
+        "gold price",
+        "fx rate",
+        "currency pair"
+      ]
+    ],
+    "YUE": [
+      [
+        "分析",
+        "解析",
+        "解讀",
+        "研判",
+        "剖析",
+        "評估",
+        "行情",
+        "股票"
+      ],
+      [
+        "美股",
+        "A股",
+        "港股",
+        "基金",
+        "證券",
+        "股市",
+        "大盤",
+        "板塊"
+      ],
+      [
+        "個股",
+        "財經",
+        "投資",
+        "估值",
+        "財報",
+        "財務",
+        "走勢",
+        "宏觀"
+      ],
+      [
+        "利率",
+        "通脹",
+        "市場",
+        "指數",
+        "納斯達克",
+        "標普",
+        "道瓊斯",
+        "睇下"
+      ],
+      [
+        "了解",
+        "幫我睇",
+        "近況",
+        "形勢",
+        "趨勢",
+        "波動",
+        "漲跌",
+        "基本面"
+      ],
+      [
+        "技術面",
+        "K線",
+        "成交量",
+        "市盈率",
+        "市淨率",
+        "股息",
+        "龍頭",
+        "行業分析"
+      ],
+      [
+        "板塊分析",
+        "市場分析",
+        "數據解讀",
+        "對比分析",
+        "深度分析",
+        "全面分析",
+        "詳細分析",
+        "外匯"
+      ],
+      [
+        "期貨",
+        "期權",
+        "債券",
+        "加密貨幣",
+        "比特幣",
+        "以太坊",
+        "大宗商品",
+        "分析下"
+      ]
+    ],
+    "JA": [
+      [
+        "分析",
+        "解析",
+        "解読",
+        "研判",
+        "評価",
+        "検討",
+        "調査",
+        "株価"
+      ],
+      [
+        "株式",
+        "米国株",
+        "A株",
+        "香港株",
+        "ファンド",
+        "証券",
+        "股市",
+        "市場"
+      ],
+      [
+        "セクター",
+        "個別株",
+        "金融",
+        "投資",
+        "評価",
+        "決算",
+        "財務",
+        "推移"
+      ],
+      [
+        "マクロ",
+        "金利",
+        "インフレ",
+        "指数",
+        "ナスダック",
+        "S&P",
+        "ダウ",
+        "見て"
+      ],
+      [
+        "状況",
+        "形势",
+        "トレンド",
+        "ボラティリティ",
+        "騰落",
+        "ファンダメンタル",
+        "テクニカル",
+        "出来高"
+      ],
+      [
+        "PER",
+        "PBR",
+        "配当",
+        "業界分析",
+        "市場分析",
+        "データ解読",
+        "比較分析",
+        "詳細分析"
+      ],
+      [
+        "外国為替",
+        "先物",
+        "オプション",
+        "債券",
+        "暗号資産",
+        "ビットコイン",
+        "イーサリアム",
+        "商品"
+      ],
+      [
+        "分析して",
+        "解説",
+        "展望",
+        "動向",
+        "銘柄",
+        "ポートフォリオ",
+        "経済データ",
+        "市場心理"
+      ]
+    ],
+    "KO": [
+      [
+        "분석",
+        "해석",
+        "평가",
+        "검토",
+        "조사",
+        "해부",
+        "판단",
+        "시황"
+      ],
+      [
+        "주식",
+        "미국주",
+        "A주",
+        "홍콩주",
+        "펀드",
+        "증권",
+        "증시",
+        "시장"
+      ],
+      [
+        "섹터",
+        "개별주",
+        "금융",
+        "투자",
+        "밸류에이션",
+        "실적",
+        "재무",
+        "추세"
+      ],
+      [
+        "거시",
+        "금리",
+        "인플레",
+        "지수",
+        "나스닥",
+        "S&P",
+        "다우",
+        "살펴"
+      ],
+      [
+        "상황",
+        "형세",
+        "트렌드",
+        "변동성",
+        "등락",
+        "펀더멘털",
+        "기술적",
+        "거래량"
+      ],
+      [
+        "PER",
+        "PBR",
+        "배당",
+        "업종 분석",
+        "시장 분석",
+        "데이터 해석",
+        "비교 분석",
+        "상세 분석"
+      ],
+      [
+        "외환",
+        "선물",
+        "옵션",
+        "채권",
+        "암호화폐",
+        "비트코인",
+        "이더리움",
+        "원자재"
+      ],
+      [
+        "분석해",
+        "해설",
+        "전망",
+        "동향",
+        "종목",
+        "포트폴리오",
+        "경제 데이터",
+        "시장 심리"
+      ]
+    ]
+  },
+  "DECISION_INTENT": {
+    "ZH": [
+      [
+        "决策",
+        "决定",
+        "抉择",
+        "选型",
+        "选择",
+        "取舍",
+        "权衡",
+        "利弊"
+      ],
+      [
+        "选哪个",
+        "哪个好",
+        "哪个更好",
+        "该不该",
+        "要不要",
+        "是否值得",
+        "推荐哪个",
+        "帮我选"
+      ],
+      [
+        "拍板",
+        "定方案",
+        "二选一",
+        "多选一",
+        "对比选择",
+        "方案对比",
+        "优劣",
+        "优缺点"
+      ],
+      [
+        "怎么选",
+        "如何选",
+        "选什么",
+        "建议选",
+        "推荐方案",
+        "哪个合适",
+        "哪个更优",
+        "比较一下"
+      ],
+      [
+        "拿主意",
+        "给建议",
+        "给意见",
+        "出主意",
+        "怎么决定",
+        "如何决定",
+        "决策建议",
+        "选择建议"
+      ],
+      [
+        "投资决定",
+        "购买决定",
+        "是否购买",
+        "是否投资",
+        "是否采用",
+        "是否选择",
+        "是否接受",
+        "是否同意"
+      ],
+      [
+        "选边",
+        "站队",
+        "定夺",
+        "裁断",
+        "决断",
+        "取舍之间",
+        "两难",
+        "纠结"
+      ],
+      [
+        "pros and cons",
+        "trade-off",
+        "pick one",
+        "choose between",
+        "make a choice",
+        "which option",
+        "best option",
+        "help me decide"
+      ]
+    ],
+    "EN": [
+      [
+        "decide",
+        "decision",
+        "choose",
+        "choice",
+        "pick",
+        "select",
+        "determine",
+        "resolve"
+      ],
+      [
+        "choose between",
+        "pick one",
+        "which one",
+        "which option",
+        "which is better",
+        "should i",
+        "whether to",
+        "trade-off"
+      ],
+      [
+        "pros and cons",
+        "weigh",
+        "weighing",
+        "compare options",
+        "option a or b",
+        "make a call",
+        "make a decision",
+        "help me decide"
+      ],
+      [
+        "recommendation",
+        "advise",
+        "advice on",
+        "what should i choose",
+        "better option",
+        "best choice",
+        "go with",
+        "settle on"
+      ],
+      [
+        "either or",
+        "or should i",
+        "which would you",
+        "help me pick",
+        "selection",
+        "prefer",
+        "lean toward",
+        "opt for"
+      ],
+      [
+        "decision making",
+        "strategic choice",
+        "final call",
+        "judgment call",
+        "take a stand",
+        "commit to",
+        "vote for",
+        "endorse"
+      ],
+      [
+        "approve or reject",
+        "accept or decline",
+        "yes or no",
+        "stay or leave",
+        "buy or wait",
+        "invest or not",
+        "hire or not",
+        "keep or replace"
+      ],
+      [
+        "prioritize",
+        "rank options",
+        "shortlist",
+        "narrow down",
+        "eliminate options",
+        "tiebreaker",
+        "swing decision",
+        "critical choice"
+      ]
+    ],
+    "YUE": [
+      [
+        "決策",
+        "決定",
+        "抉擇",
+        "選型",
+        "選擇",
+        "取捨",
+        "權衡",
+        "利弊"
+      ],
+      [
+        "選邊個",
+        "邊個好",
+        "好唔好",
+        "應唔應該",
+        "使唔使",
+        "值唔值得",
+        "推薦邊個",
+        "幫我揀"
+      ],
+      [
+        "拍板",
+        "定方案",
+        "二揀一",
+        "多揀一",
+        "對比選擇",
+        "方案對比",
+        "優劣",
+        "優缺點"
+      ],
+      [
+        "點揀",
+        "如何揀",
+        "揀咩",
+        "建議揀",
+        "推薦方案",
+        "邊個合適",
+        "邊個更優",
+        "比較下"
+      ],
+      [
+        "拿主意",
+        "畀建議",
+        "畀意見",
+        "出主意",
+        "點決定",
+        "如何決定",
+        "決策建議",
+        "選擇建議"
+      ],
+      [
+        "投資決定",
+        "購買決定",
+        "買唔買",
+        "投唔投",
+        "用唔用",
+        "揀唔揀",
+        "接受唔接受",
+        "同意唔同意"
+      ],
+      [
+        "選邊",
+        "站隊",
+        "定奪",
+        "裁斷",
+        "決斷",
+        "兩難",
+        "糾結",
+        "trade-off"
+      ],
+      [
+        "pros and cons",
+        "pick one",
+        "choose between",
+        "make a choice",
+        "which option",
+        "best option",
+        "help me decide",
+        "decision"
+      ]
+    ],
+    "JA": [
+      [
+        "決定",
+        "決断",
+        "選択",
+        "選定",
+        "取舍",
+        "权衡",
+        "利弊",
+        "どちら"
+      ],
+      [
+        "選ぶ",
+        "どれが",
+        "どちらが",
+        "すべきか",
+        "すべき",
+        "おすすめ",
+        "選んで",
+        "決めて"
+      ],
+      [
+        "二択",
+        "複数選択",
+        "比較選択",
+        "方案比較",
+        "長所短所",
+        "メリット",
+        "デメリット",
+        "判断"
+      ],
+      [
+        "どう選",
+        "何を選",
+        "提案",
+        "お勧め",
+        "どれが適",
+        "どれが優",
+        "比較して",
+        "アドバイス"
+      ],
+      [
+        "助言",
+        "意見",
+        "決断支援",
+        "選択肢",
+        "投資判断",
+        "購入判断",
+        "採用するか",
+        "受け入れるか"
+      ],
+      [
+        "yes or no",
+        "trade-off",
+        "pick one",
+        "choose between",
+        "decision making",
+        "which option",
+        "help me decide",
+        "pros and cons"
+      ],
+      [
+        "優先順位",
+        "絞り込み",
+        "最終判断",
+        "決め手",
+        "難しい選択",
+        "ジレンマ",
+        "二者択一",
+        "多肢択一"
+      ],
+      [
+        "commit",
+        "endorse",
+        "approve",
+        "reject",
+        "accept",
+        "decline",
+        "go with",
+        "settle on"
+      ]
+    ],
+    "KO": [
+      [
+        "결정",
+        "결단",
+        "선택",
+        "선정",
+        "채택",
+        "取舍",
+        "权衡",
+        "利弊"
+      ],
+      [
+        "고르다",
+        "어느 것",
+        "어느 쪽",
+        "해야 할까",
+        "추천",
+        "골라",
+        "결정해",
+        "판단"
+      ],
+      [
+        "양자택일",
+        "다중 선택",
+        "비교 선택",
+        "안 비교",
+        "장단점",
+        "메리트",
+        "단점",
+        "조언"
+      ],
+      [
+        "어떻게 고",
+        "무엇을 고",
+        "제안",
+        "추천",
+        "어느 게 적",
+        "어느 게 나",
+        "비교해",
+        "의견"
+      ],
+      [
+        "결정 지원",
+        "선택지",
+        "투자 결정",
+        "구매 결정",
+        "채택할까",
+        "받아들일까",
+        "수락",
+        "거절"
+      ],
+      [
+        "yes or no",
+        "trade-off",
+        "pick one",
+        "choose between",
+        "decision making",
+        "which option",
+        "help me decide",
+        "pros and cons"
+      ],
+      [
+        "우선순위",
+        "후보 축소",
+        "최종 판단",
+        "결정타",
+        "어려운 선택",
+        "딜레마",
+        "이择",
+        "다택일"
+      ],
+      [
+        "commit",
+        "endorse",
+        "approve",
+        "reject",
+        "accept",
+        "decline",
+        "go with",
+        "settle on"
+      ]
+    ]
+  },
+  "RESEARCH_INTENT": {
+    "ZH": [
+      [
+        "研究",
+        "调研",
+        "探讨",
+        "考察",
+        "查阅",
+        "文献",
+        "综述",
+        "课题"
+      ],
+      [
+        "学术",
+        "论文",
+        "研究报告",
+        "技术调研",
+        "资料搜集",
+        "前沿动态",
+        "文献综述",
+        "调研报告"
+      ],
+      [
+        "深入调查",
+        "系统研究",
+        "全面调研",
+        "专项研究",
+        "可行性研究",
+        "市场调研",
+        "行业研究",
+        "竞品调研"
+      ],
+      [
+        "用户调研",
+        "田野调查",
+        "案例研究",
+        "实证研究",
+        "理论探讨",
+        "专题研究",
+        "深度调研",
+        "背景研究"
+      ],
+      [
+        "检索资料",
+        "收集资料",
+        "整理资料",
+        "汇总研究",
+        "研究一下",
+        "调研一下",
+        "探讨一下",
+        "考察一下"
+      ],
+      [
+        "state of the art",
+        "survey paper",
+        "literature review",
+        "research report",
+        "whitepaper",
+        "benchmark study",
+        "comparative study",
+        "meta analysis"
+      ],
+      [
+        "research topic",
+        "research question",
+        "hypothesis",
+        "methodology",
+        "findings",
+        "evidence based",
+        "peer review",
+        "citation"
+      ],
+      [
+        "开源调研",
+        "框架对比",
+        "技术选型调研",
+        "方案调研",
+        "政策研究",
+        "趋势研究",
+        "历史研究",
+        "现状研究"
+      ]
+    ],
+    "EN": [
+      [
+        "research",
+        "investigate",
+        "study",
+        "explore",
+        "survey",
+        "inquiry",
+        "look into",
+        "dig into"
+      ],
+      [
+        "literature review",
+        "research report",
+        "whitepaper",
+        "research paper",
+        "academic study",
+        "case study",
+        "field study",
+        "market research"
+      ],
+      [
+        "competitive research",
+        "user research",
+        "technical survey",
+        "feasibility study",
+        "background research",
+        "exploratory research",
+        "applied research",
+        "basic research"
+      ],
+      [
+        "state of the art",
+        "benchmark study",
+        "comparative study",
+        "meta analysis",
+        "systematic review",
+        "evidence review",
+        "literature survey",
+        "research findings"
+      ],
+      [
+        "research topic",
+        "research question",
+        "hypothesis",
+        "methodology",
+        "peer review",
+        "citation",
+        "bibliography",
+        "source material"
+      ],
+      [
+        "gather sources",
+        "collect references",
+        "compile research",
+        "research notes",
+        "deep research",
+        "thorough investigation",
+        "fact finding",
+        "due diligence"
+      ],
+      [
+        "industry research",
+        "policy research",
+        "trend research",
+        "historical research",
+        "technology scouting",
+        "landscape analysis",
+        "vendor research",
+        "product research"
+      ],
+      [
+        "primary research",
+        "secondary research",
+        "qualitative research",
+        "quantitative research",
+        "empirical research",
+        "theoretical research",
+        "research agenda",
+        "research plan"
+      ]
+    ],
+    "YUE": [
+      [
+        "研究",
+        "調研",
+        "探討",
+        "考察",
+        "查閱",
+        "文獻",
+        "綜述",
+        "課題"
+      ],
+      [
+        "學術",
+        "論文",
+        "研究報告",
+        "技術調研",
+        "資料搜集",
+        "前沿動態",
+        "文獻綜述",
+        "調研報告"
+      ],
+      [
+        "深入調查",
+        "系統研究",
+        "全面調研",
+        "專項研究",
+        "可行性研究",
+        "市場調研",
+        "行業研究",
+        "競品調研"
+      ],
+      [
+        "用戶調研",
+        "田野調查",
+        "案例研究",
+        "實證研究",
+        "理論探討",
+        "專題研究",
+        "深度調研",
+        "背景研究"
+      ],
+      [
+        "檢索資料",
+        "收集資料",
+        "整理資料",
+        "匯總研究",
+        "研究下",
+        "調研下",
+        "探討下",
+        "考察下"
+      ],
+      [
+        "literature review",
+        "research report",
+        "whitepaper",
+        "benchmark study",
+        "meta analysis",
+        "research findings",
+        "peer review",
+        "citation"
+      ],
+      [
+        "開源調研",
+        "框架對比",
+        "技術選型調研",
+        "方案調研",
+        "政策研究",
+        "趨勢研究",
+        "歷史研究",
+        "現狀研究"
+      ],
+      [
+        "research topic",
+        "methodology",
+        "hypothesis",
+        "due diligence",
+        "fact finding",
+        "deep research",
+        "survey paper",
+        "state of the art"
+      ]
+    ],
+    "JA": [
+      [
+        "研究",
+        "調査",
+        "探究",
+        "考察",
+        "文献",
+        "レビュー",
+        "課題",
+        "論文"
+      ],
+      [
+        "学術",
+        "研究報告",
+        "技術調査",
+        "資料収集",
+        "最新動向",
+        "文献レビュー",
+        "調査報告",
+        "実証研究"
+      ],
+      [
+        "市場調査",
+        "業界調査",
+        "競合調査",
+        "ユーザー調査",
+        "事例研究",
+        "理論的考察",
+        "専門調査",
+        "背景調査"
+      ],
+      [
+        "資料検索",
+        "資料整理",
+        "研究して",
+        "調査して",
+        "探究して",
+        "考察して",
+        "文献調査",
+        "先行研究"
+      ],
+      [
+        "literature review",
+        "research report",
+        "whitepaper",
+        "benchmark study",
+        "meta analysis",
+        "peer review",
+        "citation",
+        "methodology"
+      ],
+      [
+        "research topic",
+        "hypothesis",
+        "findings",
+        "evidence based",
+        "due diligence",
+        "fact finding",
+        "deep research",
+        "survey paper"
+      ],
+      [
+        "オープンソース調査",
+        "フレームワーク比較",
+        "技術選定調査",
+        "政策研究",
+        "トレンド研究",
+        "歴史研究",
+        "現状研究",
+        "状態調査"
+      ],
+      [
+        "primary research",
+        "secondary research",
+        "exploratory research",
+        "applied research",
+        "systematic review",
+        "research plan",
+        "research agenda",
+        "state of the art"
+      ]
+    ],
+    "KO": [
+      [
+        "연구",
+        "조사",
+        "탐구",
+        "考察",
+        "문헌",
+        "리뷰",
+        "과제",
+        "논문"
+      ],
+      [
+        "학술",
+        "연구 보고서",
+        "기술 조사",
+        "자료 수집",
+        "최신 동향",
+        "문헌 리뷰",
+        "조사 보고서",
+        "실증 연구"
+      ],
+      [
+        "시장 조사",
+        "업계 조사",
+        "경쟁 조사",
+        "사용자 조사",
+        "사례 연구",
+        "이론적 고찰",
+        "전문 조사",
+        "배경 조사"
+      ],
+      [
+        "자료 검색",
+        "자료 정리",
+        "연구해",
+        "조사해",
+        "탐구해",
+        "考察해",
+        "문헌 조사",
+        "선행 연구"
+      ],
+      [
+        "literature review",
+        "research report",
+        "whitepaper",
+        "benchmark study",
+        "meta analysis",
+        "peer review",
+        "citation",
+        "methodology"
+      ],
+      [
+        "research topic",
+        "hypothesis",
+        "findings",
+        "evidence based",
+        "due diligence",
+        "fact finding",
+        "deep research",
+        "survey paper"
+      ],
+      [
+        "오픈소스 조사",
+        "프레임워크 비교",
+        "기술 선정 조사",
+        "정책 연구",
+        "트렌드 연구",
+        "역사 연구",
+        "현황 연구",
+        "상태 조사"
+      ],
+      [
+        "primary research",
+        "secondary research",
+        "exploratory research",
+        "applied research",
+        "systematic review",
+        "research plan",
+        "research agenda",
+        "state of the art"
+      ]
+    ]
+  }
+}

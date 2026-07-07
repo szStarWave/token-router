@@ -8,7 +8,7 @@ use futures::StreamExt;
 
 use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::stats::metrics::{
-    estimate_tokens, inspect_sse_chunk, sse_has_content, FinalResponseMetrics, UpstreamCallMetrics,
+    inspect_sse_bytes, FinalResponseMetrics, StreamChunkAccumulator, UpstreamCallMetrics,
 };
 use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 
@@ -29,30 +29,20 @@ pub struct StreamRecordContext {
 pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStream {
     Box::pin(stream! {
         let start = Instant::now();
-        let mut ttft_ms = None;
-        let mut completion_chars = 0usize;
-        let mut usage = (0u32, 0u32, 0u32);
+        let mut acc = StreamChunkAccumulator::default();
         let mut inner = inner;
         while let Some(item) = inner.next().await {
             if let Ok(bytes) = &item {
-                if ttft_ms.is_none() && sse_has_content(bytes) {
-                    ttft_ms = Some(start.elapsed().as_millis() as u64);
-                }
-                if let Some(parsed) = inspect_sse_chunk(bytes, &mut completion_chars) {
-                    usage = parsed;
-                }
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                inspect_sse_bytes(bytes, &mut acc, elapsed_ms);
             }
             yield item;
         }
 
         let latency_ms = start.elapsed().as_millis() as u64;
-        let (mut prompt, mut completion, cached) = usage;
-        if completion == 0 && completion_chars > 0 {
-            completion = estimate_tokens(completion_chars);
-        }
-        if prompt == 0 {
-            prompt = ctx.prompt_fallback;
-        }
+        let prompt = acc.resolve_prompt(ctx.prompt_fallback);
+        let completion = acc.resolve_completion();
+        let cached = acc.cached_tokens();
 
         ctx.stats.record_upstream_metrics(
             &UpstreamCallMetrics {
@@ -61,7 +51,8 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
                 completion_tokens: completion,
                 cached_tokens: cached,
                 latency_ms,
-                ttft_ms,
+                ttft_ms: acc.first_token_ms,
+                last_token_ms: acc.last_token_ms,
                 stream: true,
             },
             ctx.auth_key.as_ref(),
@@ -224,5 +215,83 @@ mod tests {
         assert_eq!(snap.token_breakdown.edge.output, 5);
         assert_eq!(snap.cache.cached_tokens, 3);
         assert_eq!(snap.served.edge, 1);
+    }
+
+    #[tokio::test]
+    async fn instrument_stream_counts_tool_call_chunks_without_usage() {
+        let req = ChatCompletionRequest {
+            model: "flowy-auto".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hi".to_string()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: true,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        };
+        let id = "stub-tool";
+        let events = vec![
+            format!(
+                "data: {}\n\n",
+                json!({
+                    "choices": [{
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "call_1",
+                                "function": { "name": "read", "arguments": "" }
+                            }]
+                        }
+                    }]
+                })
+            ),
+            format!(
+                "data: {}\n\n",
+                json!({
+                    "choices": [{
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "function": { "arguments": "{}" }
+                            }]
+                        }
+                    }]
+                })
+            ),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let inner: SseStream = Box::pin(stream::iter(events).map(|line| Ok(Bytes::from(line))));
+        let stats = GatewayStats::new_in_memory();
+        let mut stream = instrument_stream(
+            inner,
+            StreamRecordContext {
+                stats: stats.clone(),
+                tier: "edge",
+                prompt_fallback: 10,
+                cloud_input_saved: 0,
+                record_cloud_saved: false,
+                edge_guard: None,
+                agent_usage: None,
+                agent_id: None,
+                auth_key: None,
+            },
+        );
+        while stream.next().await.is_some() {}
+
+        let snap = stats.snapshot(
+            crate::gateway::stats::StatsScope::Session,
+            1,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        );
+        assert_eq!(snap.token_breakdown.edge.output, 2);
     }
 }

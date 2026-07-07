@@ -1,6 +1,7 @@
 mod edge_busy;
 mod adaptive;
 mod adaptive_tuner;
+mod cognitive_intent;
 mod conversation;
 mod decision;
 mod difficulty;

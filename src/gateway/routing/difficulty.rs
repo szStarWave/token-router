@@ -41,6 +41,7 @@ impl DifficultyScore {
         linear += tool_loop_bias(signals.tool_invocations_since_last_user);
         linear += lexical_rarity_bias(signals.rare_lexical, signals.special_lexical);
         linear += risky_tool_soft_bias(signals, step_kind);
+        linear += cognitive_task_bias(signals);
 
         let d = sigmoid(linear);
         Self(d.clamp(0.0, 1.0))
@@ -49,11 +50,32 @@ impl DifficultyScore {
 
 fn tool_error_streak_bias(streak: u32) -> f32 {
     match streak {
-        0..=1 => 0.0,
-        2 => 0.15,
+        0 => 0.0,
+        1 => 0.10,
+        2 => 0.18,
         3 => 0.30,
         _ => 0.40,
     }
+}
+
+fn cognitive_task_bias(signals: &RequestSignals) -> f32 {
+    if !super::signals::cognitive_task_applies(signals) {
+        return 0.0;
+    }
+    let mut b = 0.0;
+    if signals.intent_plan {
+        b += 0.15;
+    }
+    if signals.intent_analysis {
+        b += 0.18;
+    }
+    if signals.intent_decision {
+        b += 0.15;
+    }
+    if signals.intent_research {
+        b += 0.15;
+    }
+    b
 }
 
 fn tool_loop_bias(invocations: u32) -> f32 {
@@ -135,6 +157,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         }
     }
 
@@ -145,14 +170,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_error_streak_increases_difficulty_from_second() {
+    fn tool_error_streak_increases_difficulty_from_first() {
         let ctx_max = 65536;
         let step = StepKind::ToolResultDigest;
         let d0 = DifficultyScore::compute(&base_signals(0), step, ctx_max, 0.0);
         let d1 = DifficultyScore::compute(&base_signals(1), step, ctx_max, 0.0);
         let d2 = DifficultyScore::compute(&base_signals(2), step, ctx_max, 0.0);
-        assert_eq!(d1.0, d0.0);
-        assert!(d2.0 > d0.0);
+        assert!(d1.0 > d0.0);
+        assert!(d2.0 > d1.0);
         let d3 = DifficultyScore::compute(
             &base_signals(3),
             StepKind::RecoveryAfterFailure,
@@ -165,10 +190,24 @@ mod tests {
     #[test]
     fn tool_error_streak_bias_values() {
         assert_eq!(tool_error_streak_bias(0), 0.0);
-        assert_eq!(tool_error_streak_bias(1), 0.0);
-        assert_eq!(tool_error_streak_bias(2), 0.15);
+        assert_eq!(tool_error_streak_bias(1), 0.10);
+        assert_eq!(tool_error_streak_bias(2), 0.18);
         assert_eq!(tool_error_streak_bias(3), 0.30);
         assert_eq!(tool_error_streak_bias(5), 0.40);
+    }
+
+    #[test]
+    fn cognitive_task_bias_only_on_first_hop() {
+        let ctx_max = 65536;
+        let step = StepKind::InitialPlan;
+        let mut first = base_signals(0);
+        first.intent_analysis = true;
+        let mut mid_loop = base_signals(0);
+        mid_loop.intent_analysis = true;
+        mid_loop.tool_invocations_since_last_user = 1;
+        let d_first = DifficultyScore::compute(&first, step, ctx_max, 0.0);
+        let d_mid = DifficultyScore::compute(&mid_loop, step, ctx_max, 0.0);
+        assert!(d_first.0 > d_mid.0);
     }
 
     #[test]

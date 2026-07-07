@@ -24,7 +24,7 @@ fn ascii_keyword_match(lower: &str, keyword: &str) -> bool {
     }
 }
 
-fn matches_any_lang(text: &str, tables: &[&[&str]]) -> bool {
+pub(crate) fn matches_any_lang(text: &str, tables: &[&[&str]]) -> bool {
     tables.iter().any(|t| text_matches_keywords(text, t))
 }
 

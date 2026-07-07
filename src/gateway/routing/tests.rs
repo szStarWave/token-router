@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_plan_forces_cloud() {
+    fn initial_plan_raises_difficulty_without_forcing_cloud() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -876,17 +876,47 @@ mod tests {
         );
         assert_eq!(decision.step_kind, StepKind::InitialPlan);
         assert!(
-            matches!(decision.route, RouteTier::Cloud),
-            "{:?}",
-            decision
-        );
-        assert!(
-            decision
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c == "PLAN_INTENT_CLOUD" || c == "INITIAL_PLAN_CLOUD"),
             "{:?}",
             decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "INITIAL_PLAN" || c == "PLAN_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+        let baseline = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("Refactor the auth module.".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: initial_plan_request().tools.clone(),
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            decision.difficulty > baseline.difficulty,
+            "plan step should raise difficulty: {} vs {}",
+            decision.difficulty,
+            baseline.difficulty
         );
     }
 
@@ -1020,10 +1050,10 @@ mod tests {
             decision.reason_codes
         );
         assert!(
-            !decision
+            decision
                 .reason_codes
                 .iter()
-                .any(|c| c.starts_with("TOOL_ERROR_STREAK_")),
+                .any(|c| c == "TOOL_ERROR_STREAK_1"),
             "{:?}",
             decision.reason_codes
         );
@@ -1675,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_intent_forces_cloud() {
+    fn plan_intent_raises_difficulty_without_forcing_cloud() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -1686,12 +1716,206 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert_eq!(decision.step_kind, StepKind::InitialPlan);
-        assert!(matches!(decision.route, RouteTier::Cloud), "{:?}", decision);
         assert!(
-            decision
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c == "PLAN_INTENT_CLOUD" || c == "INITIAL_PLAN_CLOUD"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "PLAN_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+        let baseline = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("帮我整理一下项目".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: plan_intent_request().tools.clone(),
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(decision.difficulty > baseline.difficulty);
+    }
+
+    fn analysis_first_hop_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("分析一下美股走势".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn analysis_intent_raises_difficulty_on_first_hop() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &analysis_first_hop_request(),
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "ANALYSIS_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+        let baseline = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("美股最近怎么样".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(decision.difficulty > baseline.difficulty);
+    }
+
+    #[test]
+    fn analysis_intent_skipped_after_tool_result() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("分析一下美股走势".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("market data snapshot".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: Some("t1".into()),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "read".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        };
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "ANALYSIS_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn decision_intent_raises_difficulty() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("A 和 B 哪个更好".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "DECISION_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn research_intent_raises_difficulty() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("调研量子计算前沿".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "RESEARCH_INTENT"),
             "{:?}",
             decision.reason_codes
         );

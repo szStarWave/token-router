@@ -128,6 +128,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         }
     }
 

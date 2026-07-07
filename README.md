@@ -209,9 +209,9 @@ src/
 | **轮次分析** | `n_tool_defs`、`n_turns`、`last_user_tok`、`loop_steps` |
 | **状态标记** | `pending_tool_calls`、`tool_arg_ready`、`last_role_tool`、`assistant_failed_recent`、`had_tool_roundtrip` |
 | **步态线索** | `is_heartbeat_poll`（正则匹配 `[OpenClaw heartbeat poll]`）、`subagent_spawn_hint`、`memory_compact_hint`（**仅 transcript**：`[OpenClaw memory compact]` / user·assistant 中的 memory compaction）、`cron_background` |
-| **意图识别** | `intent_hard` / `intent_easy` / `intent_plan`（**仅最新 user 消息**，关键词见 `routing/keywords.rs`） |
+| **意图识别** | `intent_hard` / `intent_easy` / `intent_plan` / `intent_analysis` / `intent_decision` / `intent_research`（**仅最新 user 消息**；认知类 intent 见 `routing/cognitive_intent.rs`，其余见 `routing/keywords.rs`） |
 | **词汇稀有度** | `rare_lexical`（统计：[tokenizers](https://github.com/huggingface/tokenizers) WordLevel 分词 + `wordfreq` 查频，词表存 SQLite `wordfreq.db`；OOV/低频 → 稀有）、`special_lexical`（领域专名关键词：GDPR/K8s/CVE 等）、`rare_token_ratio` |
-| **工具分析** | `risky_tool_hard` / `risky_tool_soft` / `risky_tool_names`（见 `routing/tool_risk.rs`：**Hard**=删除/移动文件（`Delete` 工具、`exec` 中 `rm`/`mv` 等）；**Soft**=`browser`/`sessions_spawn`/`message`；`write`/`edit`/普通 `exec` 无影响）、`consecutive_tool_error_streak`… |
+| **工具分析** | `risky_tool_hard` / `risky_tool_soft` / `risky_tool_names`（见 `routing/tool_risk.rs`：**Hard**=删除/移动文件（`Delete` 工具、`exec` 中 `rm`/`mv` 等）；**Soft**=`browser`/`sessions_spawn`/`message`；`write`/`edit`/普通 `exec` 无影响）、`consecutive_tool_error_streak`（**自最后一条 user 起**尾部连续 tool 错误）、`tool_invocations_since_last_user`… |
 | **多模态探测** | 检查 `content` 是否含 `image_url` 或 `data:image` |
 
 **关键词模块**（`routing/keywords.rs`）：集中管理 `tool_error`、`hard_intent`、`plan_intent`、`easy_intent`、`reject_intent`、`uncertainty`（cascade/verify 质量门）、`special_lexical` 七组词表；ASCII 词大小写不敏感，短词（≤4 字符）使用词边界匹配避免误伤。
@@ -231,7 +231,7 @@ src/
 | `ToolSelect` | `pending_tool_calls == false && intent_hard == false` 且 `tools` 存在 | -0.10 | Work |
 | `ToolArgFill` | `pending_tool_calls == true && tool_arg_ready == true` | -0.25 | Work |
 | `ToolResultDigest` | `last_role_tool == true` | -0.45 | Work |
-| `InitialPlan` | `n_turns == 0 && !is_casual` | +0.35 | **云端** |
+| `InitialPlan` | 非 casual 首轮 agent / 认知 intent / `intent_plan` | +0.35 | 难度软路由（**不**强制 Cloud） |
 | `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
 | `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 3` | +0.55 | **云端 / cascade** |
 | `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
@@ -257,7 +257,7 @@ src/
 | `GATE_USER_REJECT` | 最新 user 否定上一轮 assistant（中/英/日/韩/粤关键词，见 `routing/keywords.rs` → `contains_reject_intent`） | **cloud** |
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
-| `GATE_TOOL_ERROR_STREAK` | 连续 3+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
+| `GATE_TOOL_ERROR_STREAK` | 自最后 user 起连续 3+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
 | `GATE_RISKY_TOOL` | 删除/移动文件（`Delete` 工具或 `exec` 中 `rm`/`mv`/`git mv` 等）且步态为 `ToolSelect`/`ToolArgFill`、尚无 tool result；reason 附带 `GATE_RISKY_TOOL:exec,delete` | **cloud** |
 | `GATE_OPENCLAW_COMPACT` | `MemoryCompact` 且 `tok_total_in > 80% × ctx_edge_max_tokens` | **cloud** |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
@@ -285,7 +285,8 @@ d = 1.0 / (1.0 + e^(-raw))
 - `step_kind.bias()` 见上表
 - `experience_bias` 来自 `ExperienceStore::bias_for(step_kind)`
 - `assistant_failed_recent_bonus`：assistant turn 失败时 +0.15
-- `tool_error_streak_bias`：连续 tool 失败渐进加成 — 1 次 → 0，2 → +0.15，3 → +0.30，4+ → +0.40（封顶）；连续 3 次才进入 Recovery / 硬门控升云
+- `tool_error_streak_bias`：自上次 user 以来**尾部连续** tool 失败渐进加成 — 1 → +0.10，2 → +0.18，3 → +0.30，4+ → +0.40（封顶）；连续 3 次才进入 Recovery / 硬门控升云
+- `cognitive_task_bias`：计划/分析/决策/研究四类认知 intent（**仅最新 user 消息、且首轮路由** `tool_invocations_since_last_user == 0 && !pending_tool_calls`）— plan +0.15，analysis +0.18，decision +0.15，research +0.15（可叠加）；**不**强制 Cloud，经 `map_policy` 软路由
 - `tool_loop_bias`：自上次 user 以来 tool result 条数渐进加成 — 0–4 → 0，5–6 → +0.10，7 → +0.18，8+ → +0.25（封顶）
 - `risky_tool_soft_bias`：Soft 工具（`browser`/`message`/`sessions_spawn`）→ +0.22；reason code：`RISKY_TOOL_SOFT:browser,...`
 - `lexical_rarity_bias`：词汇稀有度渐进加成（非硬门控）— 仅 rare → +0.08，仅 special → +0.12，两者皆有 → +0.18（封顶）；reason code：`LEXICAL_RARE` / `LEXICAL_SPECIAL` / `LEXICAL_BOTH`；分类器特征 bucket：`lexical:none|rare|special|both`
@@ -312,7 +313,7 @@ Agent 循环中的执行步态（`ToolSelect`/`ToolResultDigest`/`FinalReply` �
 
 | 策略 | 触发条件 | 行为 |
 |------|---------|------|
-| `InitialPlan` → Cloud | `is_plan_step()` 判断: 步态为 `InitialPlan` 或 `intent_plan == true` | 强制云端 |
+| `InitialPlan` 认知 reason | `is_plan_step()` 或 analysis/decision/research intent（**仅首轮**） | 推送 `PLAN_INTENT` / `INITIAL_PLAN` / `ANALYSIS_INTENT` 等 reason；**不**强制 Cloud，难度经 policy 映射 |
 | `WorkExecEdge` | `is_work_step()` 且难度未超 θ_edge | 默认走端侧 |
 | `CachedEdge` | `experience.edge_trusted(step_kind)` 返回 true | 直接走端，不校验 |
 | `Verify` | `should_work_verify_sample()` 命中抽样 | Cascade + 云端校验（验证 tool 名称或文本兼容性） |

@@ -41,6 +41,9 @@ impl FeatureVector {
         push_flag(&mut keys, "is_heartbeat_poll", signals.is_heartbeat_poll);
         push_flag(&mut keys, "had_tool_roundtrip", signals.had_tool_roundtrip);
         push_flag(&mut keys, "tools_enabled", signals.tools_enabled);
+        push_flag(&mut keys, "intent_analysis", signals.intent_analysis);
+        push_flag(&mut keys, "intent_decision", signals.intent_decision);
+        push_flag(&mut keys, "intent_research", signals.intent_research);
 
         Self { keys }
     }

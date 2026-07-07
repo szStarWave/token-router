@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate src/gateway/routing/keywords.rs with 7 groups x 5 langs x 64+ terms."""
+"""Generate src/gateway/routing/keywords.rs with 7 groups x 5 langs x 64+ terms.
+
+Cognitive intents (ANALYSIS / DECISION / RESEARCH) live in cognitive_intent.rs;
+regenerate via scripts/gen_cognitive_intent.py (or gen_cognitive_intent.js).
+"""
 
 from __future__ import annotations
 

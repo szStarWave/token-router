@@ -12,6 +12,7 @@ const STATS_POLL_MS = 5_000
 /** Keep sidebar / store stats fresh while the app shell is mounted. */
 export function useStatsSync() {
   const connected = useAppStore((s) => s.connected)
+  const scope = useAppStore((s) => s.scope)
   const qc = useQueryClient()
 
   useEffect(() => {
@@ -28,7 +29,7 @@ export function useStatsSync() {
         setStatus(status)
         setUptimeAnchor({ secs: status.uptime_secs, at: Date.now() })
 
-        const scope = useAppStore.getState().scope
+        const activeScope = useAppStore.getState().scope
         const modelId = useSetupStore.getState().setup?.edge?.model?.trim() || undefined
         const [sessionStats, globalStats] = await Promise.all([
           apiFetch<StatsSnapshot>('/v1/admin/stats?scope=session'),
@@ -36,10 +37,12 @@ export function useStatsSync() {
         ])
         if (cancelled) return
 
-        setStats(scope === 'global' ? globalStats : sessionStats)
+        setStats(activeScope === 'global' ? globalStats : sessionStats)
         setGlobalStats(globalStats)
         void syncLocalUsageFromStats(sessionStats, { scope: 'session', modelId })
         void syncLocalUsageFromStats(globalStats, { scope: 'global', modelId })
+        void qc.invalidateQueries({ queryKey: queryKeys.gatewayStats('session') })
+        void qc.invalidateQueries({ queryKey: queryKeys.gatewayStats('global') })
         void qc.invalidateQueries({ queryKey: queryKeys.gatewayStatus })
       } catch (e) {
         console.warn('[stats-sync]', e)
@@ -52,5 +55,5 @@ export function useStatsSync() {
       cancelled = true
       clearInterval(id)
     }
-  }, [connected, qc])
+  }, [connected, scope, qc])
 }

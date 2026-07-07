@@ -58,12 +58,31 @@ pub struct RequestSignals {
     pub special_lexical: bool,
     /// Ratio of rare tokens in the latest user message (0.0–1.0).
     pub rare_token_ratio: f32,
+    pub intent_analysis: bool,
+    pub intent_decision: bool,
+    pub intent_research: bool,
 }
 
 /// Consecutive trailing tool errors before difficulty bias / reason codes.
-pub const TOOL_ERROR_STREAK_DIFFICULTY: u32 = 2;
+pub const TOOL_ERROR_STREAK_DIFFICULTY: u32 = 1;
 /// Consecutive trailing tool errors before Recovery step kind and hard cloud gate.
 pub const TOOL_ERROR_STREAK_ESCALATE: u32 = 3;
+
+/// Cognitive difficulty applies only to the first routing hop after the triggering user
+/// message — not to mid-loop tool/assistant follow-ups.
+pub fn cognitive_task_applies(signals: &RequestSignals) -> bool {
+    signals.tool_invocations_since_last_user == 0 && !signals.pending_tool_calls
+}
+
+fn cognitive_intent_blocks_casual(signals: &RequestSignals) -> bool {
+    if !cognitive_task_applies(signals) {
+        return false;
+    }
+    signals.intent_plan
+        || signals.intent_analysis
+        || signals.intent_decision
+        || signals.intent_research
+}
 
 /// Short, tool-loop-free turn (daily chat). Tool definitions in the request are ignored.
 pub fn is_casual_chat(signals: &RequestSignals) -> bool {
@@ -71,6 +90,7 @@ pub fn is_casual_chat(signals: &RequestSignals) -> bool {
         || signals.pending_tool_calls
         || signals.intent_hard
         || signals.assistant_failed_recent
+        || cognitive_intent_blocks_casual(signals)
     {
         return false;
     }
@@ -246,6 +266,15 @@ impl SignalExtractor<'_> {
         let intent_plan = last_user
             .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_plan_intent(&t));
+        let intent_analysis = last_user
+            .map(user_routing_text)
+            .is_some_and(|t| super::cognitive_intent::contains_analysis_intent(&t));
+        let intent_decision = last_user
+            .map(user_routing_text)
+            .is_some_and(|t| super::cognitive_intent::contains_decision_intent(&t));
+        let intent_research = last_user
+            .map(user_routing_text)
+            .is_some_and(|t| super::cognitive_intent::contains_research_intent(&t));
         let tier_intent = resolve_recent_tier_intent(&req.messages);
         let intent_cloud = tier_intent == TierIntent::Cloud;
         let intent_long_gen = super::keywords::long_gen_from_max_tokens(
@@ -265,7 +294,8 @@ impl SignalExtractor<'_> {
             .map(|m| estimate_tokens(&user_routing_text(m)))
             .unwrap_or(0);
 
-        let consecutive_tool_error_streak = consecutive_tool_error_tail(&req.messages);
+        let consecutive_tool_error_streak =
+            consecutive_tool_errors_since_last_user(&req.messages);
 
         let tool_invocations_since_last_user =
             count_tool_invocations_since_last_user(&req.messages);
@@ -324,6 +354,9 @@ impl SignalExtractor<'_> {
             rare_lexical: lexical.rare_lexical,
             special_lexical: lexical.special_lexical,
             rare_token_ratio: lexical.rare_token_ratio,
+            intent_analysis,
+            intent_decision,
+            intent_research,
         }
     }
 }
@@ -340,6 +373,15 @@ pub fn count_tool_invocations_since_last_user(messages: &[Message]) -> u32 {
             .filter(|m| m.role == Role::Tool)
             .count() as u32,
     }
+}
+
+/// Trailing consecutive tool errors after the last `role=user` message.
+pub fn consecutive_tool_errors_since_last_user(messages: &[Message]) -> u32 {
+    let start = match messages.iter().rposition(|m| m.role == Role::User) {
+        None => 0,
+        Some(i) => i + 1,
+    };
+    consecutive_tool_error_tail(&messages[start..])
 }
 
 /// Count trailing tool messages (from the end) that contain error keywords.
@@ -682,6 +724,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         };
         assert!(is_casual_chat(&signals));
     }
@@ -814,6 +859,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         };
         assert!(!is_casual_chat(&signals));
     }
@@ -862,6 +910,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         };
         assert!(is_casual_chat(&signals));
         signals.intent_easy = false;
@@ -1233,6 +1284,123 @@ mod tests {
             tool_call_id: None,
         };
         assert_eq!(resolve_recent_tier_intent(&messages), TierIntent::None);
+    }
+
+    #[test]
+    fn consecutive_tool_errors_since_last_user_ignores_prior_user() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("first".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("Error: old failure".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t0".into()),
+            },
+            Message {
+                role: Role::User,
+                content: Some("retry".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("Error: new failure".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+        ];
+        assert_eq!(consecutive_tool_errors_since_last_user(&messages), 1);
+    }
+
+    #[test]
+    fn consecutive_tool_errors_since_last_user_success_breaks_streak() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some("run".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("Error: failed once".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t1".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("ok".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t2".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("Error: failed again".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("t3".into()),
+            },
+        ];
+        assert_eq!(consecutive_tool_errors_since_last_user(&messages), 1);
+    }
+
+    #[test]
+    fn cognitive_intent_only_from_last_user_message() {
+        use crate::gateway::routing::WordFreqStore;
+        use std::sync::LazyLock;
+
+        static WF: LazyLock<WordFreqStore> =
+            LazyLock::new(|| WordFreqStore::open_in_memory().expect("wordfreq"));
+
+        let extractor = SignalExtractor {
+            ctx_edge_max: 65536,
+            wordfreq: &WF,
+        };
+        let req = ChatCompletionRequest {
+            model: "test".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: Some("分析一下旧话题".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("好的".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("继续".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let signals = extractor.extract(&req, None);
+        assert!(!signals.intent_analysis);
+        assert!(!signals.intent_decision);
+        assert!(!signals.intent_research);
     }
 
     #[test]

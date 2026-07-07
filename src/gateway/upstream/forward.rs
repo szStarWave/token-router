@@ -515,6 +515,7 @@ impl UpstreamClient {
                 cached_tokens: cached,
                 latency_ms,
                 ttft_ms: None,
+                last_token_ms: None,
                 stream: false,
             },
             auth_key,

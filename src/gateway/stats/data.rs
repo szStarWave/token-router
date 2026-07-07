@@ -200,10 +200,19 @@ impl StatsData {
             self.ttft_count += 1;
         }
         if m.completion_tokens > 0 {
-            let gen_ms = m
-                .latency_ms
-                .saturating_sub(m.ttft_ms.unwrap_or(0))
-                .max(1);
+            let gen_ms = if m.stream {
+                match (m.ttft_ms, m.last_token_ms) {
+                    (Some(first), Some(last)) if last >= first => (last - first).max(1),
+                    _ => m
+                        .latency_ms
+                        .saturating_sub(m.ttft_ms.unwrap_or(0))
+                        .max(1),
+                }
+            } else {
+                m.latency_ms
+                    .saturating_sub(m.ttft_ms.unwrap_or(0))
+                    .max(1)
+            };
             let tps_x1000 =
                 (m.completion_tokens as u64 * 1000 * 1000).saturating_div(gen_ms);
             self.tps_sum_x1000 = tps_x1000;

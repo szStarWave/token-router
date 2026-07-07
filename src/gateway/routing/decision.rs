@@ -245,6 +245,7 @@ pub fn decide(
         reason_codes.push("LEXICAL_RARE".to_string());
     }
     push_risky_tool_soft_reason(&signals, &mut reason_codes);
+    push_cognitive_task_reasons(&signals, &mut reason_codes);
     let (mut difficulty, edge_ok_probability) = apply_classifier(
         classifier,
         &features,
@@ -620,6 +621,24 @@ fn push_risky_tool_hard_reason(signals: &RequestSignals, reason_codes: &mut Vec<
         "GATE_RISKY_TOOL:{}",
         signals.risky_tool_hard_names.join(",")
     ));
+}
+
+fn push_cognitive_task_reasons(signals: &RequestSignals, reason_codes: &mut Vec<String>) {
+    if !super::signals::cognitive_task_applies(signals) {
+        return;
+    }
+    if signals.intent_plan {
+        reason_codes.push("PLAN_INTENT".to_string());
+    }
+    if signals.intent_analysis {
+        reason_codes.push("ANALYSIS_INTENT".to_string());
+    }
+    if signals.intent_decision {
+        reason_codes.push("DECISION_INTENT".to_string());
+    }
+    if signals.intent_research {
+        reason_codes.push("RESEARCH_INTENT".to_string());
+    }
 }
 
 fn push_risky_tool_soft_reason(signals: &RequestSignals, reason_codes: &mut Vec<String>) {

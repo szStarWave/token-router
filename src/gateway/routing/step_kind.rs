@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::api::openai::ChatCompletionRequest;
 
-use super::signals::{RequestSignals, is_casual_chat};
+use super::signals::{RequestSignals, cognitive_task_applies, is_casual_chat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +37,11 @@ impl StepKind {
             StepKind::CronBackground => -0.15,
         }
     }
+}
+
+fn cognitive_initial_plan(signals: &RequestSignals) -> bool {
+    cognitive_task_applies(signals)
+        && (signals.intent_analysis || signals.intent_decision || signals.intent_research)
 }
 
 pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals) -> StepKind {
@@ -87,10 +92,11 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::CronBackground;
     }
 
-    // Planning turn (explicit 规划/计划/plan or first non-casual agent task).
+    // Planning turn (explicit 规划/计划/plan or first non-casual agent/cognitive task).
     if !signals.pending_tool_calls
         && !signals.last_role_tool
         && (signals.intent_plan
+            || cognitive_initial_plan(signals)
             || (signals.tools_enabled
                 && signals.loop_steps == 0
                 && !signals.had_tool_roundtrip
@@ -161,6 +167,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         }
     }
 
@@ -235,6 +244,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         };
         assert_eq!(resolve_step_kind(&req, &signals), StepKind::DirectChat);
     }

@@ -1,13 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
 import { StatsChart, StatsChartRange, type ChartRange } from '../components/stats/StatsChart'
 import { AuthKeyStatsPanel } from '../components/stats/AuthKeyStatsPanel'
 import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierMaxPerRequest, tierTokenSummary, tokenSummary, tokenTableRows, topStepKinds } from '../lib/stats-utils'
-import { syncLocalUsageFromStats } from '../hooks/useLocalUsageSync'
-import { apiFetch } from '../lib/gateway'
-import { useSetupStore } from '../stores/setupStore'
-import type { StatsScope, StatsSnapshot } from '../types/gateway'
+import type { StatsScope } from '../types/gateway'
 
 export function StatsPage() {
   const { t, locale } = useI18n()
@@ -42,27 +39,6 @@ export function StatsPage() {
     cloud_rate: number
   }> | undefined) ?? []
   const classifierRows = classifier ? classifierSummaryRows(classifier) : []
-
-  const connected = useAppStore((s) => s.connected)
-  const setStats = useAppStore((s) => s.setStats)
-  const setGlobalStats = useAppStore((s) => s.setGlobalStats)
-
-  useEffect(() => {
-    if (!connected) return
-    const modelId = useSetupStore.getState().setup?.edge?.model?.trim() || undefined
-    void apiFetch<StatsSnapshot>(`/v1/admin/stats?scope=${scope}`).then((s) => {
-      setStats(s)
-      void syncLocalUsageFromStats(s, { scope, modelId })
-      if (scope === 'session') {
-        void apiFetch<StatsSnapshot>('/v1/admin/stats?scope=global').then((global) => {
-          setGlobalStats(global)
-          void syncLocalUsageFromStats(global, { scope: 'global', modelId })
-        })
-      } else {
-        setGlobalStats(s)
-      }
-    })
-  }, [scope, connected, setStats, setGlobalStats])
 
   const onScope = (s: StatsScope) => {
     setScope(s)

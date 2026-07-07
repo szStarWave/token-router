@@ -43,7 +43,11 @@ export function useGatewayStatsQuery(scope: 'session' | 'global') {
   })
 }
 
-export function useStatsTimelineQuery(scope: 'session' | 'global', range: 'h24' | 'd7' | 'd30') {
+export function useStatsTimelineQuery(
+  scope: 'session' | 'global',
+  range: 'h24' | 'd7' | 'd30',
+  refetchIntervalMs = 10_000,
+) {
   const connected = useAppStore((s) => s.connected)
   return useQuery({
     queryKey: queryKeys.statsTimeline(scope, range),
@@ -54,7 +58,7 @@ export function useStatsTimelineQuery(scope: 'session' | 'global', range: 'h24' 
       )
     },
     enabled: connected,
-    refetchInterval: connected ? 10_000 : false,
+    refetchInterval: connected ? refetchIntervalMs : false,
   })
 }
 

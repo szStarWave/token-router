@@ -291,6 +291,38 @@
       "en-US": [
         "Version update"
       ]
+    },
+    "0.14.5": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.14.5": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "0.14.6": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.14.6": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
     }
   }
 }

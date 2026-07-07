@@ -88,13 +88,12 @@ pub fn apply_work_route(
         return (route, WorkStrategy::None);
     }
 
-    if is_plan_step(step_kind, signals) {
+    if is_plan_step(step_kind, signals) && super::signals::cognitive_task_applies(signals) {
         reason_codes.push(if signals.intent_plan {
-            "PLAN_INTENT_CLOUD".to_string()
+            "PLAN_INTENT".to_string()
         } else {
-            "INITIAL_PLAN_CLOUD".to_string()
+            "INITIAL_PLAN".to_string()
         });
-        return (RouteTier::Cloud, WorkStrategy::None);
     }
 
     if !is_work_step(step_kind) || !edge_configured(config) {
@@ -203,6 +202,9 @@ mod tests {
             rare_lexical: false,
             special_lexical: false,
             rare_token_ratio: 0.0,
+            intent_analysis: false,
+            intent_decision: false,
+            intent_research: false,
         }
     }
 
@@ -228,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_intent_forces_cloud() {
+    fn plan_intent_emits_reason_without_forcing_cloud() {
         let cfg = app_config(0.0);
         let mut signals = empty_signals();
         signals.intent_plan = true;
@@ -246,8 +248,8 @@ mod tests {
             0.0,
             &mut codes,
         );
-        assert_eq!(route, RouteTier::Cloud);
-        assert!(codes.iter().any(|c| c == "PLAN_INTENT_CLOUD"));
+        assert_eq!(route, RouteTier::Edge);
+        assert!(codes.iter().any(|c| c == "PLAN_INTENT"));
     }
 
     #[test]
