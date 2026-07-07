@@ -537,6 +537,18 @@
           "markdownDescription": "Enables the show_main_window command."
         },
         {
+          "description": "Writes Token Router provider config into WSL agent configs.",
+          "type": "string",
+          "const": "allow-wsl-configure-agents",
+          "markdownDescription": "Writes Token Router provider config into WSL agent configs."
+        },
+        {
+          "description": "Detects running WSL distros and agent setup state.",
+          "type": "string",
+          "const": "allow-wsl-detect-environment",
+          "markdownDescription": "Detects running WSL distros and agent setup state."
+        },
+        {
           "description": "Denies the feedback_app_version command without any pre-configured scope.",
           "type": "string",
           "const": "deny-feedback-app-version",

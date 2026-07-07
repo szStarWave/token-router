@@ -135,6 +135,220 @@ fn opencode_config_path() -> Result<PathBuf, String> {
     Ok(opencode_config_dir()?.join("opencode.json"))
 }
 
+fn agent_config_path_at(home: &Path, agent: &str) -> Result<PathBuf, String> {
+    match agent {
+        "openclaw" => Ok(home.join(".openclaw").join("openclaw.json")),
+        "hermes" => Ok(home.join(".hermes").join("config.yaml")),
+        "hermes-flash" => Ok(home.join(".hermes-flash").join("config.yaml")),
+        "claude-code" => Ok(home.join(".claude").join("settings.json")),
+        "codex" => Ok(home.join(".codex").join("config.toml")),
+        "opencode" => Ok(home.join(".config").join("opencode").join("opencode.json")),
+        _ => Err(format!("unknown agent: {agent}")),
+    }
+}
+
+fn agent_init_state_at(home: &Path, agent: &str) -> Result<(bool, PathBuf), String> {
+    match agent {
+        "claude-code" => {
+            let settings = agent_config_path_at(home, agent)?;
+            let legacy = home.join(".claude.json");
+            Ok((settings.is_file() || legacy.is_file(), settings))
+        }
+        "opencode" => {
+            let path = agent_config_path_at(home, agent)?;
+            Ok((true, path))
+        }
+        _ => {
+            let path = agent_config_path_at(home, agent)?;
+            Ok((path.is_file(), path))
+        }
+    }
+}
+
+pub fn agent_init_status_at(home: &Path, agent: &str) -> Result<AgentInitStatus, String> {
+    let (initialized, path) = agent_init_state_at(home, agent)?;
+    Ok(AgentInitStatus {
+        initialized,
+        config_path: path.display().to_string(),
+        agent: agent.to_string(),
+    })
+}
+
+fn claude_code_deployed_at(home: &Path) -> Result<bool, String> {
+    let settings = agent_config_path_at(home, "claude-code")?;
+    if settings.is_file() && claude_code_has_token_router(&settings)? {
+        return Ok(true);
+    }
+    let legacy = home.join(".claude.json");
+    if legacy.is_file() {
+        return claude_code_has_token_router(&legacy);
+    }
+    Ok(false)
+}
+
+pub fn agent_deploy_state_at(home: &Path, agent: &str) -> Result<AgentDeployStatus, String> {
+    let (initialized, path) = agent_init_state_at(home, agent)?;
+    let config_path = path.display().to_string();
+    if !initialized {
+        return Ok(AgentDeployStatus {
+            deployed: false,
+            config_path,
+            agent: agent.to_string(),
+        });
+    }
+
+    let deployed = match agent {
+        "openclaw" => openclaw_has_token_router(&path)?,
+        "hermes" | "hermes-flash" => hermes_has_token_router(&path)?,
+        "claude-code" => claude_code_deployed_at(home)?,
+        "codex" => codex_has_token_router(&path)?,
+        "opencode" => opencode_has_token_router(&path)?,
+        _ => return Err(format!("unknown agent: {agent}")),
+    };
+
+    Ok(AgentDeployStatus {
+        deployed,
+        config_path,
+        agent: agent.to_string(),
+    })
+}
+
+fn ensure_agent_initialized_at(home: &Path, agent: &str) -> Result<PathBuf, String> {
+    let (initialized, path) = agent_init_state_at(home, agent)?;
+    if initialized {
+        return Ok(path);
+    }
+    Err(format!(
+        "{ERR_AGENT_NOT_INITIALIZED}:{agent}:{}",
+        path.display()
+    ))
+}
+
+pub fn configure_openclaw_at(
+    home: &Path,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized_at(home, "openclaw")?;
+    let model = DEFAULT_MODEL.to_string();
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = read_json_file(&path)?;
+    merge_openclaw_config(&mut doc, openai_v1_base, &model, &key);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: openai_v1_base.to_string(),
+        agent: "openclaw".to_string(),
+    })
+}
+
+pub fn configure_hermes_at(
+    home: &Path,
+    agent: &str,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized_at(home, agent)?;
+    let config = load_app_config()?;
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = read_yaml_file(&path)?;
+    merge_hermes_config(&mut doc, openai_v1_base, &model, &key);
+    write_yaml_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: openai_v1_base.to_string(),
+        agent: agent.to_string(),
+    })
+}
+
+pub fn configure_claude_code_at(
+    home: &Path,
+    anthropic_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized_at(home, "claude-code")?;
+    let config = load_app_config()?;
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = if path.is_file() {
+        read_json_file(&path)?
+    } else {
+        json!({})
+    };
+    merge_claude_code_settings(&mut doc, anthropic_base, &key);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: anthropic_base.to_string(),
+        agent: "claude-code".to_string(),
+    })
+}
+
+pub fn configure_codex_at(
+    home: &Path,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = ensure_agent_initialized_at(home, "codex")?;
+    let config = load_app_config()?;
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = read_toml_file(&path)?;
+    merge_codex_config(&mut doc, openai_v1_base, &model, &key);
+    write_toml_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: openai_v1_base.to_string(),
+        agent: "codex".to_string(),
+    })
+}
+
+pub fn configure_opencode_at(
+    home: &Path,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = agent_config_path_at(home, "opencode")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let config = load_app_config()?;
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+
+    let mut doc = read_json_file(&path)?;
+    merge_opencode_config(&mut doc, openai_v1_base, &model, &key);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: openai_v1_base.to_string(),
+        agent: "opencode".to_string(),
+    })
+}
+
 fn ensure_agent_initialized(agent: &str) -> Result<PathBuf, String> {
     let (initialized, path) = agent_init_state(agent)?;
     if initialized {

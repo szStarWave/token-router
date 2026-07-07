@@ -1,5 +1,8 @@
 import type { EdgeDisplayItem } from '../../stores/edgeStore'
+import type { CloudDisplayItem } from '../../stores/cloudStore'
 import { formatContextWindow } from '../../lib/edge-upstream'
+
+export type UpstreamModelListItemData = EdgeDisplayItem | CloudDisplayItem
 
 function EditIcon() {
   return (
@@ -23,7 +26,7 @@ function DeleteIcon() {
 }
 
 export interface EdgeModelListItemProps {
-  item: EdgeDisplayItem
+  item: UpstreamModelListItemData
   selected: boolean
   typeLabel: string
   selectLabel: string
@@ -81,7 +84,7 @@ export function EdgeModelListItem({
       {showModel ? <div className="edge-model-item-model">{item.model}</div> : null}
       <div className="edge-model-item-footer">
         <span className="tag bordered info edge-model-item-tag">{typeLabel}</span>
-        {item.context_window ? (
+        {'context_window' in item && item.context_window ? (
           <span className="edge-model-item-ctx">{formatContextWindow(item.context_window)}</span>
         ) : null}
       </div>

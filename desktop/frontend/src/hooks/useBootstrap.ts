@@ -8,7 +8,7 @@ import {
   initEdgeUpstream,
   reconcileEdgeOnBoot,
 } from '../lib/edge-upstream'
-import { ensureCloudUpstreamConfigured } from '../lib/cloud-upstream'
+import { ensureCloudUpstreamConfigured, initCloudUpstream } from '../lib/cloud-upstream'
 import { isTauri, gatewayStatus, gatewayStart } from '../lib/tauri'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
@@ -73,6 +73,7 @@ export function useBootstrap(enabled: boolean) {
       const cloud = setup?.cloud
       const cloudResult = await ensureCloudUpstreamConfigured(api, {
         currentModel: cloud?.model,
+        currentUrl: cloud?.base_url,
         tokenBudget:
           cloud?.token_quota_enabled && cloud.token_budget != null
             ? cloud.token_budget
@@ -116,6 +117,7 @@ export function useBootstrap(enabled: boolean) {
 
     applyTheme()
     void initEdgeUpstream()
+    initCloudUpstream()
 
     const run = async () => {
       if (tauri) {

@@ -7,12 +7,13 @@ import { useAppStore } from '../../stores/appStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useSetupStore } from '../../stores/setupStore'
 import { useEdgeStore } from '../../stores/edgeStore'
+import { useCloudStore } from '../../stores/cloudStore'
 import { useI18n } from '../../hooks/useI18n'
 import { fmtNum, formatSavedCredits, formatUptime, sidebarTokenShares, tierTokenTotal } from '../../lib/stats-utils'
 import { getEdition } from '../../lib/flowy/server'
 import { getAuthToken } from '../../stores/authStore'
 import { resolveEdgeModelLabel, isEdgeUpstreamConfigured } from '../../lib/edge-upstream'
-import { getCloudModelDisplayName, AUTO_MODEL_ID } from '../../lib/cloud-upstream'
+import { resolveCloudModelLabel } from '../../lib/cloud-upstream'
 import type { RouteMode } from '../../types/gateway'
 import { openExternalUrl } from '../../lib/open-external'
 
@@ -57,6 +58,9 @@ export function Sidebar() {
   const herdsmanConnected = useEdgeStore((s) => s.herdsmanConnected)
   const edgeSelectedKey = useEdgeStore((s) => s.selectedKey)
   const cachedModels = useEdgeStore((s) => s.cachedModels)
+  const cloudSelectedKey = useCloudStore((s) => s.selectedKey)
+  const cloudManualEntries = useCloudStore((s) => s.manualEntries)
+  const cloudFlowyModels = useCloudStore((s) => s.flowyModels)
   const saveSetup = useSaveSetupMutation()
 
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -100,6 +104,10 @@ export function Sidebar() {
   const edgeModelLabel = useMemo(
     () => resolveEdgeModelLabel(setup?.edge),
     [setup?.edge, herdsmanConnected, edgeSelectedKey, cachedModels],
+  )
+  const cloudModelLabel = useMemo(
+    () => resolveCloudModelLabel(setup?.cloud),
+    [setup?.cloud, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
   )
   const cloudConfigured = setup?.cloud?.configured || status?.cloud_configured
   const autoLabel = t('cloudModel.auto')
@@ -220,7 +228,7 @@ export function Sidebar() {
               </span>
               <div className="nav-card-expand">
                 <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={globalSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} autoLabel={autoLabel} t={t} locale={locale} />
-                <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} t={t} locale={locale} />
+                <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} cloudModelLabel={cloudModelLabel} t={t} locale={locale} />
               </div>
             </Link>
           )
@@ -406,7 +414,7 @@ function NavCardBody({
 }
 
 function NavCardFoot({
-  navId, status, sidebarStats, edgeConfigured: _edgeConfigured, cloudConfigured: _cloudConfigured, setup, profileLabel, routeTab: _routeTab, edgeModelLabel, t, locale: _locale,
+  navId, status, sidebarStats, edgeConfigured: _edgeConfigured, cloudConfigured: _cloudConfigured, setup: _setup, profileLabel, routeTab: _routeTab, edgeModelLabel, cloudModelLabel, t, locale: _locale,
 }: {
   navId: string
   status: ReturnType<typeof useAppStore.getState>['status']
@@ -417,10 +425,10 @@ function NavCardFoot({
   profileLabel: string
   routeTab: string
   edgeModelLabel: string
+  cloudModelLabel: string
   t: (k: string, v?: Record<string, string | number>) => string
   locale: string
 }) {
-  const autoLabel = t('cloudModel.auto')
   return (
     <div className="nav-card-foot">
       <span className="nav-card-title">{t(`nav.${navId === 'overview' ? 'gateway' : navId === 'stats' ? 'routeStats' : navId}`)}</span>
@@ -438,7 +446,7 @@ function NavCardFoot({
       )}
       {navId === 'cloud' && (
         <span className="nav-card-meta" id="card-cloud-model">
-          {getCloudModelDisplayName(setup?.cloud?.model ?? AUTO_MODEL_ID, autoLabel) || '—'}
+          {cloudModelLabel || '—'}
         </span>
       )}
       {navId === 'routing' && (

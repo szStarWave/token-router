@@ -4,6 +4,7 @@ import { useI18n } from '../hooks/useI18n'
 import { useLiveUptime } from '../hooks/useLiveUptime'
 import { formatUptime } from '../lib/stats-utils'
 import { AgentQuickSetupCard } from '../components/overview/AgentQuickSetupCard'
+import { WslSetupCard } from '../components/overview/WslSetupCard'
 import { CcSwitchExportCard } from '../components/overview/CcSwitchExportCard'
 
 interface EndpointRowProps {
@@ -71,6 +72,7 @@ export function OverviewPage() {
   return (
     <section className="page active" id="page-overview">
       <AgentQuickSetupCard />
+      <WslSetupCard />
       <CcSwitchExportCard />
 
       <div className="panel">

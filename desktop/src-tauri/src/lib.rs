@@ -18,6 +18,7 @@ mod herdsman;
 pub mod ota;
 mod status_pipe;
 mod wechat_interceptor;
+mod wsl_setup;
 
 #[derive(Clone, serde::Serialize)]
 struct GatewayStatus {
@@ -282,6 +283,8 @@ pub fn run() {
             agent_setup::read_default_auth_key_cmd,
             agent_setup::check_agent_initialized,
             agent_setup::check_agent_deployed,
+            wsl_setup::wsl_detect_environment,
+            wsl_setup::wsl_configure_agents,
             gateway_start,
             gateway_stop,
             gateway_restart,
