@@ -13,13 +13,18 @@ pub use anthropic::{
 
 pub use codex_history::CodexChatHistoryStore;
 pub use diagnostics::{
-    count_assistant_tool_calls_missing_reasoning, truncate_preview, upstream_error_message_hint,
+    count_assistant_tool_calls_missing_reasoning, format_upstream_client_error,
+    gateway_upstream_error_body, log_upstream_error_exchange, truncate_preview,
+    upstream_error_message_hint,
 };
-pub use messages::{collapse_system_messages, finalize_chat_request_value, finalize_upstream_request};
+pub use messages::{
+    collapse_system_messages, finalize_chat_request_value, finalize_upstream_request,
+    normalize_trailing_assistant_tool_calls,
+};
 pub use reasoning::{
-    apply_reasoning_options, backfill_tool_call_reasoning_placeholders, infer_reasoning_config,
-    map_reasoning_effort, model_requires_reasoning_replay, ChatReasoningConfig,
-    TOOL_CALL_REASONING_PLACEHOLDER,
+    apply_reasoning_options, apply_reasoning_options_to_chat_request,
+    backfill_tool_call_reasoning_placeholders, infer_reasoning_config, map_reasoning_effort,
+    model_requires_reasoning_replay, ChatReasoningConfig, TOOL_CALL_REASONING_PLACEHOLDER,
 };
 pub use reasoning_delta::{
     extract_chat_delta_reasoning, extract_reasoning_field_text, InlineThinkState,

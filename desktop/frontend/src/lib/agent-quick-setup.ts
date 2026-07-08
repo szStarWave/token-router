@@ -14,6 +14,11 @@ import {
   type AgentKind,
 } from './tauri'
 import { useSetupStore } from '../stores/setupStore'
+import { getSelectedItem } from './edge-upstream'
+import {
+  DEFAULT_CLOUD_CONTEXT_WINDOW,
+  getSelectedCloudItem,
+} from './cloud-upstream'
 
 export type { AgentKind }
 
@@ -78,6 +83,41 @@ async function ensureAgentInitialized(agent: AgentKind) {
   }
 }
 
+const CONTEXT_WINDOW_MIN = 4096
+const CONTEXT_WINDOW_MAX = 2_000_000
+
+function normalizeContextWindow(value: number | null | undefined): number | undefined {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.min(Math.max(Math.floor(n), CONTEXT_WINDOW_MIN), CONTEXT_WINDOW_MAX)
+}
+
+function resolveEdgeContextWindow(): number | undefined {
+  const selected = getSelectedItem()?.context_window
+  if (selected != null) return normalizeContextWindow(selected)
+
+  const ctxMax = useSetupStore.getState().setup?.gateway?.ctx_edge_max_tokens
+  return normalizeContextWindow(ctxMax)
+}
+
+function resolveCloudContextWindow(): number | undefined {
+  const selected = getSelectedCloudItem()?.context_window
+  if (selected != null) return normalizeContextWindow(selected)
+
+  const setupCloud = useSetupStore.getState().setup?.cloud
+  if (setupCloud?.base_url?.trim() && setupCloud.model?.trim()) {
+    return DEFAULT_CLOUD_CONTEXT_WINDOW
+  }
+  return undefined
+}
+
+export function resolveAgentContextWindow(): number | undefined {
+  const edge = resolveEdgeContextWindow()
+  const cloud = resolveCloudContextWindow()
+  if (edge == null && cloud == null) return undefined
+  return Math.max(edge ?? 0, cloud ?? 0)
+}
+
 const CONFIGURE_HANDLERS: Record<
   AgentKind,
   (apiKey: string | null) => Promise<AgentSetupResult>
@@ -85,8 +125,9 @@ const CONFIGURE_HANDLERS: Record<
   openclaw: (apiKey) => configureOpenClawAgent(apiKey),
   hermes: (apiKey) => configureHermesAgent(apiKey),
   'hermes-flash': (apiKey) => configureHermesFlashAgent(apiKey),
-  'claude-code': (apiKey) => configureClaudeCodeAgent(apiKey),
-  codex: (apiKey) => configureCodexAgent(apiKey),
+  'claude-code': (apiKey) =>
+    configureClaudeCodeAgent(apiKey, resolveAgentContextWindow() ?? null),
+  codex: (apiKey) => configureCodexAgent(apiKey, resolveAgentContextWindow() ?? null),
   opencode: (apiKey) => configureOpenCodeAgent(apiKey),
 }
 

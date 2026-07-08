@@ -1,6 +1,6 @@
 use serde_json::{json, Map, Value};
 
-use crate::gateway::api::openai::{Message, Role};
+use crate::gateway::api::openai::{ChatCompletionRequest, Message, Role};
 
 pub const TOOL_CALL_REASONING_PLACEHOLDER: &str = "tool call";
 
@@ -301,6 +301,35 @@ pub fn apply_reasoning_to_upstream_messages(
     }
 }
 
+/// Apply top-level thinking/reasoning params for chat-completions upstream calls.
+pub fn apply_reasoning_options_to_chat_request(
+    req: &mut ChatCompletionRequest,
+    upstream_base: Option<&str>,
+) {
+    let body = serde_json::to_value(&*req).unwrap_or(json!({}));
+    let mut result = match &body {
+        Value::Object(map) => map.clone(),
+        _ => return,
+    };
+    apply_reasoning_options(&mut result, &body, &req.model, upstream_base, None);
+
+    if let Some(v) = result.get("thinking") {
+        req.thinking = Some(v.clone());
+    }
+    if let Some(v) = result.get("reasoning_effort").and_then(|v| v.as_str()) {
+        req.reasoning_effort = Some(v.to_string());
+    }
+    if let Some(v) = result.get("enable_thinking").and_then(|v| v.as_bool()) {
+        req.enable_thinking = Some(v);
+    }
+    if let Some(v) = result.get("reasoning_split").and_then(|v| v.as_bool()) {
+        req.reasoning_split = Some(v);
+    }
+    if let Some(v) = result.get("reasoning") {
+        req.reasoning = Some(v.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +428,24 @@ mod tests {
             None,
         );
         assert_eq!(result["enable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn apply_reasoning_options_to_chat_request_enables_deepseek_thinking() {
+        let mut req = ChatCompletionRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: Some("ok".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: Some("planning".into()),
+            }],
+            ..Default::default()
+        };
+        apply_reasoning_options_to_chat_request(&mut req, Some("https://api.deepseek.com/v1"));
+        assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
     }
 }

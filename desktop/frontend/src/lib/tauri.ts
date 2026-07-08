@@ -160,15 +160,23 @@ export async function configureHermesFlashAgent(apiKey?: string | null) {
   })
 }
 
-export async function configureClaudeCodeAgent(apiKey?: string | null) {
+export async function configureClaudeCodeAgent(
+  apiKey?: string | null,
+  contextWindow?: number | null,
+) {
   return tauriInvoke<AgentSetupResultPayload>('configure_claude_code_agent', {
     apiKey: apiKey ?? null,
+    contextWindow: contextWindow ?? null,
   })
 }
 
-export async function configureCodexAgent(apiKey?: string | null) {
+export async function configureCodexAgent(
+  apiKey?: string | null,
+  contextWindow?: number | null,
+) {
   return tauriInvoke<AgentSetupResultPayload>('configure_codex_agent', {
     apiKey: apiKey ?? null,
+    contextWindow: contextWindow ?? null,
   })
 }
 

@@ -19,9 +19,7 @@ use crate::gateway::stats::metrics::{
 use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseStream};
 use crate::gateway::upstream::verify::cloud_verifies_edge;
-use crate::gateway::api::compat::{
-    count_assistant_tool_calls_missing_reasoning, truncate_preview, upstream_error_message_hint,
-};
+use crate::gateway::api::compat::{format_upstream_client_error, log_upstream_error_exchange};
 use crate::gateway::api::meta::log_upstream_served;
 use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::session::SessionStore;
@@ -486,36 +484,69 @@ impl UpstreamClient {
             builder = builder.bearer_auth(key);
         }
 
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        let resp = match builder.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let msg = e.to_string();
+                log_upstream_error_exchange(
+                    tier,
+                    &url_preview,
+                    false,
+                    None,
+                    req,
+                    &upstream_req,
+                    &msg,
+                    &msg,
+                );
+                return Err(AppError::Upstream(msg));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            let hint = upstream_error_message_hint(&body);
-            let missing_reasoning = count_assistant_tool_calls_missing_reasoning(req);
-            tracing::warn!(
+            let client_msg = format_upstream_client_error(status.as_u16(), &body);
+            log_upstream_error_exchange(
                 tier,
-                url = %truncate_preview(&url_preview, 120),
-                status = status.as_u16(),
-                messages = req.messages.len(),
-                tools = req.tools.len(),
-                model = %req.model,
-                stream = false,
-                missing_reasoning,
-                error_hint = %hint.as_deref().unwrap_or("(none)"),
-                error_body_preview = %truncate_preview(&body, 512),
-                "upstream HTTP error"
+                &url_preview,
+                false,
+                Some(status.as_u16()),
+                req,
+                &upstream_req,
+                &body,
+                &client_msg,
             );
-            return Err(AppError::Upstream(format!("{status}: {body}")));
+            return Err(AppError::Upstream(client_msg));
         }
 
-        let body = resp
-            .json::<ChatCompletionResponse>()
-            .await
-            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        let text = resp.text().await.map_err(|e| {
+            let msg = e.to_string();
+            log_upstream_error_exchange(
+                tier,
+                &url_preview,
+                false,
+                Some(200),
+                req,
+                &upstream_req,
+                &msg,
+                &msg,
+            );
+            AppError::Upstream(msg)
+        })?;
+        let body: ChatCompletionResponse = serde_json::from_str(&text).map_err(|e| {
+            let msg = e.to_string();
+            log_upstream_error_exchange(
+                tier,
+                &url_preview,
+                false,
+                Some(200),
+                req,
+                &upstream_req,
+                &text,
+                &msg,
+            );
+            AppError::Upstream(msg)
+        })?;
         let latency_ms = start.elapsed().as_millis() as u64;
         let (prompt, completion, cached) = tokens_from_response(&body, prompt_fallback);
         let tier_static = tier_static(tier);
@@ -589,30 +620,39 @@ impl UpstreamClient {
             builder = builder.bearer_auth(key);
         }
 
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        let resp = match builder.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let msg = e.to_string();
+                log_upstream_error_exchange(
+                    tier,
+                    &url_preview,
+                    true,
+                    None,
+                    req,
+                    &upstream_req,
+                    &msg,
+                    &msg,
+                );
+                return Err(AppError::Upstream(msg));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            let hint = upstream_error_message_hint(&body);
-            let missing_reasoning = count_assistant_tool_calls_missing_reasoning(req);
-            tracing::warn!(
+            let client_msg = format_upstream_client_error(status.as_u16(), &body);
+            log_upstream_error_exchange(
                 tier,
-                url = %truncate_preview(&url_preview, 120),
-                status = status.as_u16(),
-                messages = req.messages.len(),
-                tools = req.tools.len(),
-                model = %req.model,
-                stream = true,
-                missing_reasoning,
-                error_hint = %hint.as_deref().unwrap_or("(none)"),
-                error_body_preview = %truncate_preview(&body, 512),
-                "upstream HTTP error"
+                &url_preview,
+                true,
+                Some(status.as_u16()),
+                req,
+                &upstream_req,
+                &body,
+                &client_msg,
             );
-            return Err(AppError::Upstream(format!("{status}: {body}")));
+            return Err(AppError::Upstream(client_msg));
         }
 
         let raw = Box::pin(

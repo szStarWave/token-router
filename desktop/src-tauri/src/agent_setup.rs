@@ -17,6 +17,8 @@ const OPENCODE_PROVIDER: &str = "token-router";
 const OPENCODE_PROVIDER_NAME: &str = "Token Router";
 const OPENCODE_MODEL_DISPLAY: &str = "Token Router Auto Route";
 const DEFAULT_MODEL: &str = "auto";
+const CONTEXT_WINDOW_MIN: u64 = 4096;
+const CONTEXT_WINDOW_MAX: u64 = 2_000_000;
 pub const ERR_AGENT_NOT_INITIALIZED: &str = "agent_not_initialized";
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,7 +288,8 @@ pub fn configure_claude_code_at(
     } else {
         json!({})
     };
-    merge_claude_code_settings(&mut doc, anthropic_base, &key);
+    let context_window = resolve_agent_context_window(&config, None);
+    merge_claude_code_settings(&mut doc, anthropic_base, &key, context_window);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -312,7 +315,8 @@ pub fn configure_codex_at(
     let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_toml_file(&path)?;
-    merge_codex_config(&mut doc, openai_v1_base, &model, &key);
+    let context_window = resolve_agent_context_window(&config, None);
+    merge_codex_config(&mut doc, openai_v1_base, &model, &key, context_window);
     write_toml_file(&path, &doc)?;
 
     Ok(AgentSetupResult {
@@ -386,6 +390,53 @@ fn resolved_model(config: &AppConfig) -> String {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+fn normalize_context_window(value: u64) -> u64 {
+    value.clamp(CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX)
+}
+
+fn resolve_edge_context_window(config: &AppConfig) -> Option<u64> {
+    if let Some(model_id) = config
+        .edge_model
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let snapshot = crate::herdsman::herdsman_get_status();
+        for model in &snapshot.models {
+            if model.id == model_id || model.name == model_id {
+                if let Some(ctx) = model.context_window.filter(|&v| v > 0) {
+                    return Some(normalize_context_window(ctx));
+                }
+            }
+        }
+    }
+    (config.ctx_edge_max_tokens > 0).then(|| {
+        normalize_context_window(config.ctx_edge_max_tokens as u64)
+    })
+}
+
+fn resolve_cloud_context_window(_config: &AppConfig) -> Option<u64> {
+    Some(normalize_context_window(
+        token_router::gateway::api::models::DEFAULT_CLOUD_MAX_CONTEXT_LENGTH as u64,
+    ))
+}
+
+fn resolve_agent_context_window(config: &AppConfig, override_ctx: Option<u64>) -> u64 {
+    if let Some(value) = override_ctx.filter(|&v| v > 0) {
+        return normalize_context_window(value);
+    }
+    let edge = resolve_edge_context_window(config);
+    let cloud = resolve_cloud_context_window(config);
+    match (edge, cloud) {
+        (Some(edge_ctx), Some(cloud_ctx)) => edge_ctx.max(cloud_ctx),
+        (Some(edge_ctx), None) => edge_ctx,
+        (None, Some(cloud_ctx)) => cloud_ctx,
+        (None, None) => normalize_context_window(
+            token_router::gateway::api::models::DEFAULT_CLOUD_MAX_CONTEXT_LENGTH as u64,
+        ),
+    }
 }
 
 fn generate_placeholder_key() -> String {
@@ -606,7 +657,12 @@ fn merge_hermes_config(existing: &mut Value, base_url: &str, model_id: &str, api
     model_obj.insert("api_key".to_string(), json!(api_key));
 }
 
-fn merge_claude_code_settings(existing: &mut Value, base_url: &str, api_key: &str) {
+fn merge_claude_code_settings(
+    existing: &mut Value,
+    base_url: &str,
+    api_key: &str,
+    context_window: u64,
+) {
     if !existing.is_object() {
         *existing = json!({});
     }
@@ -618,6 +674,9 @@ fn merge_claude_code_settings(existing: &mut Value, base_url: &str, api_key: &st
     let env_obj = env.as_object_mut().unwrap();
     env_obj.insert("ANTHROPIC_BASE_URL".to_string(), json!(base_url));
     env_obj.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(api_key));
+    let context = context_window.to_string();
+    env_obj.insert("CLAUDE_CODE_MAX_CONTEXT_TOKENS".to_string(), json!(context));
+    env_obj.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(), json!(context));
 }
 
 fn read_toml_file(path: &Path) -> Result<toml::Value, String> {
@@ -699,7 +758,13 @@ fn merge_opencode_config(existing: &mut Value, base_url: &str, model_id: &str, a
     );
 }
 
-fn merge_codex_config(existing: &mut toml::Value, base_url: &str, model_id: &str, api_key: &str) {
+fn merge_codex_config(
+    existing: &mut toml::Value,
+    base_url: &str,
+    model_id: &str,
+    api_key: &str,
+    context_window: u64,
+) {
     if !existing.is_table() {
         *existing = toml::Value::Table(toml::map::Map::new());
     }
@@ -708,6 +773,10 @@ fn merge_codex_config(existing: &mut toml::Value, base_url: &str, model_id: &str
     root.insert(
         "model_provider".into(),
         toml::Value::String(CODEX_PROVIDER.to_string()),
+    );
+    root.insert(
+        "model_context_window".into(),
+        toml::Value::Integer(context_window as i64),
     );
 
     let mut provider = toml::map::Map::new();
@@ -795,7 +864,10 @@ fn configure_hermes_flash(api_key: Option<String>) -> Result<AgentSetupResult, S
     configure_hermes_for("hermes-flash", api_key)
 }
 
-fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+fn configure_claude_code(
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
     let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("claude-code")?;
@@ -808,7 +880,8 @@ fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, St
     } else {
         json!({})
     };
-    merge_claude_code_settings(&mut doc, &base_url, &key);
+    let context_window = resolve_agent_context_window(&config, context_window);
+    merge_claude_code_settings(&mut doc, &base_url, &key, context_window);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -822,7 +895,7 @@ fn configure_claude_code(api_key: Option<String>) -> Result<AgentSetupResult, St
     })
 }
 
-fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> {
+fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Result<AgentSetupResult, String> {
     let config = load_app_config()?;
     let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("codex")?;
@@ -831,7 +904,8 @@ fn configure_codex(api_key: Option<String>) -> Result<AgentSetupResult, String> 
     let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_toml_file(&path)?;
-    merge_codex_config(&mut doc, &base_url, &model, &key);
+    let context_window = resolve_agent_context_window(&config, context_window);
+    merge_codex_config(&mut doc, &base_url, &model, &key, context_window);
     write_toml_file(&path, &doc)?;
 
     Ok(AgentSetupResult {
@@ -1015,13 +1089,19 @@ pub fn configure_hermes_flash_agent(api_key: Option<String>) -> Result<AgentSetu
 }
 
 #[tauri::command]
-pub fn configure_claude_code_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
-    configure_claude_code(api_key)
+pub fn configure_claude_code_agent(
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
+    configure_claude_code(api_key, context_window)
 }
 
 #[tauri::command]
-pub fn configure_codex_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
-    configure_codex(api_key)
+pub fn configure_codex_agent(
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
+    configure_codex(api_key, context_window)
 }
 
 #[tauri::command]
@@ -1095,6 +1175,7 @@ mod tests {
             &mut doc,
             "http://127.0.0.1:11080/anthropic",
             "test-key",
+            262_144,
         );
         assert_eq!(doc["permissions"]["allow"], json!([]));
         assert_eq!(
@@ -1102,6 +1183,8 @@ mod tests {
             "http://127.0.0.1:11080/anthropic"
         );
         assert_eq!(doc["env"]["ANTHROPIC_AUTH_TOKEN"], "test-key");
+        assert_eq!(doc["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "262144");
+        assert_eq!(doc["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "262144");
     }
 
     #[test]
@@ -1127,12 +1210,31 @@ mod tests {
     #[test]
     fn merge_codex_config_sets_token_router_provider() {
         let mut doc = toml::Value::Table(toml::map::Map::new());
-        merge_codex_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        merge_codex_config(
+            &mut doc,
+            "http://127.0.0.1:11080/v1",
+            "auto",
+            "test-key",
+            1_000_000,
+        );
         assert_eq!(doc["model"], toml::Value::String("auto".into()));
         assert_eq!(doc["model_provider"], toml::Value::String("token_router".into()));
+        assert_eq!(doc["model_context_window"], toml::Value::Integer(1_000_000));
         assert_eq!(
             doc["model_providers"]["token_router"]["wire_api"],
             toml::Value::String("responses".into())
         );
+    }
+
+    #[test]
+    fn resolve_agent_context_window_uses_max_of_edge_and_cloud() {
+        let mut file = token_router::config::ConfigFile::default();
+        file.gateway.ctx_edge_max_tokens = 131_072;
+        let config = AppConfig::from_file(file, std::env::temp_dir()).unwrap();
+        assert_eq!(
+            resolve_agent_context_window(&config, None),
+            token_router::gateway::api::models::DEFAULT_CLOUD_MAX_CONTEXT_LENGTH as u64
+        );
+        assert_eq!(resolve_agent_context_window(&config, Some(262_144)), 262_144);
     }
 }

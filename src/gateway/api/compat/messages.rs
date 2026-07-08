@@ -1,7 +1,39 @@
 use serde_json::{json, Value};
 
-use crate::gateway::api::compat::reasoning::apply_reasoning_to_upstream_messages;
+use crate::gateway::api::compat::reasoning::{
+    apply_reasoning_options_to_chat_request, apply_reasoning_to_upstream_messages,
+};
 use crate::gateway::api::openai::{ChatCompletionRequest, Message, Role};
+
+fn message_has_visible_content(msg: &Message) -> bool {
+    msg.content.as_deref().is_some_and(|s| !s.trim().is_empty())
+        || msg
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+}
+
+/// Strip unfulfilled tool_calls from a trailing assistant message so upstream
+/// providers accept the transcript (agent clients often include in-flight turns).
+pub fn normalize_trailing_assistant_tool_calls(messages: &mut Vec<Message>) {
+    let Some(last) = messages.last_mut() else {
+        return;
+    };
+    if last.role != Role::Assistant {
+        return;
+    }
+    if !last
+        .tool_calls
+        .as_ref()
+        .is_some_and(|calls| !calls.is_empty())
+    {
+        return;
+    }
+    last.tool_calls = None;
+    if !message_has_visible_content(last) {
+        messages.pop();
+    }
+}
 
 pub fn collapse_system_messages(messages: Vec<Value>) -> Vec<Value> {
     let mut systems = Vec::new();
@@ -108,6 +140,8 @@ pub fn finalize_upstream_request(
     req.messages = merged;
 
     apply_reasoning_to_upstream_messages(&mut req.messages, &req.model, upstream_base);
+    normalize_trailing_assistant_tool_calls(&mut req.messages);
+    apply_reasoning_options_to_chat_request(&mut req, upstream_base);
     req
 }
 
@@ -164,5 +198,130 @@ mod tests {
             out.messages[0].reasoning_content.as_deref(),
             Some("tool call")
         );
+        assert_eq!(out.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(out.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn upstream_finalize_enables_thinking_for_reasoning_content() {
+        let req = ChatCompletionRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![
+                Message {
+                    role: Role::Assistant,
+                    content: Some("answer".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: Some("prior reasoning".into()),
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("follow-up".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let out = finalize_upstream_request(req, Some("https://api.deepseek.com/v1"));
+        assert_eq!(out.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(out.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn strips_trailing_assistant_tool_calls_keeps_content() {
+        let mut msgs = vec![
+            Message {
+                role: Role::User,
+                content: Some("hi".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: Some("Found it!".into()),
+                content_parts: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".into(),
+                    call_type: "function".into(),
+                    function: FunctionCallPayload {
+                        name: "Bash".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+                tool_call_id: None,
+                reasoning_content: Some("thinking".into()),
+            },
+        ];
+        normalize_trailing_assistant_tool_calls(&mut msgs);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[1].tool_calls.is_none());
+        assert_eq!(msgs[1].content.as_deref(), Some("Found it!"));
+    }
+
+    #[test]
+    fn strips_trailing_assistant_tool_calls_removes_empty_message() {
+        let mut msgs = vec![Message {
+            role: Role::Assistant,
+            content: None,
+            content_parts: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".into(),
+                call_type: "function".into(),
+                function: FunctionCallPayload {
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+            tool_call_id: None,
+            reasoning_content: None,
+        }];
+        normalize_trailing_assistant_tool_calls(&mut msgs);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn preserves_mid_history_assistant_tool_calls() {
+        let mut msgs = vec![
+            Message {
+                role: Role::Assistant,
+                content: None,
+                content_parts: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".into(),
+                    call_type: "function".into(),
+                    function: FunctionCallPayload {
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: Some("file contents".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: Some("call_1".into()),
+                reasoning_content: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some("thanks".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+        ];
+        normalize_trailing_assistant_tool_calls(&mut msgs);
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[0].tool_calls.as_ref().is_some_and(|c| !c.is_empty()));
     }
 }
