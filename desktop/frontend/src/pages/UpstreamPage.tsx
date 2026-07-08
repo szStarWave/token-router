@@ -13,8 +13,6 @@ import { HerdsmanNoModelsBanner } from '../components/upstream/HerdsmanNoModelsB
 import {
   budgetFromSlider,
   buildCloudDisplayItems,
-  DEFAULT_CLOUD_CONTEXT_WINDOW,
-  deleteManualCloudEntry,
   fetchCloudModels,
   getCloudModelDisplayName,
   isCloudModelUiConfigured,
@@ -22,9 +20,7 @@ import {
   reconcileCloudModelSelection,
   selectCloudModel,
   sliderFromCloudBudget,
-  upsertManualCloudEntry,
   withAutoModelOption,
-  type ManualCloudEntry,
 } from '../lib/cloud-upstream'
 import {
   buildDisplayItems,
@@ -61,7 +57,6 @@ export function UpstreamPage() {
   const selectedKey = useEdgeStore((s) => s.selectedKey)
   const cachedModels = useEdgeStore((s) => s.cachedModels)
   const cloudSelectedKey = useCloudStore((s) => s.selectedKey)
-  const cloudManualEntries = useCloudStore((s) => s.manualEntries)
   const cloudFlowyModels = useCloudStore((s) => s.flowyModels)
   const saveSetup = useSaveSetupMutation()
   const modelsQuery = useCloudModelsQuery()
@@ -73,7 +68,7 @@ export function UpstreamPage() {
 
   const cloudConfigured = useMemo(
     () => isCloudModelUiConfigured(setup?.cloud) || !!setup?.cloud?.configured,
-    [setup?.cloud, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
+    [setup?.cloud, cloudSelectedKey, cloudFlowyModels],
   )
 
   const initialCloudQuota = cloudQuotaFromSetup(setup?.cloud)
@@ -82,11 +77,8 @@ export function UpstreamPage() {
     sliderFromCloudBudget(initialCloudQuota.budget > 0 ? initialCloudQuota.budget : DEFAULT_CLOUD_TOKEN_BUDGET),
   )
   const [edgeDialogOpen, setEdgeDialogOpen] = useState(false)
-  const [cloudDialogOpen, setCloudDialogOpen] = useState(false)
   const [editingEdgeEntry, setEditingEdgeEntry] = useState<ManualEdgeEntry | null>(null)
-  const [editingCloudEntry, setEditingCloudEntry] = useState<ManualCloudEntry | null>(null)
   const [edgeDialogForm, setEdgeDialogForm] = useState({ name: '', url: '', model: '', key: '', context_window: '' })
-  const [cloudDialogForm, setCloudDialogForm] = useState({ name: '', url: '', model: '', key: '', context_window: '' })
   const quotaEditingRef = useRef(false)
   const cloudSaveGenRef = useRef(0)
 
@@ -123,7 +115,6 @@ export function UpstreamPage() {
 
   const cloudDisplayItems = buildCloudDisplayItems()
   const flowyItems = cloudDisplayItems.filter((i) => i.type === 'flowy')
-  const customCloudItems = cloudDisplayItems.filter((i) => i.type === 'manual')
 
   const applyCloudQuotaFromSetup = (cloud: UpstreamSetupView['cloud']) => {
     const { budget, enabled } = cloudQuotaFromSetup(cloud)
@@ -168,20 +159,6 @@ export function UpstreamPage() {
     setEdgeDialogOpen(true)
   }
 
-  const openCloudDialog = (entry?: ManualCloudEntry) => {
-    setEditingCloudEntry(entry ?? null)
-    setCloudDialogForm({
-      name: entry?.name ?? '',
-      url: entry?.base_url ?? '',
-      model: entry?.model ?? '',
-      key: '',
-      context_window: entry?.context_window != null
-        ? String(entry.context_window)
-        : String(DEFAULT_CLOUD_CONTEXT_WINDOW),
-    })
-    setCloudDialogOpen(true)
-  }
-
   const saveEdgeDialog = () => {
     const id = editingEdgeEntry?.id ?? `manual-${Date.now()}`
     const contextRaw = edgeDialogForm.context_window.trim()
@@ -197,21 +174,6 @@ export function UpstreamPage() {
     saveEdge()
   }
 
-  const saveCloudDialog = () => {
-    const id = editingCloudEntry?.id ?? `cloud-manual-${Date.now()}`
-    const contextRaw = cloudDialogForm.context_window.trim()
-    upsertManualCloudEntry({
-      id,
-      name: cloudDialogForm.name.trim() || cloudDialogForm.model.trim(),
-      base_url: cloudDialogForm.url.trim(),
-      model: cloudDialogForm.model.trim(),
-      api_key: cloudDialogForm.key.trim() || editingCloudEntry?.api_key,
-      context_window: contextRaw ? Number(contextRaw) : DEFAULT_CLOUD_CONTEXT_WINDOW,
-    })
-    setCloudDialogOpen(false)
-    saveCloud(budgetSlider, quotaEnabled)
-  }
-
   const budgetValue = budgetFromSlider(budgetSlider)
   const edgeModelLabel = useMemo(
     () => getEdgeModelDisplayName(setup?.edge),
@@ -219,7 +181,7 @@ export function UpstreamPage() {
   )
   const cloudModelLabel = useMemo(
     () => getCloudModelDisplayName(setup?.cloud?.model),
-    [setup?.cloud?.model, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
+    [setup?.cloud?.model, cloudSelectedKey, cloudFlowyModels],
   )
 
   return (
@@ -381,32 +343,6 @@ export function UpstreamPage() {
               )}
             </div>
           </div>
-          <div className="edge-model-subsection">
-            <div className="edge-model-list-header">
-              <div className="edge-model-subsection-title">{t('cloudModel.customListTitle')}</div>
-              <button type="button" className="btn btn-primary btn-sm" id="btn-cloud-model-add" onClick={() => openCloudDialog()}>{t('action.add')}</button>
-            </div>
-            <div id="cloud-custom-model-list" className="edge-model-list">
-              {!customCloudItems.length ? (
-                <div className="edge-model-list-empty">{t('cloudModel.customEmpty')}</div>
-              ) : (
-                customCloudItems.map((item) => (
-                  <EdgeModelListItem
-                    key={item.key}
-                    item={item}
-                    selected={cloudSelectedKey === item.key}
-                    typeLabel={t('cloudModel.custom')}
-                    selectLabel={item.name}
-                    editLabel={t('action.edit')}
-                    deleteLabel={t('action.delete')}
-                    onSelect={() => { selectCloudModel(item.key); saveCloud(budgetSlider, quotaEnabled) }}
-                    onEdit={() => openCloudDialog(cloudManualEntries.find((e) => e.id === item.id))}
-                    onDelete={() => { deleteManualCloudEntry(item.id); saveCloud(budgetSlider, quotaEnabled) }}
-                  />
-                ))
-              )}
-            </div>
-          </div>
         </div>
 
         <div className="panel">
@@ -512,51 +448,6 @@ export function UpstreamPage() {
           <div className="security-actions">
             <button type="button" className="btn btn-ghost" id="edge-model-dialog-cancel" onClick={() => setEdgeDialogOpen(false)}>{t('action.cancel')}</button>
             <button type="button" className="btn btn-primary" id="edge-model-dialog-save" onClick={saveEdgeDialog}>{t('action.confirm')}</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="cloud-model-dialog" className={`security-dialog edge-model-dialog${cloudDialogOpen ? ' open' : ''}`}>
-        <div className="security-panel">
-          <h3 id="cloud-model-dialog-title">{editingCloudEntry ? t('cloudModel.editTitle') : t('cloudModel.addTitle')}</h3>
-          <div className="form-grid">
-            <div>
-              <label>{t('field.displayName')}</label>
-              <input id="cloud_dialog_name" placeholder={t('ph.edgeDisplayName')} value={cloudDialogForm.name} onChange={(e) => setCloudDialogForm((f) => ({ ...f, name: e.target.value }))} />
-            </div>
-            <div>
-              <label>{t('field.baseUrl')}</label>
-              <input id="cloud_dialog_url" placeholder={t('ph.cloudUrl')} value={cloudDialogForm.url} onChange={(e) => setCloudDialogForm((f) => ({ ...f, url: e.target.value }))} />
-              <p className="hint">{t('upstream.cloudUrlHint')}</p>
-            </div>
-            <div>
-              <label>{t('field.model')}</label>
-              <input id="cloud_dialog_model" placeholder={t('ph.cloudModel')} value={cloudDialogForm.model} onChange={(e) => setCloudDialogForm((f) => ({ ...f, model: e.target.value }))} />
-              <p className="hint">{t('upstream.cloudModelHint')}</p>
-            </div>
-            <div>
-              <label>{t('field.maxContextWindow')}</label>
-              <input
-                id="cloud_dialog_context_window"
-                type="number"
-                min={4096}
-                max={2000000}
-                step={1024}
-                placeholder={t('ph.cloudContextWindow')}
-                value={cloudDialogForm.context_window}
-                onChange={(e) => setCloudDialogForm((f) => ({ ...f, context_window: e.target.value }))}
-              />
-              <p className="hint">{t('upstream.edgeContextHint')}</p>
-            </div>
-            <div>
-              <label>{t('field.apiKey')}</label>
-              <input id="cloud_dialog_key" type="password" placeholder={t('ph.keepKey')} autoComplete="off" value={cloudDialogForm.key} onChange={(e) => setCloudDialogForm((f) => ({ ...f, key: e.target.value }))} />
-              <p className="hint">{t('upstream.keyHint')}</p>
-            </div>
-          </div>
-          <div className="security-actions">
-            <button type="button" className="btn btn-ghost" id="cloud-model-dialog-cancel" onClick={() => setCloudDialogOpen(false)}>{t('action.cancel')}</button>
-            <button type="button" className="btn btn-primary" id="cloud-model-dialog-save" onClick={saveCloudDialog}>{t('action.confirm')}</button>
           </div>
         </div>
       </div>

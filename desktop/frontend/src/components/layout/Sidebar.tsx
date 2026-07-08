@@ -59,7 +59,6 @@ export function Sidebar() {
   const edgeSelectedKey = useEdgeStore((s) => s.selectedKey)
   const cachedModels = useEdgeStore((s) => s.cachedModels)
   const cloudSelectedKey = useCloudStore((s) => s.selectedKey)
-  const cloudManualEntries = useCloudStore((s) => s.manualEntries)
   const cloudFlowyModels = useCloudStore((s) => s.flowyModels)
   const saveSetup = useSaveSetupMutation()
 
@@ -107,7 +106,7 @@ export function Sidebar() {
   )
   const cloudModelLabel = useMemo(
     () => resolveCloudModelLabel(setup?.cloud),
-    [setup?.cloud, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
+    [setup?.cloud, cloudSelectedKey, cloudFlowyModels],
   )
   const cloudConfigured = setup?.cloud?.configured || status?.cloud_configured
 

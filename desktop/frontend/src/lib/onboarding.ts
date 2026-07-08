@@ -8,7 +8,7 @@ export const ONBOARDING_STORAGE_KEY = 'flowyRouterHasSeenOnboarding'
 
 export const ONBOARDING_STEP_TARGETS: string[][] = [
   ['#edge-herdsman-model-list', '#upstream-edge-selected-model', '#nav-card-edge'],
-  ['#cloud_model_picker', '#nav-card-cloud'],
+  ['#cloud-flowy-model-list', '#nav-card-cloud'],
   ['#agent-quick-setup-card'],
   ['#stat-edge-pct', '#chart-edge'],
   [],

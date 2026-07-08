@@ -20,6 +20,9 @@ export type { CloudDisplayItem, ManualCloudEntry, SetupCloud } from '../stores/c
 export const AUTO_MODEL_ID = 'auto'
 export const AUTO_MODEL_DISPLAY_NAME = 'Auto'
 
+/** When false, custom OpenAI-compatible cloud endpoints are hidden and cannot be selected. */
+export const CLOUD_CUSTOM_MODELS_ENABLED = false
+
 /** Default max context for custom cloud models (1M). */
 export const DEFAULT_CLOUD_CONTEXT_WINDOW = 1_000_000
 
@@ -97,6 +100,17 @@ function entryKey(type: 'flowy' | 'manual', id: string): string {
   return `${type}:${id}`
 }
 
+function isManualCloudKey(key: string | null | undefined): boolean {
+  return !!key?.startsWith('manual:')
+}
+
+function clearStoredManualCloudEntries(): void {
+  const state = getCloudStoreState()
+  if (!state.manualEntries.length) return
+  state.setManualEntries([])
+  persistManualEntries([])
+}
+
 function resolveCloudContextWindow(value: number | null | undefined): number {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_CLOUD_CONTEXT_WINDOW
@@ -164,21 +178,23 @@ export function buildCloudDisplayItems(): CloudDisplayItem[] {
     })
   }
 
-  for (const entry of manualEntries) {
-    const sig = cloudModelSignature(entry.base_url, entry.model)
-    if (seen.has(sig)) continue
-    if (isFlowyCloudUrl(entry.base_url)) continue
-    seen.add(sig)
-    items.push({
-      key: entryKey('manual', entry.id),
-      type: 'manual',
-      id: entry.id,
-      name: entry.name || entry.model,
-      base_url: entry.base_url,
-      model: entry.model,
-      api_key: entry.api_key,
-      context_window: resolveCloudContextWindow(entry.context_window),
-    })
+  if (CLOUD_CUSTOM_MODELS_ENABLED) {
+    for (const entry of manualEntries) {
+      const sig = cloudModelSignature(entry.base_url, entry.model)
+      if (seen.has(sig)) continue
+      if (isFlowyCloudUrl(entry.base_url)) continue
+      seen.add(sig)
+      items.push({
+        key: entryKey('manual', entry.id),
+        type: 'manual',
+        id: entry.id,
+        name: entry.name || entry.model,
+        base_url: entry.base_url,
+        model: entry.model,
+        api_key: entry.api_key,
+        context_window: resolveCloudContextWindow(entry.context_window),
+      })
+    }
   }
 
   return items
@@ -270,6 +286,11 @@ export function resolveCloudModelLabel(setupCloud: SetupCloud | null | undefined
 }
 
 export function selectCloudModel(key: string | null): void {
+  if (!CLOUD_CUSTOM_MODELS_ENABLED && isManualCloudKey(key)) {
+    fallbackToAutoFlowyModel()
+    notifyUiChange()
+    return
+  }
   getCloudStoreState().setSelectedKey(key)
   if (key) markCloudUserConfigured()
   notifyUiChange()
@@ -381,6 +402,7 @@ function newManualId(): string {
 }
 
 export function upsertManualCloudEntry(entry: ManualCloudEntry): void {
+  if (!CLOUD_CUSTOM_MODELS_ENABLED) return
   const state = getCloudStoreState()
   const normalized: ManualCloudEntry = {
     ...entry,
@@ -399,6 +421,7 @@ export function upsertManualCloudEntry(entry: ManualCloudEntry): void {
 }
 
 export function deleteManualCloudEntry(id: string): void {
+  if (!CLOUD_CUSTOM_MODELS_ENABLED) return
   const state = getCloudStoreState()
   const deleted = state.manualEntries.find((entry) => entry.id === id)
   if (!deleted) return
@@ -476,6 +499,14 @@ export function syncCloudFromSetup(cloud: SetupCloud | null | undefined): void {
     return
   }
 
+  if (!CLOUD_CUSTOM_MODELS_ENABLED) {
+    if (isManualCloudKey(state.selectedKey)) {
+      fallbackToAutoFlowyModel()
+    }
+    notifyUiChange()
+    return
+  }
+
   let entry = state.manualEntries.find(
     (e) => normalizeUrl(e.base_url) === normalizeUrl(url) && e.model === model,
   )
@@ -508,7 +539,11 @@ export function syncCloudFromSetup(cloud: SetupCloud | null | undefined): void {
 
 export function initCloudUpstream(): void {
   const state = getCloudStoreState()
-  state.setManualEntries(loadManualEntriesFromStorage())
+  if (CLOUD_CUSTOM_MODELS_ENABLED) {
+    state.setManualEntries(loadManualEntriesFromStorage())
+  } else {
+    clearStoredManualCloudEntries()
+  }
   syncCloudFromSetup(useSetupStore.getState().setup?.cloud)
   applyPendingSetupSelection()
   reconcileCloudModelSelection()
@@ -559,7 +594,7 @@ export function buildCloudSavePayload(
     ?? null
   if (!item) return null
 
-  if (item.type === 'flowy') {
+  if (item.type === 'flowy' || !CLOUD_CUSTOM_MODELS_ENABLED) {
     const token = getAuthToken()
     if (!token) throw new Error('未登录')
     const payload: CloudSavePayload = {
@@ -669,9 +704,19 @@ export async function ensureCloudUpstreamConfigured(
     }
   }
 
-  if (isCustomCloudConfigured(setupCloud) || getSelectedCloudItem()?.type === 'manual') {
+  if (
+    CLOUD_CUSTOM_MODELS_ENABLED
+    && (isCustomCloudConfigured(setupCloud) || getSelectedCloudItem()?.type === 'manual')
+  ) {
     syncCloudFromSetup(setupCloud)
     return { models, posted: false }
+  }
+
+  if (
+    !CLOUD_CUSTOM_MODELS_ENABLED
+    && (isCustomCloudConfigured(setupCloud) || getSelectedCloudItem()?.type === 'manual')
+  ) {
+    reconcileCloudModelSelection()
   }
 
   if (!fetch) return { models, posted: false }
