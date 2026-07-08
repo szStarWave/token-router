@@ -165,7 +165,7 @@ pub fn endpoint_configured(ep: &UpstreamEndpoint) -> bool {
 
 pub const LISTEN_PORT_MIN: u16 = 1024;
 pub const LISTEN_PORT_MAX: u16 = 65535;
-pub const DEFAULT_LISTEN_PORT: u16 = 11080;
+pub const DEFAULT_LISTEN_PORT: u16 = 16621;
 
 pub fn listen_port_from_addr(listen: &str) -> u16 {
     listen

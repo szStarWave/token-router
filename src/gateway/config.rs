@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use crate::config::ConfigFile;
 use crate::config::auth_keys::ResolvedAuthKey;
-use crate::config::{ensure_initialized, load_from_path, setup::endpoint_configured};
+use crate::config::{
+    apply_port_override, ensure_initialized, load_from_path, paths, save,
+    setup::endpoint_configured,
+};
 
 use crate::gateway::classifier::ClassifierSettings;
 use crate::gateway::experience::ExperienceSettings;
@@ -82,23 +85,30 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Load from `~/.token-router/config.toml` (initializes app dir + template if missing).
+    /// Load from default app home (`~/.token-router/config.toml`).
     pub fn load() -> anyhow::Result<Self> {
-        let (path, _) = ensure_initialized(None)?;
-        let (file, config_path) = load_from_path(&path)?;
-        Self::from_file(file, config_path)
+        Self::load_for_home(None, None)
     }
 
-    /// Load from a custom path (initializes parent dir + template if missing).
-    pub fn load_from(path: Option<&std::path::Path>) -> anyhow::Result<Self> {
-        let (path, _) = ensure_initialized(path)?;
-        let (file, config_path) = load_from_path(&path)?;
-        Self::from_file(file, config_path)
+    /// Load from app home, optionally overriding listen port before start.
+    pub fn load_for_home(
+        home: Option<&std::path::Path>,
+        port: Option<u16>,
+    ) -> anyhow::Result<Self> {
+        let (config_path, _) = ensure_initialized(home)?;
+        let app_home = paths::resolve_app_dir(home)?;
+        let (mut file, _) = load_from_path(&config_path)?;
+        if let Some(port) = port.filter(|&p| p != 0) {
+            apply_port_override(&mut file, port)?;
+            save(&config_path, &file)?;
+        }
+        Self::from_file(file, app_home)
     }
 
-    pub fn from_file(file: ConfigFile, config_path: PathBuf) -> anyhow::Result<Self> {
-        let data_dir = file.data_dir()?;
-        let pid_file = file.pid_file_path()?;
+    pub fn from_file(file: ConfigFile, app_home: PathBuf) -> anyhow::Result<Self> {
+        let config_path = app_home.join("config.toml");
+        let data_dir = app_home.clone();
+        let pid_file = paths::pid_file_at(&app_home);
         let default_profile = file
             .gateway
             .default_profile

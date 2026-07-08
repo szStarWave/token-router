@@ -27,7 +27,8 @@ extern "C" {
 TOKEN_ROUTER_API const char *token_router_version(void);
 
 TOKEN_ROUTER_API int32_t token_router_start(
-    const char *config_path,
+    const char *home_dir,
+    uint16_t port,
     char *error_out,
     size_t error_out_len);
 

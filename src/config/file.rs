@@ -164,7 +164,7 @@ pub struct CliSection {
 }
 
 fn default_listen() -> String {
-    "127.0.0.1:11080".to_string()
+    crate::config::setup::build_listen_addr(crate::config::setup::DEFAULT_LISTEN_PORT, false)
 }
 
 fn default_route() -> String {
@@ -363,23 +363,19 @@ impl ConfigFile {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| crate::config::setup::client_gateway_http_url(&self.gateway.listen))
     }
-
-    pub fn pid_file_path(&self) -> anyhow::Result<PathBuf> {
-        paths::pid_file()
-    }
-
-    pub fn data_dir(&self) -> anyhow::Result<PathBuf> {
-        paths::app_dir()
-    }
 }
 
 pub fn default_config_template() -> String {
+    let listen = crate::config::setup::build_listen_addr(
+        crate::config::setup::DEFAULT_LISTEN_PORT,
+        false,
+    );
     format!(
         r#"# Token Router configuration
 # Path: ~/{app_dir}/config.toml (Linux/macOS) or %USERPROFILE%\{app_dir}\config.toml (Windows)
 
 [gateway]
-listen = "127.0.0.1:11080"
+listen = "{listen}"
 route = "auto"                 # auto | edge | cloud | cascade
 routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
@@ -416,9 +412,10 @@ ctx_edge_max_tokens = 100000
 # model = "qwen3:8b"             # optional; omit or auto = keep client model
 
 [cli]
-# gateway_url = "http://127.0.0.1:11080"
+# gateway_url = "http://127.0.0.1:{port}"
 "#,
         app_dir = paths::APP_DIR_NAME,
+        port = crate::config::setup::DEFAULT_LISTEN_PORT,
     )
 }
 
@@ -428,15 +425,13 @@ pub fn load() -> anyhow::Result<(ConfigFile, PathBuf)> {
     load_from_path(&path)
 }
 
-/// Create `~/.token-router/` (and `sessions/`) plus `config.toml` when missing.
+/// Create `{home}/` (and `sessions/`) plus `config.toml` when missing.
 ///
 /// Returns the config path and whether a new template file was written.
-pub fn ensure_initialized(path: Option<&Path>) -> anyhow::Result<(PathBuf, bool)> {
-    paths::ensure_app_dirs()?;
-    let path = match path {
-        Some(p) => p.to_path_buf(),
-        None => paths::config_file()?,
-    };
+pub fn ensure_initialized(home: Option<&Path>) -> anyhow::Result<(PathBuf, bool)> {
+    let app_home = paths::resolve_app_dir(home)?;
+    paths::ensure_app_dirs(home)?;
+    let path = app_home.join("config.toml");
     let created = !path.exists();
     if created {
         if let Some(parent) = path.parent() {
@@ -445,6 +440,17 @@ pub fn ensure_initialized(path: Option<&Path>) -> anyhow::Result<(PathBuf, bool)
         fs::write(&path, default_config_template())?;
     }
     Ok((path, created))
+}
+
+/// Apply a startup port override, preserving the current LAN bind mode.
+pub fn apply_port_override(file: &mut ConfigFile, port: u16) -> anyhow::Result<()> {
+    use crate::config::setup::{
+        build_listen_addr, listen_lan_from_addr, normalize_listen_port,
+    };
+    let listen_lan = listen_lan_from_addr(&file.gateway.listen);
+    let port = normalize_listen_port(port).map_err(anyhow::Error::msg)?;
+    file.gateway.listen = build_listen_addr(port, listen_lan);
+    Ok(())
 }
 
 pub fn load_from_path(path: &Path) -> anyhow::Result<(ConfigFile, PathBuf)> {
@@ -478,4 +484,31 @@ pub fn save(path: &Path, cfg: &ConfigFile) -> anyhow::Result<()> {
     let raw = toml::to_string_pretty(cfg)?;
     fs::write(path, raw)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::setup::{listen_lan_from_addr, listen_port_from_addr};
+
+    #[test]
+    fn ensure_initialized_uses_custom_home_layout() {
+        let temp = std::env::temp_dir().join(format!("flowy-router-init-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let (config_path, created) = ensure_initialized(Some(&temp)).unwrap();
+        assert!(created);
+        assert_eq!(config_path, temp.join("config.toml"));
+        assert!(temp.join("sessions").is_dir());
+        assert!(temp.join("logs").is_dir());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_port_override_preserves_lan_mode() {
+        let mut file = ConfigFile::default();
+        file.gateway.listen = "0.0.0.0:11080".into();
+        apply_port_override(&mut file, 12080).unwrap();
+        assert_eq!(listen_port_from_addr(&file.gateway.listen), 12080);
+        assert!(listen_lan_from_addr(&file.gateway.listen));
+    }
 }

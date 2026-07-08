@@ -16,8 +16,6 @@ use crate::gateway::api::routes::{router, AppState};
 use crate::gateway::config::AppConfig;
 use crate::gateway::config_manager::ConfigManager;
 use crate::gateway::daemon;
-use crate::config::sessions_dir;
-
 use crate::gateway::classifier::ClassifierStore;
 use crate::gateway::experience::ExperienceStore;
 use crate::gateway::multimodal::MultimodalStore;
@@ -105,7 +103,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let multimodal = MultimodalStore::open(&config.data_dir)?;
     multimodal.spawn_flush_task();
 
-    let sessions_path = sessions_dir().unwrap_or_else(|_| config.data_dir.join("sessions"));
+    let sessions_path = config.data_dir.join("sessions");
     let sessions = SessionStore::open(sessions_path, config.session_persist_enabled)?;
     sessions.spawn_flush_task();
     if config.session_persist_enabled {

@@ -18,6 +18,7 @@ pub type SseStream = Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::E
 pub struct StreamRecordContext {
     pub stats: Arc<GatewayStats>,
     pub tier: &'static str,
+    pub model: String,
     pub prompt_fallback: u32,
     pub cloud_input_saved: u32,
     pub record_cloud_saved: bool,
@@ -49,6 +50,7 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
         ctx.stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: ctx.tier,
+                model: ctx.model.clone(),
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 cached_tokens: cached,
@@ -203,6 +205,7 @@ mod tests {
             StreamRecordContext {
                 stats: stats.clone(),
                 tier: "edge",
+                model: "flowy-auto".to_string(),
                 prompt_fallback: 100,
                 cloud_input_saved: 100,
                 record_cloud_saved: true,
@@ -286,6 +289,7 @@ mod tests {
             StreamRecordContext {
                 stats: stats.clone(),
                 tier: "edge",
+                model: "flowy-auto".to_string(),
                 prompt_fallback: 10,
                 cloud_input_saved: 0,
                 record_cloud_saved: false,

@@ -101,7 +101,7 @@ mod tests {
             api_key: None,
             model: None,
         });
-        AppConfig::from_file(file, "/tmp/flowy-edge-busy.toml".into()).unwrap()
+        AppConfig::from_file(file, "/tmp/flowy-edge-busy".into()).unwrap()
     }
 
     #[test]
@@ -147,7 +147,7 @@ mod tests {
             api_key: None,
             model: None,
         });
-        let config = AppConfig::from_file(file, "/tmp/flowy-edge-busy-fixed.toml".into()).unwrap();
+        let config = AppConfig::from_file(file, "/tmp/flowy-edge-busy-fixed".into()).unwrap();
         let tracker = EdgeInferenceTracker::new();
         let _g = tracker.begin();
         assert!(!edge_busy_applies(

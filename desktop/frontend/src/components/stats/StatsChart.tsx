@@ -1,13 +1,13 @@
-import { useEffect, useRef, useCallback } from 'react'
+﻿import { useEffect, useRef, useCallback } from 'react'
 import * as echarts from 'echarts'
-import { formatAxisNum } from '../../lib/format-number'
+import { formatAxisNum, formatAxisTick } from '../../lib/format-number'
 import { useI18n } from '../../hooks/useI18n'
 import { useStatsTimelineQuery } from '../../queries/gateway'
 import type { StatsScope, StatsTimelineResponse } from '../../types/gateway'
 
 export type ChartRange = 'h24' | 'd7' | 'd30'
 
-const STATS_CHART_POLL_MS = 5_000
+const STATS_CHART_POLL_MS = false
 
 interface StatsChartProps {
   scope: StatsScope
@@ -40,9 +40,13 @@ function formatTimeLabel(bucketTs: number, granularity: string) {
   return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
 }
 
-export function StatsChart({ scope, range }: StatsChartProps) {
+export function StatsChart({ scope, range, onReady }: StatsChartProps & { onReady?: (refetch: () => void) => void }) {
   const { locale, t } = useI18n()
-  const { data: timeline } = useStatsTimelineQuery(scope, range, STATS_CHART_POLL_MS)
+  const { data: timeline, refetch: refetchTimeline } = useStatsTimelineQuery(scope, range, STATS_CHART_POLL_MS as any)
+
+  useEffect(() => {
+    if (onReady) onReady(refetchTimeline)
+  }, [onReady, refetchTimeline])
   const chartRef = useRef<HTMLDivElement>(null)
   const instanceRef = useRef<echarts.ECharts | null>(null)
 
@@ -94,8 +98,9 @@ export function StatsChart({ scope, range }: StatsChartProps) {
           yAxis: {
             type: 'value',
             min: 0,
+            minInterval: 1,
             axisLine: { show: false },
-            axisLabel: { color: colors.axis, formatter: (v: number) => formatAxisNum(v, locale) },
+            axisLabel: { color: colors.axis, formatter: (v: number) => formatAxisTick(v, locale) },
             splitLine: { lineStyle: { color: colors.split } },
           },
           series: [

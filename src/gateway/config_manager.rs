@@ -113,7 +113,12 @@ impl ConfigManager {
     }
 
     fn reload_from_file(&self, file: &ConfigFile) -> anyhow::Result<AppConfig> {
-        let updated = AppConfig::from_file(file.clone(), self.path.clone())?;
+        let app_home = self
+            .path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("config path has no parent: {}", self.path.display()))?;
+        let updated = AppConfig::from_file(file.clone(), app_home)?;
         *self
             .inner
             .write()

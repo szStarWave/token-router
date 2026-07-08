@@ -2,24 +2,29 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use token_router::cli_settings::CliSettings;
+use token_router::cli_settings::{self, CliSettings};
 use token_router::client;
-use token_router::config::{self, ensure_initialized, load_from_path};
+use token_router::config::{ensure_initialized, load_from_path};
 use token_router::daemon_ctl;
 use token_router::env_cmd;
 use token_router::gateway::{self, init_logging, AppConfig, LogRotateConfig};
 use token_router::setup_cmd;
 use token_router::stats_cmd;
+use token_router::config::setup::DEFAULT_LISTEN_PORT;
 use tracing::info;
 
 /// CLI for Flowy Router — gateway daemon and management commands.
-/// Configuration: `~/.token-router/config.toml` (all platforms).
+/// Configuration: `{home}/config.toml` (default home: `~/.token-router/`).
 #[derive(Debug, Parser)]
 #[command(name = "token-router", version, about)]
 struct Cli {
-    /// Override path to config.toml (default: ~/.token-router/config.toml).
+    /// Application home directory (default: ~/.token-router/).
     #[arg(long, global = true)]
-    config: Option<PathBuf>,
+    home: Option<PathBuf>,
+
+    /// Override gateway listen port on start (default: 16621; writes to config.toml).
+    #[arg(long, global = true)]
+    port: Option<u16>,
 
     #[command(subcommand)]
     command: Commands,
@@ -105,19 +110,22 @@ enum GatewayCommands {
     },
 }
 
-fn ensure_settings(config_override: &Option<PathBuf>) -> Result<(CliSettings, bool)> {
-    let (path, created) = ensure_initialized(config_override.as_deref())?;
-    let (file, config_path) = load_from_path(&path)?;
-    Ok((CliSettings { file, config_path }, created))
+fn resolve_start_port(port: Option<u16>) -> u16 {
+    port.unwrap_or(DEFAULT_LISTEN_PORT)
 }
 
-fn load_settings(config_override: &Option<PathBuf>) -> Result<CliSettings> {
-    let path = match config_override {
-        Some(p) => p.clone(),
-        None => config::config_file()?,
-    };
-    let (file, config_path) = load_from_path(&path)?;
-    Ok(CliSettings { file, config_path })
+fn ensure_settings(home: &Option<PathBuf>, port: Option<u16>) -> Result<(CliSettings, bool)> {
+    let app_home = cli_settings::resolve_app_home(home.as_deref())?;
+    let (path, created) = ensure_initialized(home.as_deref())?;
+    let (file, _) = load_from_path(&path)?;
+    Ok((CliSettings::from_parts(file, app_home, port), created))
+}
+
+fn load_settings(home: &Option<PathBuf>, port: Option<u16>) -> Result<CliSettings> {
+    let app_home = cli_settings::resolve_app_home(home.as_deref())?;
+    let config_path = app_home.join("config.toml");
+    let (file, _) = load_from_path(&config_path)?;
+    Ok(CliSettings::from_parts(file, app_home, port))
 }
 
 fn make_client(settings: &CliSettings) -> client::GatewayClient {
@@ -137,8 +145,8 @@ fn print_init_message(created: bool, path: &std::path::Path) {
     }
 }
 
-async fn run_serve(config_override: Option<PathBuf>) -> Result<()> {
-    let app_config = AppConfig::load_from(config_override.as_deref())?;
+async fn run_serve(home: Option<PathBuf>, port: Option<u16>) -> Result<()> {
+    let app_config = AppConfig::load_for_home(home.as_deref(), port)?;
 
     let log_path = init_logging(
         &app_config.data_dir,
@@ -163,14 +171,17 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config_override = cli.config.clone();
+    let home = cli.home.clone();
+    let port = cli.port;
 
     match cli.command {
-        Commands::Serve => run_serve(config_override).await,
-        Commands::RestartWait { pid } => daemon_ctl::run_restart_wait(pid, config_override.as_deref()),
-        Commands::Env { json } => env_cmd::print_env(&config_override, json),
+        Commands::Serve => run_serve(home, port).await,
+        Commands::RestartWait { pid } => {
+            daemon_ctl::run_restart_wait(pid, home.as_deref(), port)
+        }
+        Commands::Env { json } => env_cmd::print_env(&home, port, json),
         Commands::Stats { global, json, lang } => {
-            stats_cmd::print_stats(&config_override, global, json, &lang).await
+            stats_cmd::print_stats(&home, port, global, json, &lang).await
         }
         Commands::Setup {
             remote,
@@ -195,7 +206,8 @@ async fn main() -> Result<()> {
                 clear_edge,
             );
             setup_cmd::run_setup(
-                &config_override,
+                &home,
+                port,
                 remote,
                 json,
                 non_interactive,
@@ -206,23 +218,27 @@ async fn main() -> Result<()> {
         }
         Commands::Gateway(cmd) => match cmd {
             GatewayCommands::Start { wait } => {
-                let (settings, created) = ensure_settings(&config_override)?;
+                let start_port = resolve_start_port(port);
+                let (settings, created) =
+                    ensure_settings(&home, Some(start_port))?;
                 print_init_message(created, &settings.config_path);
                 let gw = make_client(&settings);
                 daemon_ctl::start_daemon(&gw, &settings, wait).await
             }
             GatewayCommands::Stop { force } => {
-                let settings = load_settings(&config_override)?;
+                let settings = load_settings(&home, port)?;
                 let gw = make_client(&settings);
-                daemon_ctl::stop_daemon(&gw, force).await
+                daemon_ctl::stop_daemon(&gw, &settings, force).await
             }
             GatewayCommands::Status { json } => {
-                let settings = load_settings(&config_override)?;
+                let settings = load_settings(&home, port)?;
                 let gw = make_client(&settings);
-                daemon_ctl::status_daemon(&gw, json).await
+                daemon_ctl::status_daemon(&gw, &settings, json).await
             }
             GatewayCommands::Restart { wait } => {
-                let (settings, created) = ensure_settings(&config_override)?;
+                let start_port = resolve_start_port(port);
+                let (settings, created) =
+                    ensure_settings(&home, Some(start_port))?;
                 print_init_message(created, &settings.config_path);
                 let gw = make_client(&settings);
                 daemon_ctl::restart_daemon(&gw, &settings, wait).await

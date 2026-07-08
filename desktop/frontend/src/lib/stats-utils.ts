@@ -1,12 +1,19 @@
 import type { StatsSnapshot } from '../types/gateway'
 import { formatCompactNum } from './format-number'
 
+export function modelStatsKey(tier: string, model: string): string {
+  return `${tier}:${model}`
+}
+
+export function parseModelStatsKey(key: string): { tier: string; model: string } | null {
+  const idx = key.indexOf(':')
+  if (idx <= 0) return null
+  return { tier: key.slice(0, idx), model: key.slice(idx + 1) }
+}
+
 export function tierTokenTotal(tier: Record<string, unknown> | undefined): number {
   if (!tier) return 0
-  return ['input', 'output', 'cached'].reduce(
-    (sum, k) => sum + (Number(tier[k]) || 0),
-    0,
-  )
+  return (Number(tier.input) || 0) + (Number(tier.output) || 0)
 }
 
 export function sidebarTokenShares(tb: Record<string, unknown> | undefined) {
@@ -44,6 +51,15 @@ export function fmtMs(ms: number | null | undefined, t: (k: string, v?: Record<s
 
 export function fmtNum(n: unknown, locale?: string): string {
   return formatCompactNum(n, locale)
+}
+
+export function formatReqPerMin(n: number | null | undefined, locale?: string): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return '0'
+  if (n < 10) {
+    const rounded = Math.round(n * 10) / 10
+    return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+  }
+  return Math.round(n).toLocaleString(locale)
 }
 
 export function formatSavedCreditsAmount(

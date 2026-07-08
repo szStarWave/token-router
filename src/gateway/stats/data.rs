@@ -202,7 +202,7 @@ impl StatsData {
         if m.completion_tokens > 0 {
             let gen_ms = if m.stream {
                 match (m.ttft_ms, m.last_token_ms) {
-                    (Some(first), Some(last)) if last >= first => (last - first).max(1),
+                    (Some(first), Some(last)) if last > first => (last - first).max(1),
                     _ => m
                         .latency_ms
                         .saturating_sub(m.ttft_ms.unwrap_or(0))
@@ -323,7 +323,7 @@ impl StatsData {
             AppError::Unauthorized(_) => self.errors_unauthorized += 1,
             AppError::Unavailable(_) => self.errors_unavailable += 1,
             AppError::Upstream(_) => self.errors_upstream += 1,
-            AppError::BadRequest(_) => self.errors_bad_request += 1,
+            AppError::BadRequest(_) | AppError::NotFound(_) => self.errors_bad_request += 1,
             AppError::Internal(_) => {}
         }
     }

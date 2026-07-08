@@ -5,6 +5,7 @@ pub mod auth_keys;
 pub mod chat;
 pub mod compat;
 pub mod meta;
+pub mod models;
 pub mod openai;
 pub mod responses;
 pub mod routes;

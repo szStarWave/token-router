@@ -19,7 +19,7 @@ struct EmbeddedGateway {
 static EMBEDDED: Mutex<Option<EmbeddedGateway>> = Mutex::new(None);
 
 /// Start the gateway inside the current process (for Electron / FFI embedding).
-pub fn start(config_path: Option<&Path>) -> Result<String> {
+pub fn start(home: Option<&Path>, port: Option<u16>) -> Result<String> {
     let mut guard = EMBEDDED
         .lock()
         .map_err(|_| anyhow::anyhow!("embedded gateway lock poisoned"))?;
@@ -27,7 +27,7 @@ pub fn start(config_path: Option<&Path>) -> Result<String> {
         bail!("gateway already running in this process");
     }
 
-    let app_config = AppConfig::load_from(config_path)?;
+    let app_config = AppConfig::load_for_home(home, port)?;
     let gateway_url = app_config.gateway_base_url();
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();

@@ -680,13 +680,13 @@ C 头文件：`ffi/token_router.h`。Node/Electron 可通过 [koffi](https://git
 
 | 函数 | 说明 |
 |------|------|
-| `token_router_start(config_path, err, err_len)` | 后台启动 Gateway；`config_path` 可为 `NULL`（默认 `~/.token-router/config.toml`） |
+| `token_router_start(home_dir, port, err, err_len)` | 后台启动 Gateway；`home_dir` 与 `port` **必填**（FFI 无默认值） |
 | `token_router_stop(err, err_len)` | 停止并等待线程退出 |
 | `token_router_is_running()` | 是否运行中 |
 | `token_router_gateway_url(buf, len)` | 写入 `http://host:port` |
 | `token_router_version()` | 库版本 |
 
-最小示例见 `example/electron/`（`npm install && node main.mjs [config.toml]`）。
+最小示例见 `example/electron/`（`npm install && node main.mjs <home_dir> <port>`）。
 
 ---
 
@@ -733,11 +733,13 @@ token-router setup                    # 交互式填写云端/端侧配置
 # 或复制示例后编辑
 cp example/config.toml ~/.token-router/config.toml
 
-# 或指定路径
-token-router --config example/config.toml setup
-token-router --config example/config.toml gateway start
-make setup CONFIG=example/config.toml
-make start CONFIG=example/config.toml
+# 或指定 home 目录（配置固定为 {home}/config.toml）
+mkdir -p /tmp/token-router-dev
+cp example/config.toml /tmp/token-router-dev/
+token-router --home /tmp/token-router-dev setup
+token-router --home /tmp/token-router-dev --port 16680 gateway start
+make setup HOME=/tmp/token-router-dev
+make start HOME=/tmp/token-router-dev PORT=16680
 ```
 
 首次 `token-router gateway start` 时若 `config.toml` 不存在，会自动写入默认模板。
@@ -859,7 +861,7 @@ curl -s http://127.0.0.1:11080/v1/chat/completions \
 | `token-router stats [--json] [--lang en\|zh]` | **当前进程**会话统计 |
 | `token-router stats --global [--json] [--lang en\|zh]` | **全部历史**（`stats.json`，gateway 未运行也可读盘） |
 
-全局参数：`--config <path>`
+全局参数：`--home <dir>`（默认 `~/.token-router/`）、`--port <port>`（`gateway start`/`restart` 默认 `16621`）
 
 **Makefile 快捷目标**：`make help`、`make test`、`make setup`、`make stats`、`make stats-zh`、`make stats-global-zh`
 
@@ -1258,8 +1260,8 @@ ASSISTANT_FAILED  = /\[assistant turn failed/
 ### 指定其它配置文件
 
 ```bash
-token-router --config /path/to/dev.toml gateway start
-token-router --config /path/to/dev.toml stats --lang zh
+token-router --home /path/to/dev gateway start
+token-router --home /path/to/dev stats --lang zh
 ```
 
 CLI 与 Gateway 守护进程须使用 **同一份** `config.toml`。

@@ -53,7 +53,7 @@ mod tests {
                 model: None,
             });
         }
-        AppConfig::from_file(file, std::path::PathBuf::from("/tmp/flowy-test-config.toml"))
+        AppConfig::from_file(file, std::path::PathBuf::from("/tmp/flowy-test"))
             .unwrap()
     }
 

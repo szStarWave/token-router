@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+﻿use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Context;
@@ -11,7 +11,7 @@ use crate::gateway::api::meta::{
 };
 use crate::gateway::routing::RouteDecision;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 /// Keep the newest N routing decisions on disk.
 const MAX_ROWS: i64 = 50_000;
 const DEFAULT_LIMIT: u32 = 100;
@@ -23,6 +23,7 @@ pub struct RoutingLogEntryJson {
     pub timestamp: String,
     /// Planned route at decision time.
     pub route: String,
+    pub served_model: Option<String>,
     /// Upstream that actually served the response, when known.
     pub served_route: Option<String>,
     pub step_kind: String,
@@ -141,6 +142,19 @@ impl RoutingLogStore {
             )?;
             conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
         }
+        if version < 4 {
+            let has_served_model: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('routing_logs') WHERE name = 'served_model'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_served_model == 0 {
+                conn.execute("ALTER TABLE routing_logs ADD COLUMN served_model TEXT", [])?;
+            }
+            conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
+        }
         Ok(())
     }
 
@@ -155,7 +169,7 @@ impl RoutingLogStore {
         let summary = summarize_route_reasons(decision);
         let user_preview = truncate_user_preview_for_log(user_preview);
         let message = format!(
-            "routing: {} �?{} | {}",
+            "routing: {} 锟?{} | {}",
             step_kind_name(decision.step_kind),
             tier_name(decision.route),
             summary,
@@ -216,11 +230,11 @@ impl RoutingLogStore {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn mark_served(&self, id: i64, served_route: &str) -> anyhow::Result<()> {
+pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str>) -> anyhow::Result<()> {
         let conn = self.conn.lock().expect("routing log db mutex");
         conn.execute(
-            "UPDATE routing_logs SET served_route = ?1 WHERE id = ?2",
-            params![served_route, id],
+            "UPDATE routing_logs SET served_route = ?1, served_model = ?2 WHERE id = ?3",
+            params![served_route, served_model, id],
         )?;
         Ok(())
     }
@@ -235,7 +249,7 @@ impl RoutingLogStore {
 
         if let Some(before_id) = query.before_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
                  FROM routing_logs
                  WHERE id < ?1
                  ORDER BY id DESC
@@ -258,7 +272,7 @@ impl RoutingLogStore {
 
         if let Some(after_id) = query.after_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
                  FROM routing_logs
                  WHERE id > ?1
                  ORDER BY id ASC
@@ -274,7 +288,7 @@ impl RoutingLogStore {
         }
 
         let mut stmt = conn.prepare(
-            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes
+            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
              FROM routing_logs
              ORDER BY id DESC
              LIMIT ?1",
@@ -302,6 +316,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson
         id: row.get(0)?,
         timestamp: row.get(1)?,
         route: row.get(2)?,
+        served_model: row.get(9)?,
         served_route: row.get(3)?,
         step_kind: row.get(4)?,
         model: row.get(5)?,
@@ -374,7 +389,7 @@ mod tests {
         assert_eq!(initial.entries[0].route, "edge");
         assert_eq!(initial.entries[0].served_route, None);
 
-        store.mark_served(initial.entries[0].id, "edge").unwrap();
+        store.mark_served(initial.entries[0].id, "edge", None).unwrap();
         let served = store.query(RoutingLogsQuery::default()).unwrap();
         assert_eq!(served.entries[0].served_route.as_deref(), Some("edge"));
 
@@ -399,3 +414,10 @@ mod tests {
         assert_eq!(polled.entries[0].model, "auto");
     }
 }
+
+
+
+
+
+
+

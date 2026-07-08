@@ -1,4 +1,4 @@
-export type RouteTier = 'edge' | 'cloud' | 'cascade'
+﻿export type RouteTier = 'edge' | 'cloud' | 'cascade'
 
 export interface RoutingLogEntry {
   id: number
@@ -7,6 +7,7 @@ export interface RoutingLogEntry {
   route: RouteTier
   stepKind: string
   model?: string
+  servedModel?: string | null
   userPreview: string
   hasUserPreview: boolean
   reasonCodes: string[]
@@ -75,6 +76,7 @@ export function formatTimeLabel(iso: string): string {
 export function effectiveRouteTier(entry: {
   route: string
   served_route?: string | null
+    served_model?: string | null
 }): RouteTier {
   const raw = entry.served_route ?? entry.route
   if (raw === 'edge' || raw === 'cloud' || raw === 'cascade') return raw
@@ -86,6 +88,7 @@ export function mapApiRoutingEntry(entry: {
   timestamp: string
   route: string
   served_route?: string | null
+    served_model?: string | null
   step_kind: string
   model: string
   user_preview: string
@@ -99,6 +102,7 @@ export function mapApiRoutingEntry(entry: {
     route: effectiveRouteTier(entry),
     stepKind: entry.step_kind,
     model: entry.model,
+      servedModel: entry.served_model ?? null,
     userPreview: entry.user_preview,
     hasUserPreview: entry.user_preview.length > 0,
     reasonCodes: entry.reason_codes,

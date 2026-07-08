@@ -110,7 +110,6 @@ export function Sidebar() {
     [setup?.cloud, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
   )
   const cloudConfigured = setup?.cloud?.configured || status?.cloud_configured
-  const autoLabel = t('cloudModel.auto')
 
   const onRouteTab = (route: RouteMode) => {
     setRouteTab(route)
@@ -227,7 +226,7 @@ export function Sidebar() {
                 <NavCardIcon navId={card.navId} />
               </span>
               <div className="nav-card-expand">
-                <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={globalSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} autoLabel={autoLabel} t={t} locale={locale} />
+                <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={globalSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} t={t} locale={locale} />
                 <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} cloudModelLabel={cloudModelLabel} t={t} locale={locale} />
               </div>
             </Link>
@@ -330,7 +329,7 @@ function NavCardIcon({ navId }: { navId: string }) {
 }
 
 function NavCardBody({
-  navId, status, sidebarStats, savedPoints, shares, tb, edgeConfigured, cloudConfigured, setup, profileLabel: _profileLabel, liveUptime, autoLabel: _autoLabel, t, locale,
+  navId, status, sidebarStats, savedPoints, shares, tb, edgeConfigured, cloudConfigured, setup, profileLabel: _profileLabel, liveUptime, t, locale,
 }: {
   navId: string
   status: ReturnType<typeof useAppStore.getState>['status']
@@ -343,7 +342,6 @@ function NavCardBody({
   setup: ReturnType<typeof useSetupStore.getState>['setup']
   profileLabel: string
   liveUptime: number
-  autoLabel: string
   t: (k: string, v?: Record<string, string | number>) => string
   locale: string
 }) {

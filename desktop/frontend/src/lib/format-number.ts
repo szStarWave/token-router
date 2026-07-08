@@ -54,3 +54,24 @@ export function formatNum(n: unknown, locale?: string): string {
 export function formatAxisNum(n: unknown, locale?: string): string {
   return formatCompactNum(n, locale)
 }
+
+/** Y-axis ticks: preserve fractional labels when the scale is small. */
+export function formatAxisTick(n: unknown, locale?: string): string {
+  const num = normalizeNum(n)
+  if (num == null) return ''
+
+  const abs = Math.abs(num)
+  if (abs >= COMPACT_THRESHOLD) {
+    return formatCompactNum(num, locale)
+  }
+  if (Number.isInteger(num)) {
+    return num.toLocaleString(locale)
+  }
+  if (abs >= 1) {
+    return trimDecimal(num.toLocaleString(locale, { maximumFractionDigits: 1 }))
+  }
+  if (abs > 0) {
+    return trimDecimal(num.toLocaleString(locale, { maximumFractionDigits: 2 }))
+  }
+  return '0'
+}

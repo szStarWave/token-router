@@ -371,6 +371,38 @@
       "en-US": [
         "Version update"
       ]
+    },
+    "0.15.4": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.15.4": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "0.16.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.16.0": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
     }
   }
 }

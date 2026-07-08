@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import type { RoutingLogEntry } from '../../lib/routing-log'
 import {
   extractDifficultyScore,
@@ -50,12 +50,12 @@ export function RoutingLogCard({ entry }: Props) {
     <article className="routing-log-card">
       <div className="routing-log-card__meta">
         {entry.timeLabel && <time dateTime={entry.timestamp}>{entry.timeLabel}</time>}
-        {entry.model && (
+        {entry.servedModel || entry.model ? (
           <>
             <span className="routing-log-card__sep">·</span>
-            <span className="routing-log-card__model">{entry.model}</span>
+            <span className="routing-log-card__model">{entry.servedModel ?? entry.model}</span>
           </>
-        )}
+        ) : null}
       </div>
       <p className="routing-log-card__preview" title={previewTitle}>
         <span className="routing-log-card__preview-label">{t('logs.messagePreview')}:</span>{' '}

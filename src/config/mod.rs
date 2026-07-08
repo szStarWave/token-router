@@ -10,8 +10,8 @@ pub use auth_keys::{
     UpdateGatewayAuthKeyRequest,
 };
 pub use file::{
-    ConfigFile, GatewayApiKeyEntry, UpstreamEndpoint, ensure_initialized, load, load_from_path,
-    save,
+    ConfigFile, GatewayApiKeyEntry, UpstreamEndpoint, apply_port_override, ensure_initialized,
+    load, load_from_path, save,
 };
 pub use setup::{
     GatewayConfigPatch, GatewayConfigView, UpstreamEndpointPatch, UpstreamEndpointView,
@@ -21,6 +21,8 @@ pub use setup::{
     mask_gateway_api_key,
 };
 pub use paths::{
-    app_dir, callme_file, config_file, display_app_dir, display_home, ensure_app_dirs,
-    gateway_log_file, logs_dir, pid_file, sessions_dir, stats_db, stats_file, user_home,
+    app_dir, callme_file, callme_file_at, config_file, display_app_dir, display_home,
+    ensure_app_dirs, gateway_log_file, gateway_log_file_at, logs_dir, logs_dir_at, pid_file,
+    pid_file_at, resolve_app_dir, resolve_config_file, sessions_dir, sessions_dir_at, stats_db,
+    stats_db_at, stats_file, stats_file_at, user_home,
 };

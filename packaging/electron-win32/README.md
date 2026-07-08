@@ -52,4 +52,4 @@ npm start
 
 ## 数据目录
 
-Gateway 默认配置与数据：`%USERPROFILE%\.token-router\config.toml`
+Gateway 默认 home 与配置：`%USERPROFILE%\.token-router\`（`config.toml` 位于该目录下）

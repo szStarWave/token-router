@@ -13,6 +13,7 @@ use crate::gateway::api::auth_keys;
 use crate::gateway::api::admin;
 use crate::gateway::api::anthropic::anthropic_messages_handler;
 use crate::gateway::api::chat::chat_completions;
+use crate::gateway::api::models::{get_model, list_models};
 use crate::gateway::api::responses::responses_handler;
 use crate::gateway::api::setup;
 use crate::gateway::classifier::ClassifierStore;
@@ -68,6 +69,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/status", get(admin::status))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/stats/timeline", get(admin::stats_timeline))
+        .route("/v1/admin/stats/models/timeline", get(admin::stats_model_timeline))
+        .route("/v1/admin/stats/models/timeline/all", get(admin::stats_all_models_timeline))
         .route("/v1/admin/logs", get(admin::logs))
         .route("/v1/admin/routing-logs", get(admin::routing_logs))
         .route("/v1/admin/setup", get(setup::setup_get).post(setup::setup_post))
@@ -80,8 +83,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/shutdown", post(admin::shutdown))
         .route("/v1/admin/restart", post(admin::restart))
         .route("/v1/chat/completions", post(chat_completions_handler))
+        .route("/v1/models", get(list_models))
+        .route("/v1/models/{model_id}", get(get_model))
         .route("/v1/responses", post(responses_handler))
         .route("/anthropic/v1/messages", post(anthropic_messages_handler))
+        .route("/anthropic/v1/models", get(list_models))
+        .route("/anthropic/v1/models/{model_id}", get(get_model))
         .route("/v1/messages", post(anthropic_messages_handler))
         .with_state(state)
 }

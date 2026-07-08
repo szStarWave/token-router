@@ -7,6 +7,7 @@ export interface ManualCloudEntry {
   base_url: string
   model: string
   api_key?: string
+  context_window?: number
   fromSetupRestore?: boolean
 }
 
@@ -19,6 +20,7 @@ export interface CloudDisplayItem {
   model?: string
   api_key?: string
   icon?: string
+  context_window?: number
 }
 
 export interface SetupCloudSelection {

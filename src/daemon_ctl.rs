@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crate::cli_settings::CliSettings;
-use crate::config::pid_file as config_pid_file;
+use crate::config::pid_file_at;
 use crate::gateway::config::AppConfig;
 use crate::gateway::daemon;
 use crate::gateway::{init_logging, LogRotateConfig};
@@ -26,13 +26,20 @@ struct UnknownStatus {
     note: &'static str,
 }
 
-pub fn read_pid() -> Option<u32> {
-    let path = config_pid_file().ok()?;
+pub fn read_pid(app_home: &Path) -> Option<u32> {
+    let path = pid_file_at(app_home);
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 pub fn resolve_gateway_bin() -> Result<std::path::PathBuf> {
     std::env::current_exe().context("current_exe")
+}
+
+fn append_home_port(cmd: &mut Command, settings: &CliSettings) {
+    cmd.arg("--home").arg(&settings.app_home);
+    if let Some(port) = settings.port {
+        cmd.arg("--port").arg(port.to_string());
+    }
 }
 
 pub async fn start_daemon(client: &GatewayClient, settings: &CliSettings, wait_secs: u64) -> Result<()> {
@@ -47,18 +54,17 @@ pub async fn start_daemon(client: &GatewayClient, settings: &CliSettings, wait_s
         bail!("gateway already reachable at {}", client.base_url());
     }
 
-    if let Some(pid) = read_pid() {
+    if let Some(pid) = read_pid(&settings.app_home) {
         if is_pid_alive(pid) {
             bail!("gateway already running (pid {pid})");
         }
-        cleanup_stale_pid()?;
+        cleanup_stale_pid(&settings.app_home)?;
     }
 
     let bin = resolve_gateway_bin()?;
-    Command::new(&bin)
-        .arg("--config")
-        .arg(&settings.config_path)
-        .arg("__serve")
+    let mut cmd = Command::new(&bin);
+    append_home_port(&mut cmd, settings);
+    cmd.arg("__serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -77,8 +83,8 @@ pub async fn start_daemon(client: &GatewayClient, settings: &CliSettings, wait_s
     Ok(())
 }
 
-pub async fn stop_daemon(client: &GatewayClient, force: bool) -> Result<()> {
-    let pid = read_pid();
+pub async fn stop_daemon(client: &GatewayClient, settings: &CliSettings, force: bool) -> Result<()> {
+    let pid = read_pid(&settings.app_home);
     let http_up = client.health().await.is_ok();
 
     if !http_up && pid.is_none() {
@@ -90,7 +96,7 @@ pub async fn stop_daemon(client: &GatewayClient, force: bool) -> Result<()> {
         let _ = client.shutdown().await;
         tokio::time::sleep(Duration::from_millis(500)).await;
         if client.health().await.is_err() {
-            cleanup_stale_pid()?;
+            cleanup_stale_pid(&settings.app_home)?;
             println!("gateway stopped");
             return Ok(());
         }
@@ -106,7 +112,7 @@ pub async fn stop_daemon(client: &GatewayClient, force: bool) -> Result<()> {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
-        cleanup_stale_pid()?;
+        cleanup_stale_pid(&settings.app_home)?;
     }
 
     if client.health().await.is_ok() {
@@ -117,7 +123,7 @@ pub async fn stop_daemon(client: &GatewayClient, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn status_daemon(client: &GatewayClient, json: bool) -> Result<()> {
+pub async fn status_daemon(client: &GatewayClient, settings: &CliSettings, json: bool) -> Result<()> {
     match client.status().await {
         Ok(s) => {
             if json {
@@ -128,7 +134,7 @@ pub async fn status_daemon(client: &GatewayClient, json: bool) -> Result<()> {
             Ok(())
         }
         Err(_) => {
-            if let Some(pid) = read_pid() {
+            if let Some(pid) = read_pid(&settings.app_home) {
                 if is_pid_alive(pid) {
                     let u = UnknownStatus {
                         status: "unknown",
@@ -144,7 +150,7 @@ pub async fn status_daemon(client: &GatewayClient, json: bool) -> Result<()> {
                     }
                     return Ok(());
                 }
-                cleanup_stale_pid()?;
+                cleanup_stale_pid(&settings.app_home)?;
             }
             let s = StoppedStatus { status: "stopped" };
             if json {
@@ -178,16 +184,16 @@ pub async fn restart_daemon(
         return Ok(());
     }
 
-    cleanup_stale_pid()?;
+    cleanup_stale_pid(&settings.app_home)?;
     start_daemon(client, settings, wait_secs).await
 }
 
 /// Spawn a detached helper that waits for `old_pid` to exit, then starts `__serve`.
-pub fn schedule_daemon_restart(config_path: &Path, old_pid: u32) -> Result<()> {
+pub fn schedule_daemon_restart(app_home: &Path, old_pid: u32) -> Result<()> {
     let bin = resolve_gateway_bin()?;
     let mut cmd = Command::new(&bin);
-    cmd.arg("--config")
-        .arg(config_path)
+    cmd.arg("--home")
+        .arg(app_home)
         .arg("__restart-wait")
         .arg(old_pid.to_string())
         .stdin(Stdio::null())
@@ -200,8 +206,12 @@ pub fn schedule_daemon_restart(config_path: &Path, old_pid: u32) -> Result<()> {
 }
 
 /// Wait until the gateway pid exits, then re-exec `__serve` (separate process from the dying gateway).
-pub fn run_restart_wait(old_pid: u32, config_override: Option<&Path>) -> Result<()> {
-    let app_config = AppConfig::load_from(config_override)?;
+pub fn run_restart_wait(
+    old_pid: u32,
+    home: Option<&Path>,
+    port: Option<u16>,
+) -> Result<()> {
+    let app_config = AppConfig::load_for_home(home, port)?;
     let log_path = init_logging(
         &app_config.data_dir,
         false,
@@ -238,8 +248,8 @@ pub fn run_restart_wait(old_pid: u32, config_override: Option<&Path>) -> Result<
         }
         let mut child_cmd = Command::new(&bin);
         child_cmd
-            .arg("--config")
-            .arg(&app_config.config_path)
+            .arg("--home")
+            .arg(&app_config.data_dir)
             .arg("__serve")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -328,11 +338,10 @@ async fn wait_until_healthy(client: &GatewayClient, secs: u64) -> Result<()> {
     );
 }
 
-fn cleanup_stale_pid() -> Result<()> {
-    if let Ok(path) = config_pid_file() {
-        if path.exists() {
-            let _ = fs::remove_file(path);
-        }
+fn cleanup_stale_pid(app_home: &Path) -> Result<()> {
+    let path = pid_file_at(app_home);
+    if path.exists() {
+        let _ = fs::remove_file(path);
     }
     Ok(())
 }

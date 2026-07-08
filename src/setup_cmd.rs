@@ -13,7 +13,8 @@ use crate::config::{
 };
 
 pub async fn run_setup(
-    config_override: &Option<PathBuf>,
+    home: &Option<PathBuf>,
+    port: Option<u16>,
     remote: bool,
     json: bool,
     non_interactive: bool,
@@ -23,7 +24,7 @@ pub async fn run_setup(
     let interactive = should_interact(&patch, json, reset_defaults, non_interactive);
     let patch = if interactive {
         let current = if remote {
-            let settings = load_settings(config_override)?;
+            let settings = load_settings(home, port)?;
             let client = GatewayClient::new(
                 settings.gateway_url(),
                 settings.api_key(),
@@ -34,7 +35,7 @@ pub async fn run_setup(
                 .await
                 .context("GET /v1/admin/setup (is gateway running?)")?
         } else {
-            let (path, _) = ensure_initialized(config_override.as_deref())?;
+            let (path, _) = ensure_initialized(home.as_deref())?;
             let (file, _) = load_from_path(&path)?;
             view_from_config(&file)
         };
@@ -44,9 +45,9 @@ pub async fn run_setup(
     };
 
     let view = if remote {
-        run_remote_setup(config_override, reset_defaults, patch, interactive).await?
+        run_remote_setup(home, port, reset_defaults, patch, interactive).await?
     } else {
-        run_local_setup(config_override, reset_defaults, patch, interactive)?
+        run_local_setup(home, port, reset_defaults, patch, interactive)?
     };
 
     if json {
@@ -208,12 +209,13 @@ fn prompt_api_key(
 }
 
 fn run_local_setup(
-    config_override: &Option<PathBuf>,
+    home: &Option<PathBuf>,
+    port: Option<u16>,
     reset_defaults: bool,
     patch: UpstreamSetupUpdate,
     interactive: bool,
 ) -> Result<UpstreamSetupView> {
-    let (path, created) = ensure_initialized(config_override.as_deref())?;
+    let (path, created) = ensure_initialized(home.as_deref())?;
     if created && !interactive {
         println!("Created config at {}", path.display());
     }
@@ -226,10 +228,8 @@ fn run_local_setup(
         || patch.edge.is_some()
         || patch.cloud.is_some()
         || patch.agent_id.is_some();
-    let settings = CliSettings {
-        file: file.clone(),
-        config_path: config_path.clone(),
-    };
+    let app_home = crate::cli_settings::resolve_app_home(home.as_deref())?;
+    let settings = CliSettings::from_parts(file.clone(), app_home, port);
 
     if reset_defaults {
         apply_default_upstream(&mut file);
@@ -273,12 +273,13 @@ fn run_local_setup(
 }
 
 async fn run_remote_setup(
-    config_override: &Option<PathBuf>,
+    home: &Option<PathBuf>,
+    port: Option<u16>,
     reset_defaults: bool,
     patch: UpstreamSetupUpdate,
     interactive: bool,
 ) -> Result<UpstreamSetupView> {
-    let settings = load_settings(config_override)?;
+    let settings = load_settings(home, port)?;
     let client = GatewayClient::new(
         settings.gateway_url(),
         settings.api_key(),
@@ -331,13 +332,11 @@ fn print_tier_summary(name: &str, tier: Option<&UpstreamEndpointView>) {
     }
 }
 
-fn load_settings(config_override: &Option<PathBuf>) -> Result<CliSettings> {
-    let path = match config_override {
-        Some(p) => p.clone(),
-        None => crate::config::config_file()?,
-    };
-    let (file, config_path) = load_from_path(&path)?;
-    Ok(CliSettings { file, config_path })
+fn load_settings(home: &Option<PathBuf>, port: Option<u16>) -> Result<CliSettings> {
+    let app_home = crate::cli_settings::resolve_app_home(home.as_deref())?;
+    let config_path = app_home.join("config.toml");
+    let (file, _) = load_from_path(&config_path)?;
+    Ok(CliSettings::from_parts(file, app_home, port))
 }
 
 fn print_human(view: &UpstreamSetupView) {

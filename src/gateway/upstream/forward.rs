@@ -1,4 +1,4 @@
-use futures::StreamExt;
+﻿use futures::StreamExt;
 use reqwest::Client;
 use std::time::Instant;
 
@@ -519,9 +519,17 @@ impl UpstreamClient {
         let latency_ms = start.elapsed().as_millis() as u64;
         let (prompt, completion, cached) = tokens_from_response(&body, prompt_fallback);
         let tier_static = tier_static(tier);
+        let model_name = crate::gateway::stats::metrics::normalize_upstream_model(
+            if body.model.trim().is_empty() {
+                upstream_req.model.as_str()
+            } else {
+                body.model.as_str()
+            },
+        );
         self.stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: tier_static,
+                model: model_name,
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 cached_tokens: cached,
@@ -630,7 +638,8 @@ impl UpstreamClient {
         let stream_agent_id = stream_agent_usage.as_ref().and(stream_agent_id);
         let fallback_flag = tier_static == "cloud"
             && matches!(decision.route, RouteTier::Edge | RouteTier::Cascade);
-        let served_model = endpoint_model.unwrap_or(&req.model).to_string();
+        let served_model = upstream_req.model.clone();
+        let log_model = served_model.clone();
         let post_serve = Some(StreamPostServe {
             sessions: self.sessions.clone(),
             routing_logs: self.routing_logs.clone(),
@@ -639,13 +648,14 @@ impl UpstreamClient {
             decision: decision.clone(),
             assistant_failed: decision.assistant_failed_recent,
             fallback: fallback_flag,
-            served_model,
+            served_model: served_model.clone(),
         });
         let stream = instrument_stream(
             raw,
             StreamRecordContext {
                 stats: self.stats.clone(),
                 tier: tier_static,
+                model: served_model,
                 prompt_fallback: decision.tokens_in_estimate,
                 cloud_input_saved: decision.cloud_input_saved_estimate,
                 record_cloud_saved: tier_static == "edge",
@@ -664,6 +674,7 @@ impl UpstreamClient {
             tier_static,
             fallback,
             true,
+            Some(&log_model),
             agent_id,
         );
         Ok(stream)
@@ -703,6 +714,7 @@ impl UpstreamClient {
         if served_tier == "cloud" {
             self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
         }
+        let served_model = &resp.model;
         log_upstream_served(
             Some(self.routing_logs.as_ref()),
             decision.routing_log_id,
@@ -710,6 +722,7 @@ impl UpstreamClient {
             served_tier,
             fallback,
             false,
+            Some(served_model),
             agent_id,
         );
         attach_meta(resp, decision, fallback)

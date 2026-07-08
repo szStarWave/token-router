@@ -13,6 +13,7 @@ import { HerdsmanNoModelsBanner } from '../components/upstream/HerdsmanNoModelsB
 import {
   budgetFromSlider,
   buildCloudDisplayItems,
+  DEFAULT_CLOUD_CONTEXT_WINDOW,
   deleteManualCloudEntry,
   fetchCloudModels,
   getCloudModelDisplayName,
@@ -69,7 +70,6 @@ export function UpstreamPage() {
     [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
 
-  const autoLabel = t('cloudModel.auto')
   const cloudConfigured = useMemo(
     () => isCloudModelUiConfigured(setup?.cloud) || !!setup?.cloud?.configured,
     [setup?.cloud, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
@@ -85,7 +85,7 @@ export function UpstreamPage() {
   const [editingEdgeEntry, setEditingEdgeEntry] = useState<ManualEdgeEntry | null>(null)
   const [editingCloudEntry, setEditingCloudEntry] = useState<ManualCloudEntry | null>(null)
   const [edgeDialogForm, setEdgeDialogForm] = useState({ name: '', url: '', model: '', key: '', context_window: '' })
-  const [cloudDialogForm, setCloudDialogForm] = useState({ name: '', url: '', model: '', key: '' })
+  const [cloudDialogForm, setCloudDialogForm] = useState({ name: '', url: '', model: '', key: '', context_window: '' })
   const quotaEditingRef = useRef(false)
   const cloudSaveGenRef = useRef(0)
 
@@ -100,15 +100,15 @@ export function UpstreamPage() {
 
   useEffect(() => {
     if (modelsQuery.data) {
-      useCloudStore.getState().setFlowyModels(withAutoModelOption(modelsQuery.data, autoLabel))
+      useCloudStore.getState().setFlowyModels(withAutoModelOption(modelsQuery.data))
     }
-  }, [modelsQuery.data, autoLabel])
+  }, [modelsQuery.data])
 
   useEffect(() => {
     if (!isEdge && connected && getAuthToken()) {
-      void fetchCloudModels(autoLabel).catch(() => {})
+      void fetchCloudModels().catch(() => {})
     }
-  }, [isEdge, connected, autoLabel])
+  }, [isEdge, connected])
 
   const edgePct = stats?.routing?.edge_pct
   const cloudPct = stats?.routing?.cloud_pct
@@ -173,6 +173,9 @@ export function UpstreamPage() {
       url: entry?.base_url ?? '',
       model: entry?.model ?? '',
       key: '',
+      context_window: entry?.context_window != null
+        ? String(entry.context_window)
+        : String(DEFAULT_CLOUD_CONTEXT_WINDOW),
     })
     setCloudDialogOpen(true)
   }
@@ -194,12 +197,14 @@ export function UpstreamPage() {
 
   const saveCloudDialog = () => {
     const id = editingCloudEntry?.id ?? `cloud-manual-${Date.now()}`
+    const contextRaw = cloudDialogForm.context_window.trim()
     upsertManualCloudEntry({
       id,
       name: cloudDialogForm.name.trim() || cloudDialogForm.model.trim(),
       base_url: cloudDialogForm.url.trim(),
       model: cloudDialogForm.model.trim(),
       api_key: cloudDialogForm.key.trim() || editingCloudEntry?.api_key,
+      context_window: contextRaw ? Number(contextRaw) : DEFAULT_CLOUD_CONTEXT_WINDOW,
     })
     setCloudDialogOpen(false)
     saveCloud(budgetSlider, quotaEnabled)
@@ -211,8 +216,8 @@ export function UpstreamPage() {
     [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
   const cloudModelLabel = useMemo(
-    () => getCloudModelDisplayName(setup?.cloud?.model, autoLabel),
-    [setup?.cloud?.model, autoLabel, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
+    () => getCloudModelDisplayName(setup?.cloud?.model),
+    [setup?.cloud?.model, cloudSelectedKey, cloudManualEntries, cloudFlowyModels],
   )
 
   return (
@@ -526,6 +531,20 @@ export function UpstreamPage() {
               <label>{t('field.model')}</label>
               <input id="cloud_dialog_model" placeholder={t('ph.cloudModel')} value={cloudDialogForm.model} onChange={(e) => setCloudDialogForm((f) => ({ ...f, model: e.target.value }))} />
               <p className="hint">{t('upstream.cloudModelHint')}</p>
+            </div>
+            <div>
+              <label>{t('field.maxContextWindow')}</label>
+              <input
+                id="cloud_dialog_context_window"
+                type="number"
+                min={4096}
+                max={2000000}
+                step={1024}
+                placeholder={t('ph.cloudContextWindow')}
+                value={cloudDialogForm.context_window}
+                onChange={(e) => setCloudDialogForm((f) => ({ ...f, context_window: e.target.value }))}
+              />
+              <p className="hint">{t('upstream.edgeContextHint')}</p>
             </div>
             <div>
               <label>{t('field.apiKey')}</label>

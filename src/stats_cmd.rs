@@ -622,13 +622,14 @@ pub struct ErrorCounts {
 }
 
 pub async fn print_stats(
-    config_override: &Option<PathBuf>,
+    home: &Option<PathBuf>,
+    port: Option<u16>,
     global: bool,
     json: bool,
     lang: &str,
 ) -> Result<()> {
     let lang = StatsLang::parse(lang)?;
-    let settings = load_settings(config_override)?;
+    let settings = load_settings(home, port)?;
 
     let stats = if global {
         load_global_stats(&settings).await?
@@ -666,13 +667,13 @@ async fn load_global_stats(settings: &CliSettings) -> Result<GatewayStats> {
 }
 
 fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
-    let data_dir = crate::config::app_dir()?;
-    let db_path = crate::config::stats_db()?;
+    let data_dir = settings.app_home.clone();
+    let db_path = crate::config::stats_db_at(&data_dir);
     let db_exists = db_path.exists();
     let stats_path = if db_exists {
         db_path.clone()
     } else {
-        crate::config::stats_file()?
+        crate::config::stats_file_at(&data_dir)
     };
     let data = if db_exists {
         let db = stats::db::StatsDb::open(&data_dir, &data_dir.join("stats.json.bak"))?;
@@ -689,7 +690,7 @@ fn load_global_stats_from_disk(settings: &CliSettings) -> Result<GatewayStats> {
     };
     let experience = experience_snapshot_from_disk(&data_dir, settings).ok();
     let classifier = classifier_snapshot_from_disk(&data_dir, settings).ok();
-    let effective_routing = AppConfig::from_file(settings.file.clone(), settings.config_path.clone())
+    let effective_routing = AppConfig::from_file(settings.file.clone(), settings.app_home.clone())
         .ok()
         .map(|config| compute_effective_routing(&config));
     let mut snap = stats::build_snapshot(
@@ -936,13 +937,11 @@ fn tier_from(t: &stats::TierTokenStats) -> TierTokenSection {
     }
 }
 
-fn load_settings(config_override: &Option<PathBuf>) -> Result<CliSettings> {
-    let path = match config_override {
-        Some(p) => p.clone(),
-        None => crate::config::config_file()?,
-    };
-    let (file, config_path) = crate::config::load_from_path(&path)?;
-    Ok(CliSettings { file, config_path })
+fn load_settings(home: &Option<PathBuf>, port: Option<u16>) -> Result<CliSettings> {
+    let app_home = crate::cli_settings::resolve_app_home(home.as_deref())?;
+    let config_path = app_home.join("config.toml");
+    let (file, _) = crate::config::load_from_path(&config_path)?;
+    Ok(CliSettings::from_parts(file, app_home, port))
 }
 
 // ── Human-readable layout ─────────────────────────────────────────────

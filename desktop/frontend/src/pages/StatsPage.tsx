@@ -1,9 +1,10 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
-import { StatsChart, StatsChartRange, type ChartRange } from '../components/stats/StatsChart'
+import { type ChartRange } from '../components/stats/StatsChart'
+import { ModelTokenPanel } from '../components/stats/ModelTokenPanel'
 import { AuthKeyStatsPanel } from '../components/stats/AuthKeyStatsPanel'
-import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierMaxPerRequest, tierTokenSummary, tokenSummary, tokenTableRows, topStepKinds } from '../lib/stats-utils'
+import { classifierFeatureLabel, classifierSummaryRows, fmtMs, fmtNum, fmtPct, fmtTps, formatClassifierSummaryValue, formatSavedCreditsAmount, stepKindLabel, tierMaxPerRequest, tierTokenSummary, tokenSummary, topStepKinds } from '../lib/stats-utils'
 import type { StatsScope } from '../types/gateway'
 
 export function StatsPage() {
@@ -24,7 +25,6 @@ export function StatsPage() {
   const classifier = stats?.classifier as Record<string, unknown> | null | undefined
 
   const stepKinds = topStepKinds(stats)
-  const tokens = tokenTableRows(tb)
   const tokenTotals = tokenSummary(tb)
   const edgeTokens = tierTokenSummary(tb?.edge as Record<string, unknown> | undefined)
   const cloudTokens = tierTokenSummary(tb?.cloud as Record<string, unknown> | undefined)
@@ -78,7 +78,14 @@ export function StatsPage() {
         <div className="stat-box">
           <div className="label">{t('stat.totalReq')}</div>
           <div className="value" id="stat-req">{fmtNum(stats?.requests_total, locale)}</div>
-          <div className="sub" id="stat-rpm">{stats?.requests_per_minute != null ? t('stat.reqPerMin', { n: Math.round(stats.requests_per_minute) }) : '—'}</div>
+          <div className="sub" id="stat-rpm">
+            {routing
+              ? t('stat.reqEdgeCloud', {
+                  edge: fmtNum(routing.edge, locale),
+                  cloud: fmtNum(routing.cloud, locale),
+                })
+              : '—'}
+          </div>
         </div>
         <div className="stat-box">
           <div className="label">{t('stat.tokens')}</div>
@@ -107,7 +114,7 @@ export function StatsPage() {
         </div>
         <div className="stat-box cloud">
           <div className="label">{t('stat.cloudTokens')}</div>
-          <div className="value" id="stat-cloud-tokens">{cloudTokens.total > 0 ? fmtNum(cloudTokens.total, locale) : '—'}</div>
+          <div className="value" id="stat-cloud-tokens">{fmtNum(cloudTokens.total, locale)}</div>
           <div className="sub" id="stat-cloud-token-io">{t('stat.tokenInOut', { input: fmtNum(cloudTokens.input, locale), output: fmtNum(cloudTokens.output, locale) })}</div>
         </div>
         <div className="stat-box cloud">
@@ -132,7 +139,7 @@ export function StatsPage() {
         </div>
         <div className="stat-box edge">
           <div className="label">{t('stat.edgeTokens')}</div>
-          <div className="value" id="stat-edge-tokens">{edgeTokens.total > 0 ? fmtNum(edgeTokens.total, locale) : '—'}</div>
+          <div className="value" id="stat-edge-tokens">{fmtNum(edgeTokens.total, locale)}</div>
           <div className="sub" id="stat-edge-token-io">{t('stat.tokenInOut', { input: fmtNum(edgeTokens.input, locale), output: fmtNum(edgeTokens.output, locale) })}</div>
         </div>
         <div className="stat-box edge">
@@ -190,39 +197,12 @@ export function StatsPage() {
         </div>
       </div>
 
-      <div className="panel">
-        <div className="token-chart-header">
-          <div className="panel-title" style={{ marginBottom: 0 }}>{t('stats.tokenTrend')}</div>
-          <StatsChartRange range={chartRange} onChange={setChartRange} />
-        </div>
-        <StatsChart scope={scope} range={chartRange} />
-      </div>
-
-      <div className="panel">
-        <div className="panel-title">{t('stats.token')}</div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('col.metric')}</th>
-                <th className="num">{t('col.edge')}</th>
-                <th className="num">{t('col.cloud')}</th>
-                <th className="num">{t('col.total')}</th>
-              </tr>
-            </thead>
-            <tbody id="token-table">
-              {tokens.map((row) => (
-                <tr key={row.key}>
-                  <td>{t(`stat.${row.key}Token` as 'stat.inputToken')}</td>
-                  <td className="num">{fmtNum(row.edge, locale)}</td>
-                  <td className="num">{fmtNum(row.cloud, locale)}</td>
-                  <td className="num">{fmtNum(row.total, locale)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ModelTokenPanel
+        scope={scope}
+        modelStats={stats?.model_stats}
+        chartRange={chartRange}
+        onRangeChange={setChartRange}
+      />
 
       {(stats?.auth_key_stats?.length ?? 0) > 0 && (
         <AuthKeyStatsPanel keys={stats!.auth_key_stats!} />
@@ -245,7 +225,16 @@ export function StatsPage() {
               <thead><tr><th>{t('col.metric')}</th><th className="num">{t('col.value')}</th></tr></thead>
               <tbody id="adaptive-table">
                 {Object.entries(adaptive).map(([k, v]) => (
-                  <tr key={k}><td>{t(`adaptive.${k}` as 'adaptive.enabled')}</td><td className="num">{String(v)}</td></tr>
+                  <tr key={k}>
+                    <td>{t(`adaptive.${k}` as 'adaptive.enabled')}</td>
+                    <td className="num">
+                      {typeof v === 'boolean'
+                        ? t(v ? 'bool.yes' : 'bool.no')
+                        : Array.isArray(v)
+                          ? v.join(', ')
+                          : String(v)}
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>

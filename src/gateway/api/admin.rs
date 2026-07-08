@@ -128,6 +128,109 @@ pub async fn stats_timeline(
         })
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ModelTimelineQuery {
+    #[serde(default)]
+    pub scope: Option<String>,
+    pub tier: String,
+    pub model: String,
+    pub range: String,
+    #[serde(default)]
+    pub tz_offset: Option<i32>,
+}
+
+pub async fn stats_model_timeline(
+    State(state): State<AppState>,
+    Query(query): Query<ModelTimelineQuery>,
+) -> Result<Json<crate::gateway::stats::ModelTimelineResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let scope = match query.scope.as_deref() {
+        None | Some("session") => crate::gateway::stats::StatsScope::Session,
+        Some("global") => crate::gateway::stats::StatsScope::Global,
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("invalid stats scope `{other}` (use session or global)")
+                })),
+            ));
+        }
+    };
+    let tier = query.tier.to_ascii_lowercase();
+    if tier != "edge" && tier != "cloud" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid model tier `{}` (use edge or cloud)", query.tier)
+            })),
+        ));
+    }
+    let range = crate::gateway::stats::TimelineRange::parse(&query.range).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid timeline range `{}` (use h24, d7, or d30)", query.range)
+            })),
+        )
+    })?;
+    let tz_offset = query.tz_offset.unwrap_or(0);
+    state
+        .stats
+        .query_model_timeline(scope, &tier, &query.model, range, tz_offset)
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AllModelsTimelineQuery {
+    #[serde(default)]
+    pub scope: Option<String>,
+    pub range: String,
+    #[serde(default)]
+    pub tz_offset: Option<i32>,
+}
+
+pub async fn stats_all_models_timeline(
+    State(state): State<AppState>,
+    Query(query): Query<AllModelsTimelineQuery>,
+) -> Result<Json<crate::gateway::stats::AllModelsTimelineResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let scope = match query.scope.as_deref() {
+        None | Some("session") => crate::gateway::stats::StatsScope::Session,
+        Some("global") => crate::gateway::stats::StatsScope::Global,
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("invalid stats scope `{other}` (use session or global)")
+                })),
+            ));
+        }
+    };
+    let range = crate::gateway::stats::TimelineRange::parse(&query.range).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid timeline range `{}` (use h24, d7, or d30)", query.range)
+            })),
+        )
+    })?;
+    let tz_offset = query.tz_offset.unwrap_or(0);
+    state
+        .stats
+        .query_all_models_timeline(scope, range, tz_offset)
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })
+}
+
 pub async fn status(State(state): State<AppState>) -> Json<GatewayStatus> {
     let config = state.config();
     Json(GatewayStatus {
@@ -256,7 +359,7 @@ pub async fn restart(
 
     let config = state.config();
     let old_pid = std::process::id();
-    if let Err(e) = daemon_ctl::schedule_daemon_restart(&config.config_path, old_pid) {
+    if let Err(e) = daemon_ctl::schedule_daemon_restart(&config.data_dir, old_pid) {
         tracing::error!(error = %e, "schedule daemon restart failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,

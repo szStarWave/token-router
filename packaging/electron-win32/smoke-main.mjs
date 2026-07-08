@@ -10,7 +10,7 @@ const lib = koffi.load(dllPath);
 const TOKEN_OK = 0;
 const token_router_version = lib.func("const char *token_router_version()");
 const token_router_start = lib.func(
-  "int32 token_router_start(const char *config_path, _Out_ char *error_out, size_t error_out_len)",
+  "int32 token_router_start(const char *home_dir, uint16 port, _Out_ char *error_out, size_t error_out_len)",
 );
 const token_router_stop = lib.func(
   "int32 token_router_stop(_Out_ char *error_out, size_t error_out_len)",
@@ -20,14 +20,20 @@ const token_router_gateway_url = lib.func(
   "int32 token_router_gateway_url(_Out_ char *url_out, size_t url_out_len)",
 );
 
-const configPath = process.argv[2] ?? null;
+const homeDir = process.argv[2];
+const port = Number(process.argv[3]);
+if (!homeDir || !Number.isInteger(port) || port <= 0) {
+  console.error("usage: node smoke-main.mjs <home_dir> <port>");
+  process.exit(1);
+}
+
 const errorBuf = Buffer.alloc(4096);
 const urlBuf = Buffer.alloc(256);
 
 console.log("library:", dllPath);
 console.log("token_router version:", token_router_version());
 
-const startCode = token_router_start(configPath, errorBuf, errorBuf.length);
+const startCode = token_router_start(homeDir, port, errorBuf, errorBuf.length);
 if (startCode !== TOKEN_OK) {
   console.error("start failed:", errorBuf.toString("utf8").replace(/\0.*$/, ""));
   process.exit(1);

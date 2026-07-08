@@ -931,16 +931,38 @@
       width: 100%;
       height: 300px;
       min-height: 240px;
+      position: relative;
+      z-index: 1;
+      overflow: hidden;
     }
     .token-chart-header {
       display: flex; justify-content: space-between; align-items: center;
       gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+      position: relative; z-index: 2;
+    }
+    .token-chart-header-actions {
+      display: flex; align-items: center; gap: 8px; margin-left: auto;
+      position: relative; z-index: 2;
     }
     .token-chart-granularity {
       margin-bottom: 0; flex-shrink: 0;
     }
     .token-chart-granularity .segment-tab {
       flex: none; padding: 6px 12px; font-size: 12px;
+    }
+    .model-token-chart-subtitle {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+    }
+    .model-token-chart-subtitle code { font-size: 13px; }
+    .model-token-table .model-token-row { cursor: default; }
+    .model-token-table .model-token-row.selected {
+      background: color-mix(in srgb, var(--primary) 10%, transparent);
+    }
+    .model-token-name {
+      display: inline-flex; align-items: center; gap: 8px; min-width: 0;
+    }
+    .model-token-name code {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28rem;
     }
 
     .form-grid { display: grid; gap: 12px; }
@@ -1228,7 +1250,7 @@
       font-variant-numeric: tabular-nums;
     }
     .edge-model-item-actions {
-      display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
       margin: -4px -4px 0 0;
       position: relative; z-index: 2;
       pointer-events: auto;
@@ -1419,6 +1441,7 @@
     .table-actions-col { width: 1%; white-space: nowrap; }
     .table-actions { display: flex; gap: 4px; justify-content: flex-end; }
     .auth-key-created-box { display: flex; flex-direction: column; gap: 8px; }
+    .auth-key-name-cell { display: inline-flex; align-items: center; gap: 8px; }
 
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }

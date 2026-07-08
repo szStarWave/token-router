@@ -4,6 +4,7 @@ use crate::gateway::api::openai::{ChatCompletionResponse, Usage};
 #[derive(Debug, Clone)]
 pub struct UpstreamCallMetrics {
     pub tier: &'static str,
+    pub model: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub cached_tokens: u32,
@@ -12,6 +13,15 @@ pub struct UpstreamCallMetrics {
     /// Last stream output chunk arrival (ms from start); stream-only.
     pub last_token_ms: Option<u64>,
     pub stream: bool,
+}
+
+pub fn normalize_upstream_model(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        "(unknown)".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Client-visible response served from edge — counts toward cloud token savings.

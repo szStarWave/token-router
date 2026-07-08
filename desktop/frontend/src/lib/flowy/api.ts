@@ -98,10 +98,48 @@ export async function getCreditsUsageByType(token?: string | null) {
   return res?.data
 }
 
+export interface CloudModelExtra {
+  input?: string[]
+  reasoning?: boolean
+  max_tokens?: number
+  credit_rate?: number
+  context_window?: number
+}
+
 export interface CloudModel {
   id: string
   name: string
   icon?: string
+  extra?: string | CloudModelExtra
+  context_window?: number
+}
+
+export function parseCloudModelContextWindow(extra: unknown): number | undefined {
+  if (extra == null || extra === '') return undefined
+  let parsed: unknown = extra
+  if (typeof extra === 'string') {
+    try {
+      parsed = JSON.parse(extra)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof parsed !== 'object' || parsed == null) return undefined
+  const cw = (parsed as CloudModelExtra).context_window
+  const n = Number(cw)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.floor(n)
+}
+
+function normalizeCloudModel(raw: Record<string, unknown>): CloudModel {
+  const id = String(raw.id ?? '')
+  const name = String(raw.name ?? id)
+  const icon = typeof raw.icon === 'string' ? raw.icon : undefined
+  const contextFromExtra = parseCloudModelContextWindow(raw.extra)
+  const contextDirect = Number(raw.context_window)
+  const context_window = contextFromExtra
+    ?? (Number.isFinite(contextDirect) && contextDirect > 0 ? Math.floor(contextDirect) : undefined)
+  return { id, name, icon, context_window }
 }
 
 export async function getAvailableModelList(token?: string | null): Promise<CloudModel[]> {
@@ -111,7 +149,7 @@ export async function getAvailableModelList(token?: string | null): Promise<Clou
   if (res?.code !== 200) throw new Error(res?.msg || '获取模型列表失败')
   const models = res?.data?.cloud
   if (!Array.isArray(models)) throw new Error('模型列表格式错误')
-  return models
+  return models.map((model) => normalizeCloudModel(model as Record<string, unknown>))
 }
 
 export async function loginByToken(token?: string | null) {

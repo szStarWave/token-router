@@ -2,8 +2,9 @@
 #
 # 适用: 离线、隐私、或已有足够强的本地模型
 # 使用:
-#   token-router --config example/config.edge-only.toml gateway start
-#   make start CONFIG=example/config.edge-only.toml
+#   cp example/config.edge-only.toml /tmp/token-router-dev/
+#   token-router --home /tmp/token-router-dev gateway start
+#   make start HOME=/tmp/token-router-dev
 #
 # 说明:
 #   route = edge 时跳过 auto/级联/自适应阈值逻辑；经验学习仍可记录 outcome。

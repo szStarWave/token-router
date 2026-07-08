@@ -16,6 +16,8 @@ pub enum AppError {
     Upstream(String),
     #[error("routing unavailable: {0}")]
     Unavailable(String),
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -27,6 +29,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
 

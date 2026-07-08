@@ -1,8 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+﻿import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, postSetup, refreshGatewayStatusAfterRestart } from '../lib/gateway'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
-import type { LogsResponse, RoutingLogsResponse, GatewayStatus, StatsSnapshot, StatsTimelineResponse, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
+import type { LogsResponse, AllModelsTimelineResponse, ModelTimelineResponse, RoutingLogsResponse, GatewayStatus, StatsSnapshot, StatsTimelineResponse, UpstreamSetupUpdate, UpstreamSetupView } from '../types/gateway'
 import { toastErrorKey } from '../lib/toast-i18n'
 import { queryKeys } from './keys'
 import { normalizeClientGatewayBase } from '../lib/gateway'
@@ -46,7 +46,7 @@ export function useGatewayStatsQuery(scope: 'session' | 'global') {
 export function useStatsTimelineQuery(
   scope: 'session' | 'global',
   range: 'h24' | 'd7' | 'd30',
-  refetchIntervalMs = 10_000,
+  refetchIntervalMs: number | false = 10_000,
 ) {
   const connected = useAppStore((s) => s.connected)
   return useQuery({
@@ -59,6 +59,55 @@ export function useStatsTimelineQuery(
     },
     enabled: connected,
     refetchInterval: connected ? refetchIntervalMs : false,
+  })
+}
+
+export function useAllModelsTokenTimelineQuery(
+  scope: 'session' | 'global',
+  range: 'h24' | 'd7' | 'd30',
+  refetchIntervalMs: number | false = false,
+) {
+  const connected = useAppStore((s) => s.connected)
+  return useQuery({
+    queryKey: queryKeys.allModelsTokenTimeline(scope, range),
+    queryFn: async () => {
+      const tzOffset = new Date().getTimezoneOffset()
+      const q = new URLSearchParams({
+        scope,
+        range,
+        tz_offset: String(tzOffset),
+      })
+      return apiFetch<AllModelsTimelineResponse>(`/v1/admin/stats/models/timeline/all?${q}`)
+    },
+    enabled: connected,
+    refetchInterval: connected && refetchIntervalMs ? refetchIntervalMs : false,
+  })
+}
+
+export function useModelTokenTimelineQuery(
+  scope: 'session' | 'global',
+  tier: string | null | undefined,
+  model: string | null | undefined,
+  range: 'h24' | 'd7' | 'd30',
+  refetchIntervalMs: number | false = false,
+) {
+  const connected = useAppStore((s) => s.connected)
+  const enabled = connected && !!tier && !!model
+  return useQuery({
+    queryKey: queryKeys.modelTokenTimeline(scope, tier ?? '', model ?? '', range),
+    queryFn: async () => {
+      const tzOffset = new Date().getTimezoneOffset()
+      const q = new URLSearchParams({
+        scope,
+        tier: tier!,
+        model: model!,
+        range,
+        tz_offset: String(tzOffset),
+      })
+      return apiFetch<ModelTimelineResponse>(`/v1/admin/stats/models/timeline?${q}`)
+    },
+    enabled,
+    refetchInterval: enabled && refetchIntervalMs ? refetchIntervalMs : false,
   })
 }
 
@@ -102,6 +151,7 @@ async function fetchRoutingLogsFromFile(): Promise<RoutingLogsResponse> {
     served_route: entry.route,
     step_kind: entry.stepKind,
     model: entry.model ?? 'auto',
+      served_model: null,
     user_preview: entry.userPreview,
     reason_codes: entry.reasonCodes,
   }))

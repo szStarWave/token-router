@@ -1,4 +1,4 @@
-export type RouteMode = 'auto' | 'edge' | 'cloud' | 'cascade'
+﻿export type RouteMode = 'auto' | 'edge' | 'cloud' | 'cascade'
 export type RoutingMode = 'single' | 'cascade' | 'split'
 export type Profile = 'economy' | 'balanced' | 'premium' | 'privacy'
 export type StatsScope = 'session' | 'global'
@@ -114,6 +114,44 @@ export interface LatencyStats {
   p99_ms?: number
 }
 
+export interface ModelTokenStats {
+  tier: string
+  model: string
+  input: number
+  output: number
+  cached: number
+  last_used_at_unix?: number | null
+}
+
+export interface ModelTimelinePoint {
+  bucket_ts: number
+  input: number
+  output: number
+  cached: number
+}
+
+export interface ModelTimelineResponse {
+  scope: string
+  tier: string
+  model: string
+  range: string
+  granularity: string
+  points: ModelTimelinePoint[]
+}
+
+export interface ModelTimelineSeries {
+  tier: string
+  model: string
+  points: ModelTimelinePoint[]
+}
+
+export interface AllModelsTimelineResponse {
+  scope: string
+  range: string
+  granularity: string
+  models: ModelTimelineSeries[]
+}
+
 export interface StatsTimelinePoint {
   bucket_ts: number
   edge_in: number
@@ -171,6 +209,7 @@ export interface StatsSnapshot {
   classifier?: Record<string, unknown> | null
   agent_budgets?: Array<{ agent_id: string; budget_limit: number | null; tokens_used: number }>
   auth_key_stats?: AuthKeyStatsSnapshot[] | null
+  model_stats?: ModelTokenStats[]
 }
 
 export interface SetupPostResponse {
@@ -187,6 +226,7 @@ export interface LogsResponse {
 }
 
 export interface RoutingLogApiEntry {
+  served_model?: string | null
   id: number
   timestamp: string
   route: string

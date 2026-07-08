@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use crate::config::{
-    ConfigFile, config_file, gateway_log_file, load_from_path, logs_dir, pid_file, sessions_dir,
-    stats_db, stats_file, user_home,
+    ConfigFile, gateway_log_file_at, load_from_path, logs_dir_at, pid_file_at, resolve_app_dir,
+    sessions_dir_at, stats_db_at, stats_file_at, user_home,
 };
 use serde::Serialize;
 
@@ -53,8 +53,8 @@ pub struct EnvRuntime {
     pub rust_log: Option<String>,
 }
 
-pub fn print_env(config_override: &Option<PathBuf>, json: bool) -> Result<()> {
-    let report = build_report(config_override)?;
+pub fn print_env(home: &Option<PathBuf>, port: Option<u16>, json: bool) -> Result<()> {
+    let report = build_report(home, port)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -63,21 +63,16 @@ pub fn print_env(config_override: &Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_report(config_override: &Option<PathBuf>) -> Result<EnvReport> {
-    let config_path = match config_override {
-        Some(p) => p.clone(),
-        None => config_file()?,
-    };
+fn build_report(home: &Option<PathBuf>, port: Option<u16>) -> Result<EnvReport> {
+    let app_home = resolve_app_dir(home.as_deref())?;
+    let config_path = app_home.join("config.toml");
     let config_exists = config_path.exists();
     let file = if config_exists {
         load_from_path(&config_path)?.0
     } else {
         ConfigFile::default()
     };
-    let settings = CliSettings {
-        file: file.clone(),
-        config_path: config_path.clone(),
-    };
+    let settings = CliSettings::from_parts(file.clone(), app_home.clone(), port);
 
     let gateway_bin = daemon_ctl::resolve_gateway_bin()
         .map(|p| p.display().to_string())
@@ -99,16 +94,16 @@ fn build_report(config_override: &Option<PathBuf>) -> Result<EnvReport> {
     Ok(EnvReport {
         paths: EnvPaths {
             user_home: user_home()?.display().to_string(),
-            app_dir: crate::config::app_dir()?.display().to_string(),
+            app_dir: app_home.display().to_string(),
             config_file: config_path.display().to_string(),
             config_exists,
-            pid_file: pid_file()?.display().to_string(),
-            sessions_dir: sessions_dir()?.display().to_string(),
-            logs_dir: logs_dir()?.display().to_string(),
-            gateway_log: gateway_log_file()?.display().to_string(),
-            stats_file: stats_file()?.display().to_string(),
-            stats_db: stats_db()?.display().to_string(),
-            gateway_pid: daemon_ctl::read_pid(),
+            pid_file: pid_file_at(&app_home).display().to_string(),
+            sessions_dir: sessions_dir_at(&app_home).display().to_string(),
+            logs_dir: logs_dir_at(&app_home).display().to_string(),
+            gateway_log: gateway_log_file_at(&app_home).display().to_string(),
+            stats_file: stats_file_at(&app_home).display().to_string(),
+            stats_db: stats_db_at(&app_home).display().to_string(),
+            gateway_pid: daemon_ctl::read_pid(&app_home),
             gateway_bin,
         },
         config: EnvConfig {

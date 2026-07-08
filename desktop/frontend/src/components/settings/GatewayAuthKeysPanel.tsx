@@ -140,12 +140,14 @@ export function GatewayAuthKeysPanel() {
               rows.map((row) => (
                 <tr key={row.id}>
                   <td>
-                    {row.name}
-                    {row.is_default && (
-                      <span className="tag bordered neutral" title={t('authKeys.builtinHint')}>
-                        {t('authKeys.builtin')}
-                      </span>
-                    )}
+                    <span className="auth-key-name-cell">
+                      {row.is_default && (
+                        <span className="tag bordered neutral" title={t('authKeys.builtinHint')}>
+                          {t('authKeys.builtin')}
+                        </span>
+                      )}
+                      {row.name}
+                    </span>
                   </td>
                   <td><code>{row.key_preview}</code></td>
                   <td>{formatAuthKeyCreatedAt(row.created_at, locale)}</td>

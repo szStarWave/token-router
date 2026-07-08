@@ -2,7 +2,7 @@
 #
 # 首次 token-router gateway start 自动生成的默认模板与此结构类似。
 # 使用:
-#   token-router --config example/config.minimal.toml gateway start
+#   token-router --home /tmp/token-router-dev gateway start
 #
 # 启动后编辑本文件，取消注释并填写 [upstream.edge] 或 [upstream.cloud]，再 restart。
 

@@ -1,6 +1,6 @@
 # 配置示例
 
-本目录提供可直接 `--config` 引用的 TOML 模板。完整字段说明见 [README.md §6](../README.md#6-配置字段说明)。
+本目录提供可复制到应用 home 目录的 TOML 模板。完整字段说明见 [README.md §6](../README.md#6-配置字段说明)。
 
 ## 文件一览
 
@@ -22,17 +22,18 @@ cp example/config.toml ~/.token-router/config.toml
 token-router gateway restart
 ```
 
-**不复制，直接指定路径**
+**使用自定义 home 目录**
 
 ```bash
-token-router --config example/config.toml gateway start
-make start CONFIG=example/config.toml
-make start CONFIG=example/config.toml
+mkdir -p /tmp/token-router-dev
+cp example/config.toml /tmp/token-router-dev/
+token-router --home /tmp/token-router-dev gateway start
+make start HOME=/tmp/token-router-dev PORT=11080
 ```
 
 ## 运行后可观测
 
-Gateway 启动后会在 `~/.token-router/` 写入（或更新）：
+Gateway 启动后会在应用 home 目录（默认 `~/.token-router/`）写入（或更新）：
 
 | 文件 | 内容 |
 |------|------|
@@ -44,7 +45,7 @@ Gateway 启动后会在 `~/.token-router/` 写入（或更新）：
 token-router stats --lang zh              # 当前会话（中文）
 token-router stats --global --lang zh     # 全部历史
 make stats-zh
-make stats-global-zh CONFIG=example/config.toml
+make stats-global-zh HOME=/tmp/token-router-dev
 ```
 
 `stats` 输出中的 **经验学习**、**自适应路由（运行时）** 分区可查看学习偏置与生效中的校验率 / θ 阈值。

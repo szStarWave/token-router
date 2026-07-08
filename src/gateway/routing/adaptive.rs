@@ -23,15 +23,20 @@ impl EffectiveRouting {
 
 pub fn static_routing(config: &AppConfig) -> EffectiveRouting {
     let (theta_edge, theta_cloud) = config.default_profile.thresholds();
+    let enabled = config.adaptive_routing.enabled;
     EffectiveRouting {
-        enabled: false,
+        enabled,
         work_verify_sample_rate: config.work_verify_sample_rate,
         theta_edge,
         theta_cloud,
         base_verify_sample_rate: config.work_verify_sample_rate,
         base_theta_edge: theta_edge,
         base_theta_cloud: theta_cloud,
-        reasons: vec!["STATIC_ROUTING".to_string()],
+        reasons: if enabled {
+            vec!["ADAPTIVE_ON".to_string()]
+        } else {
+            vec!["STATIC_ROUTING".to_string()]
+        },
     }
 }
 
@@ -61,18 +66,43 @@ mod tests {
             api_key: None,
             model: None,
         });
-        AppConfig::from_file(file, "/tmp/flowy-test.toml".into()).unwrap()
+        AppConfig::from_file(file, "/tmp/flowy-test".into()).unwrap()
     }
 
     #[test]
     fn static_routing_matches_config() {
         let config = test_config(0.20);
         let eff = compute_effective_routing(&config);
-        assert!(!eff.enabled);
+        assert_eq!(eff.enabled, config.adaptive_routing.enabled);
         assert_eq!(eff.work_verify_sample_rate, 0.20);
         assert_eq!(eff.theta_edge, eff.base_theta_edge);
         assert_eq!(eff.theta_cloud, eff.base_theta_cloud);
-        assert!(eff.reasons.iter().any(|r| r == "STATIC_ROUTING"));
+        if eff.enabled {
+            assert!(eff.reasons.iter().any(|r| r == "ADAPTIVE_ON"));
+        } else {
+            assert!(eff.reasons.iter().any(|r| r == "STATIC_ROUTING"));
+        }
+    }
+
+    #[test]
+    fn adaptive_enabled_reflects_config_flag() {
+        let mut file = ConfigFile::default();
+        file.gateway.adaptive_routing_enabled = true;
+        file.gateway.work_verify_sample_rate = 0.15;
+        file.upstream.edge = Some(crate::config::UpstreamEndpoint {
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: None,
+            model: None,
+        });
+        file.upstream.cloud = Some(crate::config::UpstreamEndpoint {
+            base_url: "https://api.example/v1".into(),
+            api_key: None,
+            model: None,
+        });
+        let config = AppConfig::from_file(file, "/tmp/flowy-test".into()).unwrap();
+        let eff = compute_effective_routing(&config);
+        assert!(eff.enabled);
+        assert!(eff.reasons.iter().any(|r| r == "ADAPTIVE_ON"));
     }
 
     #[test]

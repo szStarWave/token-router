@@ -18,6 +18,10 @@ import type { UpstreamSetupView } from '../types/gateway'
 export type { CloudDisplayItem, ManualCloudEntry, SetupCloud } from '../stores/cloudStore'
 
 export const AUTO_MODEL_ID = 'auto'
+export const AUTO_MODEL_DISPLAY_NAME = 'Auto'
+
+/** Default max context for custom cloud models (1M). */
+export const DEFAULT_CLOUD_CONTEXT_WINDOW = 1_000_000
 
 const CLOUD_USER_CONFIGURED_KEY = 'tr-cloud-user-configured'
 const CLOUD_MANUAL_ENTRIES_KEY = 'tr-cloud-manual-entries'
@@ -93,6 +97,21 @@ function entryKey(type: 'flowy' | 'manual', id: string): string {
   return `${type}:${id}`
 }
 
+function defaultFlowyAutoKey(): string | null {
+  const items = buildCloudDisplayItems()
+  const auto = items.find(
+    (item) => item.type === 'flowy' && normalizeModelId(item.id) === AUTO_MODEL_ID,
+  )
+  if (auto) return auto.key
+  return items.find((item) => item.type === 'flowy')?.key ?? null
+}
+
+function resolveCloudContextWindow(value: number | null | undefined): number {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CLOUD_CONTEXT_WINDOW
+  return Math.min(Math.max(Math.floor(n), 4096), 2_000_000)
+}
+
 function cloudModelSignature(baseUrl: string, modelId: string): string {
   return `${normalizeUrl(baseUrl)}|${(modelId || '').trim()}`
 }
@@ -116,9 +135,14 @@ export function isFlowyCloudUrl(url: string | null | undefined): boolean {
   }
 }
 
-export function withAutoModelOption(models: CloudModel[], autoLabel: string) {
+export function withAutoModelOption(models: CloudModel[]) {
   const list = models.filter((m) => m.id !== 'Auto' && m.id !== AUTO_MODEL_ID)
-  list.unshift({ id: AUTO_MODEL_ID, name: autoLabel, icon: '' })
+  list.unshift({
+    id: AUTO_MODEL_ID,
+    name: AUTO_MODEL_DISPLAY_NAME,
+    icon: '',
+    context_window: DEFAULT_CLOUD_CONTEXT_WINDOW,
+  })
   return list
 }
 
@@ -141,10 +165,11 @@ export function buildCloudDisplayItems(): CloudDisplayItem[] {
       key: entryKey('flowy', modelId),
       type: 'flowy',
       id: modelId,
-      name: model.name || modelId,
+      name: modelId === AUTO_MODEL_ID ? AUTO_MODEL_DISPLAY_NAME : (model.name || modelId),
       base_url: flowyBase,
       model: modelId,
       icon: model.icon,
+      context_window: resolveCloudContextWindow(model.context_window),
     })
   }
 
@@ -161,6 +186,7 @@ export function buildCloudDisplayItems(): CloudDisplayItem[] {
       base_url: entry.base_url,
       model: entry.model,
       api_key: entry.api_key,
+      context_window: resolveCloudContextWindow(entry.context_window),
     })
   }
 
@@ -212,30 +238,43 @@ export function getCloudModelValue(): string {
   return item.type === 'manual' ? (item.model || '') : (item.id || '')
 }
 
-export function getCloudModelDisplayName(modelId?: string | null, autoLabel = 'Auto'): string {
+export function getCloudModelDisplayName(modelId?: string | null): string {
   const item = getSelectedCloudItem()
-  if (item) return item.name || item.model || item.id || ''
+  if (item) {
+    if (normalizeModelId(item.id) === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
+    return item.name || item.model || item.id || ''
+  }
 
   const setup = useSetupStore.getState().setup?.cloud
   if (setupCloudMatchesDisplayItems(setup)) {
     const matched = buildCloudDisplayItems().find((entry) => cloudSelectionMatchesSetup(entry, setup))
-    if (matched) return matched.name || matched.model || matched.id || ''
+    if (matched) {
+      if (normalizeModelId(matched.id) === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
+      return matched.name || matched.model || matched.id || ''
+    }
   }
 
   if (!modelId) return ''
   const id = normalizeModelId(modelId)
-  if (id === AUTO_MODEL_ID) return autoLabel
+  if (id === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
   const found = getCloudStoreState().flowyModels.find((m) => normalizeModelId(m.id) === id)
-  if (found) return found.name || id
+  if (found) {
+    if (normalizeModelId(found.id) === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
+    return found.name || id
+  }
   const manual = getCloudStoreState().manualEntries.find((e) => e.model === id)
   return manual?.name || id
 }
 
 export function resolveCloudModelLabel(setupCloud: SetupCloud | null | undefined): string {
   const item = getSelectedCloudItem()
-  if (item) return item.name || item.model || item.id || ''
+  if (item) {
+    if (normalizeModelId(item.id) === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
+    return item.name || item.model || item.id || ''
+  }
   if (!setupCloudMatchesDisplayItems(setupCloud)) return ''
   const matched = buildCloudDisplayItems().find((entry) => cloudSelectionMatchesSetup(entry, setupCloud))
+  if (matched && normalizeModelId(matched.id) === AUTO_MODEL_ID) return AUTO_MODEL_DISPLAY_NAME
   return matched?.name || matched?.model || setupCloud?.model?.trim() || ''
 }
 
@@ -304,6 +343,7 @@ export function upsertManualCloudEntry(entry: ManualCloudEntry): void {
   const normalized: ManualCloudEntry = {
     ...entry,
     fromSetupRestore: false,
+    context_window: resolveCloudContextWindow(entry.context_window),
   }
   const manualEntries = [...state.manualEntries]
   const idx = manualEntries.findIndex((e) => e.id === normalized.id)
@@ -319,11 +359,15 @@ export function upsertManualCloudEntry(entry: ManualCloudEntry): void {
 export function deleteManualCloudEntry(id: string): void {
   const state = getCloudStoreState()
   const deleted = state.manualEntries.find((entry) => entry.id === id)
+  if (!deleted) return
+
+  const deletedKey = entryKey('manual', id)
+  const deletedWasSelected = state.selectedKey === deletedKey
   const setupCloud = useSetupStore.getState().setup?.cloud
-  const deletedActiveSetup = deleted && setupCloud
+  const deletedActiveSetup = setupCloud
     ? cloudSelectionMatchesSetup(
         {
-          key: entryKey('manual', deleted.id),
+          key: deletedKey,
           type: 'manual',
           id: deleted.id,
           name: deleted.name,
@@ -336,16 +380,25 @@ export function deleteManualCloudEntry(id: string): void {
 
   const manualEntries = state.manualEntries.filter((entry) => entry.id !== id)
   let selectedKey = state.selectedKey
-  if (selectedKey === entryKey('manual', id)) selectedKey = null
+  if (deletedWasSelected) {
+    selectedKey = defaultFlowyAutoKey()
+    if (selectedKey) markCloudUserConfigured()
+  }
+
   if (!manualEntries.length && !selectedKey?.startsWith('flowy:')) {
     clearCloudUserConfigured()
   }
+
   state.setManualEntries(manualEntries)
   persistManualEntries(manualEntries)
   state.setSelectedKey(selectedKey)
-  if (deletedActiveSetup || !setupCloudMatchesDisplayItems(setupCloud)) {
+
+  if (deletedWasSelected) {
+    if (!selectedKey) patchLocalSetupCloudCleared()
+  } else if (deletedActiveSetup || !setupCloudMatchesDisplayItems(setupCloud)) {
     patchLocalSetupCloudCleared()
   }
+
   notifyUiChange()
 }
 
@@ -393,6 +446,7 @@ export function syncCloudFromSetup(cloud: SetupCloud | null | undefined): void {
       base_url: url,
       model,
       api_key: cloud.api_key || undefined,
+      context_window: DEFAULT_CLOUD_CONTEXT_WINDOW,
       fromSetupRestore: true,
     }
     const manualEntries = [...state.manualEntries, entry]
@@ -418,10 +472,10 @@ export function initCloudUpstream(): void {
   applyPendingSetupSelection()
 }
 
-export async function fetchCloudModels(autoLabel: string) {
+export async function fetchCloudModels() {
   const token = getAuthToken()
   if (!token) throw new Error('未登录')
-  const models = withAutoModelOption(await getAvailableModelList(token), autoLabel)
+  const models = withAutoModelOption(await getAvailableModelList(token))
   getCloudStoreState().setFlowyModels(models)
   applyPendingSetupSelection()
   notifyUiChange()
@@ -555,7 +609,7 @@ export async function ensureCloudUpstreamConfigured(
   const token = getAuthToken()
   if (token) {
     try {
-      models = await fetchCloudModels('Auto')
+      models = await fetchCloudModels()
     } catch (e) {
       if (!options.silent) throw e
       console.warn('[cloud-upstream] fetch models', e)

@@ -32,7 +32,7 @@ fn gateway_start() -> Result<String, String> {
     let result = if embedded::is_running() {
         embedded::gateway_url().ok_or_else(|| "gateway already running".to_string())
     } else {
-        embedded::start(None).map_err(|e| e.to_string())
+        embedded::start(None, None).map_err(|e| e.to_string())
     };
     if result.is_ok() {
         status_pipe::sync_gateway_state();
@@ -56,7 +56,7 @@ fn gateway_restart() -> Result<String, String> {
     if embedded::is_running() {
         embedded::stop().map_err(|e| e.to_string())?;
     }
-    let result = embedded::start(None).map_err(|e| e.to_string());
+    let result = embedded::start(None, None).map_err(|e| e.to_string());
     status_pipe::sync_gateway_state();
     result
 }

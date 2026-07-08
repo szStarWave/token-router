@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::data::{self, StatsData};
 use super::StatsScope;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 const MIGRATION_FLAG_STATS_JSON: &str = "migrated_stats_json_v1";
 const COUNTER_COLS: &str = "requests_total, requests_stream, requests_non_stream, requests_cancelled, \
      route_edge, route_cloud, route_cascade, \
@@ -450,7 +450,29 @@ impl StatsDb {
                cloud_served_responses INTEGER NOT NULL DEFAULT 0,
                PRIMARY KEY (scope, auth_key_id)
              );
-             CREATE INDEX IF NOT EXISTS idx_auth_key_totals_scope ON auth_key_totals(scope, auth_key_id);",
+             CREATE INDEX IF NOT EXISTS idx_auth_key_totals_scope ON auth_key_totals(scope, auth_key_id);
+             CREATE TABLE IF NOT EXISTS stats_model_totals (
+               scope TEXT NOT NULL CHECK(scope IN ('session','global')),
+               tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+               model TEXT NOT NULL,
+               tokens_in INTEGER NOT NULL DEFAULT 0,
+               tokens_out INTEGER NOT NULL DEFAULT 0,
+               cached_tokens INTEGER NOT NULL DEFAULT 0,
+               last_used_at_unix INTEGER,
+               PRIMARY KEY (scope, tier, model)
+             );
+             CREATE TABLE IF NOT EXISTS stats_model_hourly (
+               scope TEXT NOT NULL CHECK(scope IN ('session','global')),
+               tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+               model TEXT NOT NULL,
+               bucket_ts INTEGER NOT NULL,
+               tokens_in INTEGER NOT NULL DEFAULT 0,
+               tokens_out INTEGER NOT NULL DEFAULT 0,
+               cached_tokens INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (scope, tier, model, bucket_ts)
+             );
+             CREATE INDEX IF NOT EXISTS idx_stats_model_hourly_lookup
+               ON stats_model_hourly(scope, tier, model, bucket_ts);",
         )?;
         let version: Option<i32> = conn
             .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
@@ -538,6 +560,33 @@ impl StatsDb {
                 }
                 ver = 3;
             }
+            if ver < 4 {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS stats_model_totals (
+                       scope TEXT NOT NULL CHECK(scope IN ('session','global')),
+                       tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+                       model TEXT NOT NULL,
+                       tokens_in INTEGER NOT NULL DEFAULT 0,
+                       tokens_out INTEGER NOT NULL DEFAULT 0,
+                       cached_tokens INTEGER NOT NULL DEFAULT 0,
+                       last_used_at_unix INTEGER,
+                       PRIMARY KEY (scope, tier, model)
+                     );
+                     CREATE TABLE IF NOT EXISTS stats_model_hourly (
+                       scope TEXT NOT NULL CHECK(scope IN ('session','global')),
+                       tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+                       model TEXT NOT NULL,
+                       bucket_ts INTEGER NOT NULL,
+                       tokens_in INTEGER NOT NULL DEFAULT 0,
+                       tokens_out INTEGER NOT NULL DEFAULT 0,
+                       cached_tokens INTEGER NOT NULL DEFAULT 0,
+                       PRIMARY KEY (scope, tier, model, bucket_ts)
+                     );
+                     CREATE INDEX IF NOT EXISTS idx_stats_model_hourly_lookup
+                       ON stats_model_hourly(scope, tier, model, bucket_ts);",
+                )?;
+                ver = 4;
+            }
             if ver < SCHEMA_VERSION {
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
@@ -595,6 +644,8 @@ impl StatsDb {
             params![scope],
         )?;
         tx.execute("DELETE FROM auth_key_totals WHERE scope = ?1", params![scope])?;
+        tx.execute("DELETE FROM stats_model_totals WHERE scope = ?1", params![scope])?;
+        tx.execute("DELETE FROM stats_model_hourly WHERE scope = ?1", params![scope])?;
         tx.commit()?;
         Ok(())
     }
@@ -1420,6 +1471,517 @@ impl StatsDb {
             points,
         })
     }
+
+    /// Sum request counts from hourly buckets at or after `since_bucket_ts`.
+    pub fn sum_hourly_requests_since(
+        &self,
+        scope: StatsScope,
+        since_bucket_ts: u64,
+    ) -> anyhow::Result<u64> {
+        let conn = self.conn.lock().expect("stats db mutex");
+        let sum: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(requests_total), 0) FROM stats_hourly
+             WHERE scope = ?1 AND bucket_ts >= ?2",
+            params![scope.as_str(), since_bucket_ts as i64],
+            |row| row.get(0),
+        )?;
+        Ok(sum.max(0) as u64)
+    }
+
+    pub fn recent_requests_per_minute(&self, scope: StatsScope) -> anyhow::Result<f64> {
+        let now = data::now_unix();
+        let since = hour_bucket_ts(now.saturating_sub(3600));
+        let recent = self.sum_hourly_requests_since(scope, since)?;
+        if recent == 0 {
+            return Ok(0.0);
+        }
+        Ok(recent as f64 / 60.0)
+    }
+
+    pub fn record_model_upstream_usage(
+        &self,
+        tier: &str,
+        model: &str,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cached_tokens: u32,
+        bucket_ts: u64,
+        now_unix: u64,
+    ) -> anyhow::Result<()> {
+        if tier != "edge" && tier != "cloud" {
+            return Ok(());
+        }
+        let model = crate::gateway::stats::metrics::normalize_upstream_model(model);
+        let conn = self.conn.lock().expect("stats db mutex");
+        let tx = conn.unchecked_transaction()?;
+        for scope in [StatsScope::Global, StatsScope::Session] {
+            tx.execute(
+                "INSERT INTO stats_model_totals (scope, tier, model, tokens_in, tokens_out, cached_tokens, last_used_at_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(scope, tier, model) DO UPDATE SET
+                   tokens_in = stats_model_totals.tokens_in + excluded.tokens_in,
+                   tokens_out = stats_model_totals.tokens_out + excluded.tokens_out,
+                   cached_tokens = stats_model_totals.cached_tokens + excluded.cached_tokens,
+                   last_used_at_unix = MAX(stats_model_totals.last_used_at_unix, excluded.last_used_at_unix)",
+                params![
+                    scope.as_str(),
+                    tier,
+                    model,
+                    prompt_tokens as i64,
+                    completion_tokens as i64,
+                    cached_tokens as i64,
+                    now_unix as i64,
+                ],
+            )?;
+            if prompt_tokens > 0 || completion_tokens > 0 || cached_tokens > 0 {
+                tx.execute(
+                    "INSERT INTO stats_model_hourly (scope, tier, model, bucket_ts, tokens_in, tokens_out, cached_tokens)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(scope, tier, model, bucket_ts) DO UPDATE SET
+                       tokens_in = stats_model_hourly.tokens_in + excluded.tokens_in,
+                       tokens_out = stats_model_hourly.tokens_out + excluded.tokens_out,
+                       cached_tokens = stats_model_hourly.cached_tokens + excluded.cached_tokens",
+                    params![
+                        scope.as_str(),
+                        tier,
+                        model,
+                        bucket_ts as i64,
+                        prompt_tokens as i64,
+                        completion_tokens as i64,
+                        cached_tokens as i64,
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn query_model_totals(&self, scope: StatsScope) -> anyhow::Result<Vec<ModelTokenStats>> {
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT tier, model, tokens_in, tokens_out, cached_tokens, last_used_at_unix
+             FROM stats_model_totals
+             WHERE scope = ?1
+             ORDER BY last_used_at_unix DESC, (tokens_in + tokens_out) DESC",
+        )?;
+        let rows = stmt.query_map(params![scope.as_str()], |row| {
+            Ok(ModelTokenStats {
+                tier: row.get::<_, String>(0)?,
+                model: row.get::<_, String>(1)?,
+                input: row.get::<_, i64>(2)?.max(0) as u64,
+                output: row.get::<_, i64>(3)?.max(0) as u64,
+                cached: row.get::<_, i64>(4)?.max(0) as u64,
+                last_used_at_unix: row
+                    .get::<_, Option<i64>>(5)?
+                    .map(|v| v.max(0) as u64),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().context("query model totals")
+    }
+
+    pub fn query_model_timeline(
+        &self,
+        scope: StatsScope,
+        tier: &str,
+        model: &str,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<ModelTimelineResponse> {
+        let model = crate::gateway::stats::metrics::normalize_upstream_model(model);
+        match range {
+            TimelineRange::H24 => {
+                self.query_model_timeline_hourly(scope, tier, &model, range)
+            }
+            TimelineRange::D7 | TimelineRange::D30 => self.query_model_timeline_daily(
+                scope,
+                tier,
+                &model,
+                range,
+                tz_offset_minutes,
+            ),
+        }
+    }
+
+    pub fn query_all_models_timeline(
+        &self,
+        scope: StatsScope,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<AllModelsTimelineResponse> {
+        match range {
+            TimelineRange::H24 => self.query_all_models_timeline_hourly(scope, range),
+            TimelineRange::D7 | TimelineRange::D30 => {
+                self.query_all_models_timeline_daily(scope, range, tz_offset_minutes)
+            }
+        }
+    }
+
+    fn query_all_models_timeline_hourly(
+        &self,
+        scope: StatsScope,
+        range: TimelineRange,
+    ) -> anyhow::Result<AllModelsTimelineResponse> {
+        let now = data::now_unix();
+        let end = hour_bucket_ts(now);
+        let start = end.saturating_sub((range.bucket_limit() as u64 - 1) * 3600);
+        let bucket_ts_list: Vec<u64> = (start..=end).step_by(3600).collect();
+
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT tier, model, bucket_ts, tokens_in, tokens_out, cached_tokens
+             FROM stats_model_hourly
+             WHERE scope = ?1 AND bucket_ts >= ?2 AND bucket_ts <= ?3
+             ORDER BY tier ASC, model ASC, bucket_ts ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![scope.as_str(), start as i64, end as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                    row.get::<_, i64>(3)?.max(0) as u64,
+                    row.get::<_, i64>(4)?.max(0) as u64,
+                    row.get::<_, i64>(5)?.max(0) as u64,
+                ))
+            },
+        )?;
+
+        let mut grouped: HashMap<(String, String), HashMap<u64, ModelTimelinePoint>> =
+            HashMap::new();
+        for row in rows {
+            let (tier, model, bucket_ts, input, output, cached) = row?;
+            grouped
+                .entry((tier, model))
+                .or_default()
+                .insert(
+                    bucket_ts,
+                    ModelTimelinePoint {
+                        bucket_ts,
+                        input,
+                        output,
+                        cached,
+                    },
+                );
+        }
+
+        let mut models: Vec<ModelTimelineSeries> = grouped
+            .into_iter()
+            .map(|((tier, model), point_map)| ModelTimelineSeries {
+                tier,
+                model,
+                points: bucket_ts_list
+                    .iter()
+                    .map(|&ts| {
+                        point_map.get(&ts).cloned().unwrap_or(ModelTimelinePoint {
+                            bucket_ts: ts,
+                            input: 0,
+                            output: 0,
+                            cached: 0,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        models.sort_by(|a, b| a.tier.cmp(&b.tier).then(a.model.cmp(&b.model)));
+
+        Ok(AllModelsTimelineResponse {
+            scope: scope.as_str().to_string(),
+            range: "h24".to_string(),
+            granularity: range.granularity().to_string(),
+            models,
+        })
+    }
+
+    fn query_all_models_timeline_daily(
+        &self,
+        scope: StatsScope,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<AllModelsTimelineResponse> {
+        let now = data::now_unix();
+        let tz_secs = (tz_offset_minutes as i64) * 60;
+        let local_now = (now as i64 - tz_secs).max(0) as u64;
+        let day_secs = 86400u64;
+        let local_day = local_now / day_secs * day_secs;
+        let days = range.bucket_limit() as u64;
+        let start_local = local_day.saturating_sub((days - 1) * day_secs);
+        let start_utc = (start_local as i64 + tz_secs).max(0) as u64;
+        let end_utc = now;
+        let bucket_ts_list: Vec<u64> = (0..days)
+            .map(|i| {
+                let local_ts = start_local + i * day_secs;
+                (local_ts as i64 + tz_secs).max(0) as u64
+            })
+            .collect();
+
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT tier, model, bucket_ts, tokens_in, tokens_out, cached_tokens
+             FROM stats_model_hourly
+             WHERE scope = ?1 AND bucket_ts >= ?2 AND bucket_ts <= ?3
+             ORDER BY tier ASC, model ASC, bucket_ts ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![scope.as_str(), start_utc as i64, end_utc as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                    row.get::<_, i64>(3)?.max(0) as u64,
+                    row.get::<_, i64>(4)?.max(0) as u64,
+                    row.get::<_, i64>(5)?.max(0) as u64,
+                ))
+            },
+        )?;
+
+        let mut grouped: HashMap<(String, String), HashMap<u64, ModelTimelinePoint>> =
+            HashMap::new();
+        for row in rows {
+            let (tier, model, ts, input, output, cached) = row?;
+            let local_ts = (ts as i64 - tz_secs).max(0) as u64;
+            let day_start_local = local_ts / day_secs * day_secs;
+            let bucket_ts = (day_start_local as i64 + tz_secs).max(0) as u64;
+            grouped
+                .entry((tier, model))
+                .or_default()
+                .entry(bucket_ts)
+                .and_modify(|p| {
+                    p.input += input;
+                    p.output += output;
+                    p.cached += cached;
+                })
+                .or_insert(ModelTimelinePoint {
+                    bucket_ts,
+                    input,
+                    output,
+                    cached,
+                });
+        }
+
+        let mut models: Vec<ModelTimelineSeries> = grouped
+            .into_iter()
+            .map(|((tier, model), point_map)| ModelTimelineSeries {
+                tier,
+                model,
+                points: bucket_ts_list
+                    .iter()
+                    .map(|&ts| {
+                        point_map.get(&ts).cloned().unwrap_or(ModelTimelinePoint {
+                            bucket_ts: ts,
+                            input: 0,
+                            output: 0,
+                            cached: 0,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        models.sort_by(|a, b| a.tier.cmp(&b.tier).then(a.model.cmp(&b.model)));
+
+        Ok(AllModelsTimelineResponse {
+            scope: scope.as_str().to_string(),
+            range: match range {
+                TimelineRange::D7 => "d7".to_string(),
+                TimelineRange::D30 => "d30".to_string(),
+                TimelineRange::H24 => "h24".to_string(),
+            },
+            granularity: range.granularity().to_string(),
+            models,
+        })
+    }
+
+    fn query_model_timeline_hourly(
+        &self,
+        scope: StatsScope,
+        tier: &str,
+        model: &str,
+        range: TimelineRange,
+    ) -> anyhow::Result<ModelTimelineResponse> {
+        let now = data::now_unix();
+        let end = hour_bucket_ts(now);
+        let start = end.saturating_sub((range.bucket_limit() as u64 - 1) * 3600);
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT bucket_ts, tokens_in, tokens_out, cached_tokens
+             FROM stats_model_hourly
+             WHERE scope = ?1 AND tier = ?2 AND model = ?3 AND bucket_ts >= ?4 AND bucket_ts <= ?5
+             ORDER BY bucket_ts ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                scope.as_str(),
+                tier,
+                model,
+                start as i64,
+                end as i64
+            ],
+            |row| {
+                Ok(ModelTimelinePoint {
+                    bucket_ts: row.get::<_, i64>(0)?.max(0) as u64,
+                    input: row.get::<_, i64>(1)?.max(0) as u64,
+                    output: row.get::<_, i64>(2)?.max(0) as u64,
+                    cached: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            },
+        )?;
+        let mut map: HashMap<u64, ModelTimelinePoint> = HashMap::new();
+        for row in rows {
+            let p = row?;
+            map.insert(p.bucket_ts, p);
+        }
+        let mut points = Vec::new();
+        for ts in (start..=end).step_by(3600) {
+            points.push(map.get(&ts).cloned().unwrap_or(ModelTimelinePoint {
+                bucket_ts: ts,
+                input: 0,
+                output: 0,
+                cached: 0,
+            }));
+        }
+        Ok(ModelTimelineResponse {
+            scope: scope.as_str().to_string(),
+            tier: tier.to_string(),
+            model: model.to_string(),
+            range: "h24".to_string(),
+            granularity: range.granularity().to_string(),
+            points,
+        })
+    }
+
+    fn query_model_timeline_daily(
+        &self,
+        scope: StatsScope,
+        tier: &str,
+        model: &str,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<ModelTimelineResponse> {
+        let now = data::now_unix();
+        let tz_secs = (tz_offset_minutes as i64) * 60;
+        let local_now = (now as i64 - tz_secs).max(0) as u64;
+        let day_secs = 86400u64;
+        let local_day = local_now / day_secs * day_secs;
+        let days = range.bucket_limit() as u64;
+        let start_local = local_day.saturating_sub((days - 1) * day_secs);
+        let start_utc = (start_local as i64 + tz_secs).max(0) as u64;
+        let end_utc = now;
+
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT bucket_ts, tokens_in, tokens_out, cached_tokens
+             FROM stats_model_hourly
+             WHERE scope = ?1 AND tier = ?2 AND model = ?3 AND bucket_ts >= ?4 AND bucket_ts <= ?5",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                scope.as_str(),
+                tier,
+                model,
+                start_utc as i64,
+                end_utc as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.max(0) as u64,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                    row.get::<_, i64>(3)?.max(0) as u64,
+                ))
+            },
+        )?;
+
+        let mut buckets: HashMap<u64, ModelTimelinePoint> = HashMap::new();
+        for row in rows {
+            let (ts, input, output, cached) = row?;
+            let local_ts = (ts as i64 - tz_secs).max(0) as u64;
+            let day_start_local = local_ts / day_secs * day_secs;
+            let bucket_ts = (day_start_local as i64 + tz_secs).max(0) as u64;
+            buckets
+                .entry(bucket_ts)
+                .and_modify(|p| {
+                    p.input += input;
+                    p.output += output;
+                    p.cached += cached;
+                })
+                .or_insert(ModelTimelinePoint {
+                    bucket_ts,
+                    input,
+                    output,
+                    cached,
+                });
+        }
+
+        let mut points = Vec::new();
+        for i in 0..days {
+            let local_ts = start_local + i * day_secs;
+            let bucket_ts = (local_ts as i64 + tz_secs).max(0) as u64;
+            points.push(buckets.get(&bucket_ts).cloned().unwrap_or(ModelTimelinePoint {
+                bucket_ts,
+                input: 0,
+                output: 0,
+                cached: 0,
+            }));
+        }
+
+        Ok(ModelTimelineResponse {
+            scope: scope.as_str().to_string(),
+            tier: tier.to_string(),
+            model: model.to_string(),
+            range: match range {
+                TimelineRange::D7 => "d7".to_string(),
+                TimelineRange::D30 => "d30".to_string(),
+                TimelineRange::H24 => "h24".to_string(),
+            },
+            granularity: range.granularity().to_string(),
+            points,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelTokenStats {
+    pub tier: String,
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
+    pub last_used_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelTimelinePoint {
+    pub bucket_ts: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelTimelineSeries {
+    pub tier: String,
+    pub model: String,
+    pub points: Vec<ModelTimelinePoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AllModelsTimelineResponse {
+    pub scope: String,
+    pub range: String,
+    pub granularity: String,
+    pub models: Vec<ModelTimelineSeries>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelTimelineResponse {
+    pub scope: String,
+    pub tier: String,
+    pub model: String,
+    pub range: String,
+    pub granularity: String,
+    pub points: Vec<ModelTimelinePoint>,
 }
 
 #[cfg(test)]
@@ -1450,6 +2012,7 @@ mod tests {
             |d| {
                 d.record_upstream_metrics(&UpstreamCallMetrics {
                     tier: "edge",
+                    model: "test-model".to_string(),
                     prompt_tokens: 100,
                     completion_tokens: 50,
                     cached_tokens: 0,
@@ -1482,6 +2045,51 @@ mod tests {
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0], 120);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_totals_and_timeline() {
+        let (db, dir) = temp_db();
+        let bucket = hour_bucket_ts(data::now_unix());
+        let now = data::now_unix();
+        db.record_model_upstream_usage("cloud", "gpt-4o", 100, 20, 15, bucket, now)
+            .unwrap();
+        let totals = db.query_model_totals(StatsScope::Global).unwrap();
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].tier, "cloud");
+        assert_eq!(totals[0].model, "gpt-4o");
+        assert_eq!(totals[0].input, 100);
+        assert_eq!(totals[0].output, 20);
+        assert_eq!(totals[0].cached, 15);
+        let timeline = db
+            .query_model_timeline(StatsScope::Global, "cloud", "gpt-4o", TimelineRange::H24, 0)
+            .unwrap();
+        assert!(timeline.points.iter().any(|p| p.input > 0 && p.cached > 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_models_timeline_returns_each_model_series() {
+        let (db, dir) = temp_db();
+        let bucket = hour_bucket_ts(data::now_unix());
+        let now = data::now_unix();
+        db.record_model_upstream_usage("cloud", "gpt-4o", 100, 20, 15, bucket, now)
+            .unwrap();
+        db.record_model_upstream_usage("cloud", "deepseek-v4", 50, 8, 0, bucket, now)
+            .unwrap();
+        let timeline = db
+            .query_all_models_timeline(StatsScope::Global, TimelineRange::H24, 0)
+            .unwrap();
+        assert_eq!(timeline.models.len(), 2);
+        assert!(timeline
+            .models
+            .iter()
+            .any(|m| m.model == "gpt-4o" && m.points.iter().any(|p| p.input == 100)));
+        assert!(timeline
+            .models
+            .iter()
+            .any(|m| m.model == "deepseek-v4" && m.points.iter().any(|p| p.input == 50)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1586,6 +2194,7 @@ mod tests {
             |d| {
                 d.record_upstream_metrics(&UpstreamCallMetrics {
                     tier: "cloud",
+                    model: "test-model".to_string(),
                     prompt_tokens: 300,
                     completion_tokens: 20,
                     cached_tokens: 0,
@@ -1642,6 +2251,7 @@ mod tests {
                 d.record_request(true);
                 d.record_upstream_metrics(&UpstreamCallMetrics {
                     tier: "edge",
+                    model: "test-model".to_string(),
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     cached_tokens: 0,

@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 pub use data::StatsData;
-pub use db::{StatsDb, TimelinePoint, TimelineRange, TimelineResponse};
+pub use db::{
+    AllModelsTimelineResponse, ModelTimelinePoint, ModelTimelineResponse, ModelTimelineSeries,
+    ModelTokenStats, StatsDb, TimelinePoint, TimelineRange, TimelineResponse,
+};
 pub use metrics::{FinalResponseMetrics, UpstreamCallMetrics};
 pub use crate::gateway::routing::EffectiveRouting;
 
@@ -110,6 +113,19 @@ impl GatewayStats {
         self.with_mut(|d| d.record_upstream_metrics(metrics));
         if let Some(ctx) = auth_key {
             self.auth_key_with_mut(ctx, |d| d.record_upstream_metrics(metrics));
+        }
+        let bucket_ts = db::hour_bucket_ts(data::now_unix());
+        let now = data::now_unix();
+        if let Err(e) = self.db.record_model_upstream_usage(
+            metrics.tier,
+            &metrics.model,
+            metrics.prompt_tokens,
+            metrics.completion_tokens,
+            metrics.cached_tokens,
+            bucket_ts,
+            now,
+        ) {
+            tracing::warn!(error = %e, "stats model usage write failed");
         }
     }
 
@@ -261,7 +277,51 @@ impl GatewayStats {
         snap.latency.p95_ms = p95_ms;
         snap.latency.p99_ms = p99_ms;
         snap.auth_key_stats = self.build_auth_key_stats(scope, config_auth_keys);
+        snap.model_stats = self
+            .db
+            .query_model_totals(scope)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "stats db load model totals failed");
+                Vec::new()
+            });
+        if scope == StatsScope::Global {
+            snap.requests_per_minute = self.global_requests_per_minute(&data, data.requests_total);
+        }
         snap
+    }
+
+    fn global_requests_per_minute(&self, data: &StatsData, requests: u64) -> f64 {
+        if requests == 0 {
+            return 0.0;
+        }
+        if let Ok(recent) = self.db.recent_requests_per_minute(StatsScope::Global) {
+            if recent > 0.0 {
+                return recent;
+            }
+        }
+        lifetime_requests_per_minute(data, requests)
+    }
+
+    pub fn query_model_timeline(
+        &self,
+        scope: StatsScope,
+        tier: &str,
+        model: &str,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<ModelTimelineResponse> {
+        self.db
+            .query_model_timeline(scope, tier, model, range, tz_offset_minutes)
+    }
+
+    pub fn query_all_models_timeline(
+        &self,
+        scope: StatsScope,
+        range: TimelineRange,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<AllModelsTimelineResponse> {
+        self.db
+            .query_all_models_timeline(scope, range, tz_offset_minutes)
     }
 
     pub fn query_timeline(
@@ -393,7 +453,7 @@ pub fn build_snapshot(
                 0.0
             }
         }
-        StatsScope::Global => global_requests_per_minute(data, requests),
+        StatsScope::Global => lifetime_requests_per_minute(data, requests),
     };
 
     StatsSnapshot {
@@ -487,6 +547,7 @@ pub fn build_snapshot(
         effective_routing,
         agent_budgets,
         auth_key_stats: None,
+        model_stats: Vec::new(),
     }
 }
 
@@ -602,14 +663,15 @@ fn auth_key_snapshot_from_data(
     }
 }
 
-fn global_requests_per_minute(data: &StatsData, requests: u64) -> f64 {
-    let Some(first) = data.first_record_at_unix else {
+fn lifetime_requests_per_minute(data: &StatsData, requests: u64) -> f64 {
+    if requests == 0 {
         return 0.0;
-    };
+    }
     let end = data
         .last_updated_at_unix
         .unwrap_or_else(data::now_unix);
-    let span_secs = end.saturating_sub(first).max(1);
+    let first = data.first_record_at_unix.unwrap_or(end);
+    let span_secs = end.saturating_sub(first).max(60);
     requests as f64 * 60.0 / span_secs as f64
 }
 
@@ -730,6 +792,8 @@ pub struct StatsSnapshot {
     pub agent_budgets: Option<Vec<AgentBudgetSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_key_stats: Option<Vec<AuthKeyStatsSnapshot>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_stats: Vec<ModelTokenStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -943,6 +1007,7 @@ mod tests {
         stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: "edge",
+                model: "test-model".to_string(),
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 cached_tokens: 80,
@@ -956,6 +1021,7 @@ mod tests {
         stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: "cloud",
+                model: "test-model".to_string(),
                 prompt_tokens: 200,
                 completion_tokens: 100,
                 cached_tokens: 0,
@@ -998,6 +1064,15 @@ mod tests {
         assert!(snap.latency.p95_ms >= 200.0);
         assert!(snap.latency.p99_ms >= snap.latency.p95_ms);
         assert_eq!(snap.served.edge, 1);
+        assert_eq!(snap.model_stats.len(), 2);
+        let edge_model = snap
+            .model_stats
+            .iter()
+            .find(|m| m.tier == "edge")
+            .expect("edge model stats");
+        assert_eq!(edge_model.model, "test-model");
+        assert_eq!(edge_model.input, 100);
+        assert_eq!(edge_model.cached, 80);
     }
 
     fn expected_tps(completion_tokens: u32, latency_ms: u64, ttft_ms: Option<u64>) -> f64 {
@@ -1011,6 +1086,7 @@ mod tests {
         stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: "edge",
+                model: "test-model".to_string(),
                 prompt_tokens: 10,
                 completion_tokens: 50,
                 cached_tokens: 0,
@@ -1025,6 +1101,7 @@ mod tests {
         stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: "edge",
+                model: "test-model".to_string(),
                 prompt_tokens: 10,
                 completion_tokens: 100,
                 cached_tokens: 0,
@@ -1044,6 +1121,7 @@ mod tests {
         stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: "cloud",
+                model: "test-model".to_string(),
                 prompt_tokens: 10,
                 completion_tokens: 80,
                 cached_tokens: 0,
@@ -1075,6 +1153,7 @@ mod tests {
             stats.record_upstream_metrics(
                 &UpstreamCallMetrics {
                     tier: "edge",
+                    model: "test-model".to_string(),
                     prompt_tokens: 100,
                     completion_tokens: 50,
                     cached_tokens: 0,
@@ -1088,6 +1167,7 @@ mod tests {
             stats.record_upstream_metrics(
                 &UpstreamCallMetrics {
                     tier: "cloud",
+                    model: "test-model".to_string(),
                     prompt_tokens: 200,
                     completion_tokens: 100,
                     cached_tokens: 0,
@@ -1148,6 +1228,7 @@ mod tests {
             stats.record_upstream_metrics(
                 &UpstreamCallMetrics {
                     tier: "edge",
+                    model: "test-model".to_string(),
                     prompt_tokens: 42,
                     completion_tokens: 7,
                     cached_tokens: 0,
@@ -1251,5 +1332,30 @@ mod tests {
         assert_eq!(global.requests_total, 1);
         assert_eq!(global.requests_stream, 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lifetime_requests_per_minute_without_first_record() {
+        let mut data = StatsData::default();
+        data.requests_total = 120;
+        data.last_updated_at_unix = Some(10_000);
+        let rpm = lifetime_requests_per_minute(&data, data.requests_total);
+        assert!(rpm > 0.0);
+    }
+
+    #[test]
+    fn global_snapshot_uses_recent_hourly_rpm() {
+        let stats = GatewayStats::new_in_memory();
+        let bucket = db::hour_bucket_ts(data::now_unix());
+        stats
+            .db
+            .with_mut(|d| d.record_request(true), bucket, None)
+            .unwrap();
+        stats
+            .db
+            .with_mut(|d| d.record_request(true), bucket, None)
+            .unwrap();
+        let snap = stats.snapshot(StatsScope::Global, 0, None, None, None, None, &[]);
+        assert!(snap.requests_per_minute > 0.0);
     }
 }

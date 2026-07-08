@@ -19,64 +19,106 @@ pub fn app_dir() -> anyhow::Result<PathBuf> {
     Ok(user_home()?.join(APP_DIR_NAME))
 }
 
+/// Resolve application home: explicit `home` or default `app_dir()`.
+pub fn resolve_app_dir(home: Option<&Path>) -> anyhow::Result<PathBuf> {
+    match home {
+        Some(h) => Ok(h.to_path_buf()),
+        None => app_dir(),
+    }
+}
+
+pub fn resolve_config_file(home: Option<&Path>) -> anyhow::Result<PathBuf> {
+    Ok(resolve_app_dir(home)?.join("config.toml"))
+}
+
 pub fn config_file() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("config.toml"))
+    resolve_config_file(None)
+}
+
+pub fn pid_file_at(app_home: &Path) -> PathBuf {
+    app_home.join("gateway.pid")
 }
 
 pub fn pid_file() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("gateway.pid"))
+    Ok(pid_file_at(&app_dir()?))
+}
+
+pub fn sessions_dir_at(app_home: &Path) -> PathBuf {
+    app_home.join("sessions")
 }
 
 pub fn sessions_dir() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("sessions"))
+    Ok(sessions_dir_at(&app_dir()?))
+}
+
+pub fn logs_dir_at(app_home: &Path) -> PathBuf {
+    app_home.join("logs")
 }
 
 pub fn logs_dir() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("logs"))
+    Ok(logs_dir_at(&app_dir()?))
+}
+
+pub fn gateway_log_file_at(app_home: &Path) -> PathBuf {
+    logs_dir_at(app_home).join("gateway.log")
 }
 
 pub fn gateway_log_file() -> anyhow::Result<PathBuf> {
-    Ok(logs_dir()?.join("gateway.log"))
+    Ok(gateway_log_file_at(&app_dir()?))
+}
+
+pub fn stats_file_at(app_home: &Path) -> PathBuf {
+    app_home.join("stats.json")
 }
 
 pub fn stats_file() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("stats.json"))
+    Ok(stats_file_at(&app_dir()?))
+}
+
+pub fn stats_db_at(app_home: &Path) -> PathBuf {
+    app_home.join("stats.db")
 }
 
 pub fn stats_db() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("stats.db"))
+    Ok(stats_db_at(&app_dir()?))
+}
+
+pub fn wordfreq_db_at(app_home: &Path) -> PathBuf {
+    app_home.join("wordfreq.db")
 }
 
 pub fn wordfreq_db() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("wordfreq.db"))
+    Ok(wordfreq_db_at(&app_dir()?))
 }
 
-/// `{app_dir}/callme` — absolute path to the executable that can start Token Router.
+/// `{app_home}/callme` — absolute path to the executable that can start Token Router.
+pub fn callme_file_at(app_home: &Path) -> PathBuf {
+    app_home.join("callme")
+}
+
 pub fn callme_file() -> anyhow::Result<PathBuf> {
-    Ok(app_dir()?.join("callme"))
+    Ok(callme_file_at(&app_dir()?))
 }
 
-/// Write `{app_dir}/callme` with the current executable path (best-effort).
-fn ensure_callme() {
+/// Write `{app_home}/callme` with the current executable path (best-effort).
+fn ensure_callme_at(app_home: &Path) {
     let Ok(path) = std::env::current_exe() else {
         return;
     };
     if !path.is_file() {
         return;
     }
-    let Ok(callme) = callme_file() else {
-        return;
-    };
+    let callme = callme_file_at(app_home);
     let content = format!("{}\n", path.display());
     let _ = std::fs::write(callme, content);
 }
 
-pub fn ensure_app_dirs() -> anyhow::Result<PathBuf> {
-    let root = app_dir()?;
+pub fn ensure_app_dirs(home: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let root = resolve_app_dir(home)?;
     std::fs::create_dir_all(&root)?;
-    std::fs::create_dir_all(sessions_dir()?)?;
-    std::fs::create_dir_all(logs_dir()?)?;
-    ensure_callme();
+    std::fs::create_dir_all(sessions_dir_at(&root))?;
+    std::fs::create_dir_all(logs_dir_at(&root))?;
+    ensure_callme_at(&root);
     Ok(root)
 }
 
@@ -86,14 +128,14 @@ pub fn display_home() -> String {
         .unwrap_or_else(|_| "~".to_string())
 }
 
-pub fn display_app_dir() -> String {
-    app_dir()
+pub fn display_app_dir(home: Option<&Path>) -> String {
+    resolve_app_dir(home)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| format!("{}/{}", display_home(), APP_DIR_NAME))
 }
 
-pub fn is_under_app_dir(path: &Path) -> bool {
-    app_dir()
+pub fn is_under_app_dir(path: &Path, home: Option<&Path>) -> bool {
+    resolve_app_dir(home)
         .ok()
         .is_some_and(|root| path.starts_with(&root))
 }

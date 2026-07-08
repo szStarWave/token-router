@@ -22,9 +22,12 @@ ARM64_MUSL_RELEASE  := $(TARGET)/$(ARM64_MUSL_TARGET)/release/$(BIN)
 MACOS_APP           := desktop/src-tauri/target/release/bundle/macos/Token Router.app
 MACOS_DMG           := desktop/src-tauri/target/release/bundle/dmg/Token Router_$(DESKTOP_VERSION)_aarch64.dmg
 
-# Override: make start CONFIG=example/config.toml
-CONFIG      ?=
-CONFIG_FLAG := $(if $(CONFIG),--config $(CONFIG),)
+# Override: make start HOME=/tmp/token-router-dev PORT=11080
+HOME        ?=
+PORT        ?=
+HOME_FLAG   := $(if $(HOME),--home $(HOME),)
+PORT_FLAG   := $(if $(PORT),--port $(PORT),)
+ROUTER_FLAGS := $(HOME_FLAG) $(PORT_FLAG)
 
 # Release binary if built; otherwise `cargo run --`.
 ROUTER      = $(if $(wildcard $(RELEASE_BIN)),$(RELEASE_BIN),$(CARGO) run --)
@@ -95,7 +98,8 @@ help:
 	@echo "  version X.Y.Z    Bump app version across manifests (e.g. make version 0.4.0 or VER=0.4.0)"
 	@echo ""
 	@echo "Options:"
-	@echo "  CONFIG=path      Pass --config to token-router (e.g. CONFIG=example/config.toml)"
+	@echo "  HOME=path        Pass --home to token-router (e.g. HOME=/tmp/token-router-dev)"
+	@echo "  PORT=number      Pass --port to token-router (e.g. PORT=11080)"
 	@echo "  BUILD=1          Run build-ota before push"
 	@echo "  OTA_REGION=CN|INTL   Override OTA region (default from VITE_EDITION)"
 	@echo "  OTA_CHANNEL=flowy    Override OTA channel"
@@ -181,34 +185,34 @@ release-arm64:
 	@echo "Built $(ARM64_RELEASE)"
 
 start:
-	$(ROUTER) $(CONFIG_FLAG) gateway start
+	$(ROUTER) $(ROUTER_FLAGS) gateway start
 
 stop:
-	$(ROUTER) $(CONFIG_FLAG) gateway stop
+	$(ROUTER) $(ROUTER_FLAGS) gateway stop
 
 restart:
-	$(ROUTER) $(CONFIG_FLAG) gateway restart
+	$(ROUTER) $(ROUTER_FLAGS) gateway restart
 
 status:
-	$(ROUTER) $(CONFIG_FLAG) gateway status
+	$(ROUTER) $(ROUTER_FLAGS) gateway status
 
 env:
-	$(ROUTER) $(CONFIG_FLAG) env
+	$(ROUTER) $(ROUTER_FLAGS) env
 
 setup:
-	$(ROUTER) $(CONFIG_FLAG) setup
+	$(ROUTER) $(ROUTER_FLAGS) setup
 
 stats:
-	$(ROUTER) $(CONFIG_FLAG) stats
+	$(ROUTER) $(ROUTER_FLAGS) stats
 
 stats-global:
-	$(ROUTER) $(CONFIG_FLAG) stats --global
+	$(ROUTER) $(ROUTER_FLAGS) stats --global
 
 stats-zh:
-	$(ROUTER) $(CONFIG_FLAG) stats --lang zh
+	$(ROUTER) $(ROUTER_FLAGS) stats --lang zh
 
 stats-global-zh:
-	$(ROUTER) $(CONFIG_FLAG) stats --global --lang zh
+	$(ROUTER) $(ROUTER_FLAGS) stats --global --lang zh
 
 # Desktop app (Tauri + frontend in desktop/frontend/)
 DESKTOP     := desktop

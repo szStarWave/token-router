@@ -1,4 +1,4 @@
-use axum::http::{HeaderMap, HeaderValue};
+﻿use axum::http::{HeaderMap, HeaderValue};
 
 use crate::gateway::api::openai::{ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::stats::metrics::tokens_from_response;
@@ -106,7 +106,7 @@ pub fn summarize_route_reasons(decision: &RouteDecision) -> String {
             parts.push("privacy_profile".into());
         } else if let Some(d) = codes.iter().find(|c| c.starts_with("DIFFICULTY_")) {
             parts.push(format!(
-                "policy {d} → {}",
+                "policy {d} 鈫?{}",
                 tier_name(decision.route)
             ));
         }
@@ -157,7 +157,7 @@ pub fn truncate_user_preview_for_log(text: &str) -> String {
         return trimmed.to_string();
     }
     let mut out: String = trimmed.chars().take(LOG_USER_PREVIEW_MAX).collect();
-    out.push('…');
+    out.push_str("\u{2026}");
     out
 }
 
@@ -172,7 +172,7 @@ pub fn log_route_decision(
     let summary = summarize_route_reasons(decision);
     let user_preview = truncate_user_preview_for_log(user_preview);
     let message = format!(
-        "routing: {} → {} | {}",
+        "routing: {} 鈫?{} | {}",
         step_kind_name(decision.step_kind),
         tier_name(decision.route),
         summary,
@@ -213,6 +213,7 @@ pub fn log_upstream_served(
     served_tier: &str,
     fallback: bool,
     stream: bool,
+    served_model: Option<&str>,
     agent_id: Option<&str>,
 ) {
     let summary = summarize_route_reasons(decision);
@@ -237,7 +238,7 @@ pub fn log_upstream_served(
         "{message}"
     );
     if let (Some(store), Some(id)) = (store, routing_log_id) {
-        if let Err(e) = store.mark_served(id, served_tier) {
+        if let Err(e) = store.mark_served(id, served_tier, served_model) {
             tracing::warn!(error = %e, routing_log_id = id, "routing log served update failed");
         }
     }
@@ -378,7 +379,7 @@ mod tests {
         let long = "a".repeat(150);
         let out = truncate_user_preview_for_log(&long);
         assert_eq!(out.chars().count(), LOG_USER_PREVIEW_MAX + 1);
-        assert!(out.ends_with('…'));
+        assert!(out.ends_with("\u{2026}"));
     }
 }
 

@@ -5,7 +5,7 @@
 #   - 略提高 work 校验基线，配合 adaptive 在健康时自动下调
 #
 # 使用:
-#   token-router --config example/config.economy.toml gateway start
+#   token-router --home /tmp/token-router-dev gateway start
 #
 # 若回退率上升，token-router stats --lang zh 查看经验/自适应分区，或改回 balanced。
 

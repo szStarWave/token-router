@@ -3,6 +3,7 @@
 use std::ffi::{CStr, c_char};
 use std::path::Path;
 
+use crate::config::setup::normalize_listen_port;
 use crate::embedded;
 
 pub const TOKEN_OK: i32 = 0;
@@ -40,27 +41,42 @@ pub extern "C" fn token_router_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
-/// Start the gateway in a background thread. `config_path` may be null for the default path.
+/// Start the gateway in a background thread.
+/// `home_dir` and `port` are required (no defaults).
 #[unsafe(no_mangle)]
 pub extern "C" fn token_router_start(
-    config_path: *const c_char,
+    home_dir: *const c_char,
+    port: u16,
     error_out: *mut c_char,
     error_out_len: usize,
 ) -> i32 {
-    let path = if config_path.is_null() {
-        None
-    } else {
-        match unsafe { CStr::from_ptr(config_path) }.to_str() {
-            Ok(s) if s.is_empty() => None,
-            Ok(s) => Some(Path::new(s)),
-            Err(e) => {
-                write_cstr(error_out, error_out_len, &format!("invalid config_path: {e}"));
-                return TOKEN_ERR_INVALID_ARG;
-            }
+    if home_dir.is_null() {
+        write_cstr(error_out, error_out_len, "home_dir is required");
+        return TOKEN_ERR_INVALID_ARG;
+    }
+    if port == 0 {
+        write_cstr(error_out, error_out_len, "port is required");
+        return TOKEN_ERR_INVALID_ARG;
+    }
+
+    let home = match unsafe { CStr::from_ptr(home_dir) }.to_str() {
+        Ok(s) if s.is_empty() => {
+            write_cstr(error_out, error_out_len, "home_dir is required");
+            return TOKEN_ERR_INVALID_ARG;
+        }
+        Ok(s) => Path::new(s),
+        Err(e) => {
+            write_cstr(error_out, error_out_len, &format!("invalid home_dir: {e}"));
+            return TOKEN_ERR_INVALID_ARG;
         }
     };
 
-    match embedded::start(path) {
+    if let Err(e) = normalize_listen_port(port) {
+        write_cstr(error_out, error_out_len, &e);
+        return TOKEN_ERR_INVALID_ARG;
+    }
+
+    match embedded::start(Some(home), Some(port)) {
         Ok(_) => TOKEN_OK,
         Err(e) => {
             let code = map_error(&e);

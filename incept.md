@@ -46,7 +46,7 @@ your-electron-app/
 ```
 UI invokeIpc('token-router:ensureStarted')
   → 主进程 ensureFlowyRouterStarted()
-  → FFI token_router_start('')
+  → FFI token_router_start(homeDir, port)   // home 与 port 必填
   → 轮询 GET /v1/admin/status
   → POST /v1/admin/setup
   → 返回 { url: 'http://127.0.0.1:11080/v1' }
@@ -93,7 +93,7 @@ C 头文件：`ffi/token_router.h`。`Cargo.toml` 中 `crate-type = ["rlib", "cd
 | 函数 | 返回值 | 说明 |
 |------|--------|------|
 | `token_router_version()` | `const char*` | 库版本（静态字符串，勿 free） |
-| `token_router_start(config_path, error_out, error_out_len)` | `int32` | 后台启动；`config_path` 可为 `NULL` 或空串 → 默认 `~/.token-router/config.toml` |
+| `token_router_start(home_dir, port, error_out, error_out_len)` | `int32` | 后台启动；`home_dir` 与 `port` **必填**（无默认值） |
 | `token_router_stop(error_out, error_out_len)` | `int32` | 停止并等待线程退出 |
 | `token_router_is_running()` | `int32` | 运行中返回 `1`，否则 `0` |
 | `token_router_gateway_url(url_out, url_out_len)` | `int32` | 写入 `http://host:port`；失败返回负错误码 |
@@ -106,7 +106,7 @@ C 头文件：`ffi/token_router.h`。`Cargo.toml` 中 `crate-type = ["rlib", "cd
 | `TOKEN_ERR_INVALID_ARG` | 3 | 参数非法 |
 | `TOKEN_ERR_INTERNAL` | 4 | 内部错误 |
 
-数据目录：Windows `%USERPROFILE%\.token-router\`，Unix `~/.token-router/`。
+数据目录由 `home_dir` 指定（配置固定为 `{home}/config.toml`）。**FFI 不提供默认 home/port**；CLI 默认 home 为 `~/.token-router/`，默认 port 为 `16621`（仅 `gateway start`/`restart` 时生效）。
 
 ---
 
@@ -174,12 +174,15 @@ export class FlowyRouterFfiBinding {
   private opened = false;
   constructor(private readonly dllPath = defaultRouterDllPath()) {}
 
-  start(configPath: string) {
+  start(homeDir: string, port: number) {
+    if (!homeDir || !port) {
+      throw new Error('homeDir and port are required');
+    }
     const errorOut = Buffer.alloc(ERROR_BUFFER_LEN);
     const code = this.callStatus(
       'token_router_start',
-      [DataType.String, DataType.U8Array, DataType.U64],
-      [configPath, errorOut, errorOut.length],
+      [DataType.String, DataType.U16, DataType.U8Array, DataType.U64],
+      [homeDir, port, errorOut, errorOut.length],
     );
     if (code !== FlowyRouterStatusCode.OK) {
       throw new Error(cStringFromBuffer(errorOut) || 'token_router_start failed');
@@ -257,7 +260,7 @@ export function closeFlowyRouterFfiBinding() {
 | C 函数 | retType | paramsType |
 |--------|---------|------------|
 | `token_router_version` | `String` | `[]` |
-| `token_router_start` | `I32` | `[String, U8Array, U64]` |
+| `token_router_start` | `I32` | `[String, U16, U8Array, U64]` |
 | `token_router_stop` | `I32` | `[U8Array, U64]` |
 | `token_router_is_running` | `I32` | `[]` |
 | `token_router_gateway_url` | `I32` | `[U8Array, U64]` |
@@ -324,8 +327,13 @@ export async function ensureFlowyRouterStarted(
   const binding = getFlowyRouterFfiBinding();
   const wasRunning = binding.isRunning();
 
-  // 1. FFI 启动（空字符串 = 默认 ~/.token-router/config.toml）
-  if (!wasRunning) binding.start('');
+  // 1. FFI 启动（home 与 port 必填）
+  if (!wasRunning) {
+    if (!options.homeDir || !options.port) {
+      throw new Error('homeDir and port are required');
+    }
+    binding.start(options.homeDir, options.port);
+  }
 
   // 2. 等 Admin HTTP 就绪
   const status = await waitForReady();
@@ -560,7 +568,7 @@ const lib = koffi.load(dll);
 
 const TOKEN_OK = 0;
 const start = lib.func(
-  "int32 token_router_start(const char *config_path, _Out_ char *error_out, size_t error_out_len)",
+  "int32 token_router_start(const char *home_dir, uint16_t port, _Out_ char *error_out, size_t error_out_len)",
 );
 const isRunning = lib.func("int32 token_router_is_running()");
 const gatewayUrl = lib.func(
@@ -573,7 +581,7 @@ const stop = lib.func(
 const errBuf = Buffer.alloc(512);
 const urlBuf = Buffer.alloc(256);
 
-if (start(null, errBuf, errBuf.length) !== TOKEN_OK) process.exit(1);
+if (start(homeDir, port, errBuf, errBuf.length) !== TOKEN_OK) process.exit(1);
 console.log("running:", isRunning());
 gatewayUrl(urlBuf, urlBuf.length);
 console.log("url:", urlBuf.toString().split("\0")[0]);

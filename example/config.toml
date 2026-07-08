@@ -4,10 +4,9 @@
 #   Linux/macOS: cp example/config.toml ~/.token-router/config.toml
 #   Windows:     copy example\config.toml %USERPROFILE%\.token-router\config.toml
 #
-# Electron 嵌入：也可复制打包产物 config/config.toml 到上述路径
-# 或直接指定:
-#   token-router --config example/config.toml gateway start
-#   make start CONFIG=example/config.toml
+# Electron 嵌入：传入 home 目录与端口（配置固定为 {home}/config.toml）
+#   token-router --home /path/to/home --port 11080 gateway start
+#   make start HOME=/path/to/home PORT=11080
 
 # ---------------------------------------------------------------------------
 # Gateway
