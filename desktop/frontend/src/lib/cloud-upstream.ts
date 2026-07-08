@@ -245,6 +245,23 @@ export function selectCloudModel(key: string | null): void {
   notifyUiChange()
 }
 
+function autoFlowyModelKey(): string {
+  return entryKey('flowy', AUTO_MODEL_ID)
+}
+
+function fallbackToAutoFlowyModel(): boolean {
+  const state = getCloudStoreState()
+  const autoKey = autoFlowyModelKey()
+  const items = buildCloudDisplayItems()
+  if (!items.some((item) => item.key === autoKey)) {
+    state.setSelectedKey(null)
+    return false
+  }
+  state.setSelectedKey(autoKey)
+  markCloudUserConfigured()
+  return true
+}
+
 function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string | null): void {
   const state = getCloudStoreState()
   const items = buildCloudDisplayItems()
@@ -270,7 +287,7 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
       state.setSelectedKey(matches[0].key)
       return
     }
-    state.setSelectedKey(null)
+    fallbackToAutoFlowyModel()
     return
   }
 
@@ -280,13 +297,47 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
       state.setSelectedKey(match.key)
       return
     }
-    state.setSelectedKey(null)
+    fallbackToAutoFlowyModel()
     return
   }
 
   if (state.selectedKey && !items.some((item) => item.key === state.selectedKey)) {
-    state.setSelectedKey(null)
+    fallbackToAutoFlowyModel()
   }
+}
+
+/** Reconcile UI selection when the model list or setup no longer contains the current choice. */
+export function reconcileCloudModelSelection(): boolean {
+  const state = getCloudStoreState()
+  const previousKey = state.selectedKey
+  const items = buildCloudDisplayItems()
+
+  if (!items.length) {
+    if (previousKey !== null) state.setSelectedKey(null)
+    return previousKey !== null
+  }
+
+  if (previousKey && items.some((item) => item.key === previousKey)) {
+    return false
+  }
+
+  applyPendingSetupSelection()
+  const afterPending = getCloudStoreState().selectedKey
+  if (afterPending && buildCloudDisplayItems().some((item) => item.key === afterPending)) {
+    return previousKey !== afterPending
+  }
+
+  const setup = useSetupStore.getState().setup?.cloud
+  if (setup?.model?.trim() && setup.base_url?.trim()) {
+    ensureSelectedKey(setup.model, setup.base_url)
+    const afterSetup = getCloudStoreState().selectedKey
+    if (afterSetup && buildCloudDisplayItems().some((item) => item.key === afterSetup)) {
+      return previousKey !== afterSetup
+    }
+  }
+
+  fallbackToAutoFlowyModel()
+  return previousKey !== getCloudStoreState().selectedKey
 }
 
 function applyPendingSetupSelection(): void {
@@ -333,17 +384,25 @@ export function deleteManualCloudEntry(id: string): void {
         setupCloud,
       )
     : false
+  const wasSelected = state.selectedKey === entryKey('manual', id)
 
   const manualEntries = state.manualEntries.filter((entry) => entry.id !== id)
-  let selectedKey = state.selectedKey
-  if (selectedKey === entryKey('manual', id)) selectedKey = null
-  if (!manualEntries.length && !selectedKey?.startsWith('flowy:')) {
-    clearCloudUserConfigured()
-  }
   state.setManualEntries(manualEntries)
   persistManualEntries(manualEntries)
-  state.setSelectedKey(selectedKey)
-  if (deletedActiveSetup || !setupCloudMatchesDisplayItems(setupCloud)) {
+
+  if (wasSelected || deletedActiveSetup) {
+    fallbackToAutoFlowyModel()
+  } else {
+    const selectedKey = state.selectedKey
+    if (!manualEntries.length && !selectedKey?.startsWith('flowy:')) {
+      clearCloudUserConfigured()
+    }
+  }
+
+  if (
+    (deletedActiveSetup || !setupCloudMatchesDisplayItems(setupCloud))
+    && !getSelectedCloudItem()
+  ) {
     patchLocalSetupCloudCleared()
   }
   notifyUiChange()
@@ -416,6 +475,7 @@ export function initCloudUpstream(): void {
   state.setManualEntries(loadManualEntriesFromStorage())
   syncCloudFromSetup(useSetupStore.getState().setup?.cloud)
   applyPendingSetupSelection()
+  reconcileCloudModelSelection()
 }
 
 export async function fetchCloudModels(autoLabel: string) {
@@ -423,8 +483,16 @@ export async function fetchCloudModels(autoLabel: string) {
   if (!token) throw new Error('未登录')
   const models = withAutoModelOption(await getAvailableModelList(token), autoLabel)
   getCloudStoreState().setFlowyModels(models)
-  applyPendingSetupSelection()
+  const selectionChanged = reconcileCloudModelSelection()
   notifyUiChange()
+  if (selectionChanged && useAppStore.getState().connected) {
+    const cloud = useSetupStore.getState().setup?.cloud
+    const tokenBudget =
+      cloud?.token_quota_enabled && cloud.token_budget != null
+        ? cloud.token_budget
+        : undefined
+    void persistCloudSelection(tokenBudget)
+  }
   return models
 }
 
@@ -449,7 +517,10 @@ export function buildCloudSavePayload(
   const preferred = modelId ?? getCloudModelValue()
   const items = buildCloudDisplayItems()
   const item =
-    items.find((i) => i.id === preferred || i.model === preferred) ?? getSelectedCloudItem()
+    items.find((i) => i.id === preferred || i.model === preferred)
+    ?? getSelectedCloudItem()
+    ?? items.find((i) => i.type === 'flowy' && i.id === AUTO_MODEL_ID)
+    ?? null
   if (!item) return null
 
   if (item.type === 'flowy') {
@@ -574,7 +645,11 @@ export async function ensureCloudUpstreamConfigured(
     return { models, posted: false }
   }
 
-  const modelId = normalizeModelId(options.currentModel) || AUTO_MODEL_ID
+  reconcileCloudModelSelection()
+  const modelId =
+    getCloudModelValue()
+    || normalizeModelId(options.currentModel)
+    || AUTO_MODEL_ID
   const tokenBudget =
     options.tokenBudget === undefined
       ? undefined

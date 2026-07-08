@@ -34,24 +34,35 @@ if [[ "${VITE_EDITION:-}" == "international" ]]; then
   OTA_REGION="INTL"
 fi
 
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*|Windows*)
-    PLATFORM="windows"
+resolve_platform() {
+  if [[ -n "${OTA_OS:-}" ]]; then
+    echo "$OTA_OS"
+    return
+  fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows*) echo "windows" ;;
+    Darwin) echo "macos" ;;
+    Linux) echo "linux" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+PLATFORM="$(resolve_platform)"
+case "$PLATFORM" in
+  windows)
     SOURCE="$ROOT/desktop/src-tauri/target/release/bundle/nsis/Token Router_${DESKTOP_VERSION}_x64-setup.exe"
     DEST_NAME="Token-Router-v${DESKTOP_VERSION}-${OTA_CHANNEL}-${OTA_REGION}-${OTA_ACCOUNT_DIR}-setup.exe"
     ;;
-  Darwin)
-    PLATFORM="macos"
+  macos)
     SOURCE="$(ls -1 "$ROOT/desktop/src-tauri/target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
     DEST_NAME="Token-Router-v${DESKTOP_VERSION}-${OTA_CHANNEL}-${OTA_REGION}-${OTA_ACCOUNT_DIR}.dmg"
     ;;
-  Linux)
-    PLATFORM="linux"
+  linux)
     SOURCE="$TARGET/flatpak/com.tokenrouter.desktop-${DESKTOP_VERSION}.flatpak"
     DEST_NAME="Token-Router-v${DESKTOP_VERSION}-${OTA_CHANNEL}-${OTA_REGION}-${OTA_ACCOUNT_DIR}.flatpak"
     ;;
   *)
-    echo "ERROR: unsupported platform for OTA staging: $(uname -s)" >&2
+    echo "ERROR: unsupported platform for OTA staging: ${OTA_OS:-$(uname -s)}" >&2
     exit 1
     ;;
 esac

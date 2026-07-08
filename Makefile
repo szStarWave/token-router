@@ -305,6 +305,10 @@ else
 OTA_REGION           := CN
 endif
 endif
+export OTA_CHANNEL
+export OTA_REGION
+export OTA_ENABLE_ACCOUNT
+export OTA_OS
 ifeq ($(OTA_ENABLE_ACCOUNT),true)
 OTA_ACCOUNT_DIR      := with_account
 else
@@ -341,9 +345,22 @@ endif
 FLATPAK_ID           := com.tokenrouter.desktop
 FLATPAK_BUNDLE       := $(TARGET)/flatpak/$(FLATPAK_ID)-$(DESKTOP_VERSION).flatpak
 
+ifeq ($(UNAME_S),Windows)
 ota-stage:
-	OTA_CHANNEL=$(OTA_CHANNEL) OTA_REGION=$(OTA_REGION) OTA_ENABLE_ACCOUNT=$(OTA_ENABLE_ACCOUNT) \
-		bash scripts/stage-ota.sh
+	@if not exist "$(TAURI_NSIS_SETUP)" (\
+		echo ERROR: missing OTA artifact for windows & \
+		echo Expected: $(TAURI_NSIS_SETUP) & \
+		echo Run: make build-ota & \
+		exit /b 1)
+	@if not exist "$(OTA_STAGING_DIR)" mkdir "$(OTA_STAGING_DIR)"
+	@copy /Y "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)" >nul
+	@echo $(OTA_STAGED_SETUP)> "$(OTA_STAGING_DIR)\.latest-artifact"
+	@echo Staged $(OTA_STAGED_SETUP)
+	@echo OTA_PLATFORM=windows
+else
+ota-stage:
+	bash scripts/stage-ota.sh
+endif
 
 ifeq ($(UNAME_S),Windows)
 build-ota: tauri-build ota-stage

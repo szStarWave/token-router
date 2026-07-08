@@ -18,6 +18,7 @@ import {
   getCloudModelDisplayName,
   isCloudModelUiConfigured,
   persistCloudSelection,
+  reconcileCloudModelSelection,
   selectCloudModel,
   sliderFromCloudBudget,
   upsertManualCloudEntry,
@@ -101,6 +102,7 @@ export function UpstreamPage() {
   useEffect(() => {
     if (modelsQuery.data) {
       useCloudStore.getState().setFlowyModels(withAutoModelOption(modelsQuery.data, autoLabel))
+      reconcileCloudModelSelection()
     }
   }, [modelsQuery.data, autoLabel])
 
