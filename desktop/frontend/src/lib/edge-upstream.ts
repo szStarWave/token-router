@@ -567,6 +567,30 @@ export function selectEdgeModel(key: string | null): void {
   notifyUiChange()
 }
 
+/** After a custom edge model is removed, prefer Herdsman, then another custom entry. */
+function fallbackEdgeModelAfterManualDelete(): boolean {
+  const state = getEdgeStoreState()
+  const items = buildDisplayItems()
+
+  const firstHerdsman = items.find((item) => item.type === 'herdsman')
+  if (firstHerdsman) {
+    state.setSelectedKey(firstHerdsman.key)
+    markEdgeUserConfigured()
+    return true
+  }
+
+  const firstManual = items.find((item) => item.type === 'manual')
+  if (firstManual) {
+    state.setSelectedKey(firstManual.key)
+    markEdgeUserConfigured()
+    return true
+  }
+
+  state.setSelectedKey(null)
+  clearEdgeUserConfigured()
+  return false
+}
+
 function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string | null): void {
   const state = getEdgeStoreState()
   const items = buildDisplayItems()
@@ -668,17 +692,24 @@ export function deleteManualEntry(id: string): void {
         setupEdge,
       )
     : false
+  const wasSelected = state.selectedKey === entryKey('manual', id)
 
   const manualEntries = state.manualEntries.filter((entry) => entry.id !== id)
-  let selectedKey = state.selectedKey
-  if (selectedKey === entryKey('manual', id)) selectedKey = null
-  if (!manualEntries.length && !selectedKey?.startsWith('herdsman:')) {
-    clearEdgeUserConfigured()
-  }
   state.setManualEntries(manualEntries)
   persistManualEntries(manualEntries)
-  state.setSelectedKey(selectedKey)
-  if (deletedActiveSetup || !setupEdgeMatchesDisplayItems(setupEdge)) {
+
+  if (wasSelected || deletedActiveSetup) {
+    if (!fallbackEdgeModelAfterManualDelete()) {
+      patchLocalSetupEdgeCleared()
+    }
+  } else if (!manualEntries.length && !state.selectedKey?.startsWith('herdsman:')) {
+    clearEdgeUserConfigured()
+  }
+
+  if (
+    !getSelectedItem()
+    && !setupEdgeMatchesDisplayItems(useSetupStore.getState().setup?.edge)
+  ) {
     patchLocalSetupEdgeCleared()
   }
   notifyModelChange()

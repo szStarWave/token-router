@@ -36,14 +36,14 @@ def parse_args():
         dest="setup_path",
         type=str,
         required=True,
-        help="Path to installer package (.exe on Windows, .dmg on macOS; legacy alias: --exe-path)",
+        help="Path to installer package (.exe on Windows, .dmg on macOS, .flatpak on Linux; legacy alias: --exe-path)",
     )
     parser.add_argument(
         "--platform",
         type=str,
         default="windows",
-        choices=("windows", "macos"),
-        help="Target platform subdirectory (macos uploads to .../macos/latest.json)",
+        choices=("windows", "macos", "linux"),
+        help="Target platform subdirectory (macos/linux upload to .../{platform}/latest.json)",
     )
     parser.add_argument(
         "--release-notes-file",
@@ -210,8 +210,8 @@ def main() -> None:
 
     account_dir = "with_account" if args.enable_account_system == "true" else "without_account"
     path_in_repo = f"{args.region_scope}/{args.channel}/{account_dir}"
-    if args.platform == "macos":
-        path_in_repo = f"{path_in_repo}/macos"
+    if args.platform in ("macos", "linux"):
+        path_in_repo = f"{path_in_repo}/{args.platform}"
     manifest_version = args.version if args.version.startswith("v") else f"v{args.version}"
 
     staging_dir = Path(tempfile.mkdtemp(prefix="token_router_ota_publish_"))

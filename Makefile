@@ -69,8 +69,9 @@ endif
         start stop restart status \
         env setup stats stats-global stats-zh stats-global-zh \
         package-electron-win clean-package-electron-win \
-        ui-build tauri-dev tauri-build tauri-build-macos setup-tauri-nsis \
-        ota-check-windows ota-stage build-ota ota-publish push version
+        ui-build tauri-dev tauri-build tauri-build-linux tauri-build-macos \
+        setup-linux-desktop-deps setup-tauri-nsis flatpak-build \
+        ota-stage build-ota ota-publish push version
 
 help:
 	@echo "  build            Build debug CLI + library"
@@ -90,11 +91,14 @@ help:
 	@echo ""
 	@echo "  ui-build         Build desktop web UI (Vite → desktop/frontend/dist)"
 	@echo "  tauri-dev        Run Tauri desktop app (dev)"
-	@echo "  tauri-build      Build Tauri desktop app (release)"
+	@echo "  tauri-build      Build Tauri desktop app (release, auto-detect OS)"
+	@echo "  tauri-build-linux  Build Tauri .deb on Linux"
+	@echo "  setup-linux-desktop-deps  Install Linux build deps (Tauri + Flatpak)"
 	@echo "  setup-tauri-nsis Prefetch NSIS toolchain for Windows Tauri bundling"
 	@echo "  tauri-build-macos  Build Tauri desktop app on macOS (.app + .dmg)"
-	@echo "  build-ota        Build Tauri release and stage OTA NSIS setup (Windows)"
-	@echo "  push             Build, stage, and publish OTA setup (needs MODELSCOPE_TOKEN)"
+	@echo "  flatpak-build    Build Flatpak bundle from .deb (Linux)"
+	@echo "  build-ota        Build release + stage OTA artifact (Windows/macOS/Linux)"
+	@echo "  push             Stage and publish OTA artifact (needs MODELSCOPE_TOKEN)"
 	@echo "  version X.Y.Z    Bump app version across manifests (e.g. make version 0.4.0 or VER=0.4.0)"
 	@echo ""
 	@echo "Options:"
@@ -229,8 +233,36 @@ tauri-build:
 ifeq ($(UNAME_S),Windows)
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-tauri-nsis.ps1
 	$(PNPM) --dir $(DESKTOP) run tauri:build:win
-else
+else ifeq ($(UNAME_S),Darwin)
+	$(PNPM) --dir $(DESKTOP)/frontend install
 	$(PNPM) --dir $(DESKTOP) run tauri:build
+else ifeq ($(UNAME_S),Linux)
+	$(PNPM) --dir $(DESKTOP)/frontend install
+	$(PNPM) --dir $(DESKTOP) run tauri:build:linux
+else
+	@echo "ERROR: tauri-build unsupported on $(UNAME_S)"
+	@exit 1
+endif
+
+tauri-build-linux:
+ifeq ($(UNAME_S),Linux)
+	$(PNPM) --dir $(DESKTOP)/frontend install
+	$(PNPM) --dir $(DESKTOP) run icons:generate
+	$(PNPM) --dir $(DESKTOP) run tauri:build:linux
+else
+	@echo "ERROR: tauri-build-linux requires Linux"
+	@exit 1
+endif
+
+setup-linux-desktop-deps:
+	bash scripts/setup-linux-desktop-deps.sh
+
+flatpak-build:
+ifeq ($(UNAME_S),Linux)
+	bash scripts/build-flatpak.sh
+else
+	@echo "ERROR: flatpak-build requires Linux"
+	@exit 1
 endif
 
 setup-tauri-nsis:
@@ -277,56 +309,102 @@ else
 OTA_REGION           := CN
 endif
 endif
+export OTA_CHANNEL
+export OTA_REGION
+export OTA_ENABLE_ACCOUNT
+export OTA_OS
 ifeq ($(OTA_ENABLE_ACCOUNT),true)
 OTA_ACCOUNT_DIR      := with_account
 else
 OTA_ACCOUNT_DIR      := without_account
 endif
-OTA_SETUP_NAME       := Token-Router-v$(DESKTOP_VERSION)-$(OTA_CHANNEL)-$(OTA_REGION)-$(OTA_ACCOUNT_DIR)-setup.exe
+ifeq ($(UNAME_S),Windows)
+OTA_OS               := windows
+OTA_SETUP_SUFFIX     := -setup.exe
+else ifeq ($(UNAME_S),Darwin)
+OTA_OS               := macos
+OTA_SETUP_SUFFIX     := .dmg
+else ifeq ($(UNAME_S),Linux)
+OTA_OS               := linux
+OTA_SETUP_SUFFIX     := .flatpak
+else
+OTA_OS               := unknown
+OTA_SETUP_SUFFIX     :=
+endif
+OTA_SETUP_NAME       := Token-Router-v$(DESKTOP_VERSION)-$(OTA_CHANNEL)-$(OTA_REGION)-$(OTA_ACCOUNT_DIR)$(OTA_SETUP_SUFFIX)
 ifeq ($(UNAME_S),Windows)
 OTA_STAGED_SETUP     := $(OTA_STAGING_DIR)\$(OTA_SETUP_NAME)
 else
 OTA_STAGED_SETUP     := $(OTA_STAGING_DIR)/$(OTA_SETUP_NAME)
 endif
+ifeq ($(UNAME_S),Windows)
+OTA_PUBLISH_PLATFORM := windows
+else ifeq ($(UNAME_S),Darwin)
+OTA_PUBLISH_PLATFORM := macos
+else ifeq ($(UNAME_S),Linux)
+OTA_PUBLISH_PLATFORM := linux
+else
+OTA_PUBLISH_PLATFORM := unknown
+endif
+FLATPAK_ID           := com.tokenrouter.desktop
+FLATPAK_BUNDLE       := $(TARGET)/flatpak/$(FLATPAK_ID)-$(DESKTOP_VERSION).flatpak
 
-ota-check-windows:
-ifneq ($(UNAME_S),Windows)
-	@echo ERROR: OTA targets require Windows
+ifeq ($(UNAME_S),Windows)
+ota-stage:
+	@if not exist "$(TAURI_NSIS_SETUP)" (\
+		echo ERROR: missing OTA artifact for windows & \
+		echo Expected: $(TAURI_NSIS_SETUP) & \
+		echo Run: make build-ota & \
+		exit /b 1)
+	@if not exist "$(OTA_STAGING_DIR)" mkdir "$(OTA_STAGING_DIR)"
+	@copy /Y "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)" >nul
+	@echo $(OTA_STAGED_SETUP)> "$(OTA_STAGING_DIR)\.latest-artifact"
+	@echo Staged $(OTA_STAGED_SETUP)
+	@echo OTA_PLATFORM=windows
+else
+ota-stage:
+	bash scripts/stage-ota.sh
+endif
+
+ifeq ($(UNAME_S),Windows)
+build-ota: tauri-build ota-stage
+else ifeq ($(UNAME_S),Darwin)
+build-ota: tauri-build-macos ota-stage
+else ifeq ($(UNAME_S),Linux)
+build-ota: flatpak-build ota-stage
+else
+build-ota:
+	@echo "ERROR: build-ota unsupported on $(UNAME_S)"
 	@exit 1
 endif
 
-ota-stage: ota-check-windows
-ifeq ($(UNAME_S),Windows)
-	@if not exist "$(TAURI_NSIS_SETUP)" (echo ERROR: missing $(TAURI_NSIS_SETUP). Run: make build-ota && exit /b 1)
-	@if not exist "$(OTA_STAGING_DIR)" mkdir "$(OTA_STAGING_DIR)"
-	@copy /Y "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)" >nul
-	@echo Staged $(OTA_STAGED_SETUP)
-else
-	@test -f "$(TAURI_NSIS_SETUP)" || (echo "ERROR: missing $(TAURI_NSIS_SETUP). Run: make build-ota" && exit 1)
-	@mkdir -p "$(OTA_STAGING_DIR)"
-	@cp "$(TAURI_NSIS_SETUP)" "$(OTA_STAGED_SETUP)"
-	@echo "Staged $(OTA_STAGED_SETUP)"
-endif
-
-build-ota: ota-check-windows tauri-build ota-stage
-
-ota-publish: ota-stage ota-check-windows
-ifeq ($(UNAME_S),Windows)
-	@if "$(MODELSCOPE_TOKEN)"=="" (echo ERROR: set MODELSCOPE_TOKEN environment variable, e.g. $$env:MODELSCOPE_TOKEN = "your-token" && exit /b 1)
-else
-	@test -n "$(MODELSCOPE_TOKEN)" || (echo "ERROR: set MODELSCOPE_TOKEN environment variable" && exit 1)
-endif
-	$(UV) run --with modelscope python $(OTA_PUBLISH_SCRIPT) \
+OTA_PUBLISH_CMD      = $(UV) run --with modelscope python $(OTA_PUBLISH_SCRIPT) \
 		--channel $(OTA_CHANNEL) \
 		--region-scope $(OTA_REGION) \
 		--version v$(DESKTOP_VERSION) \
 		--enable-account-system $(OTA_ENABLE_ACCOUNT) \
+		--platform $(OTA_PUBLISH_PLATFORM) \
 		--setup-path "$(OTA_STAGED_SETUP)"
 
-ifeq ($(BUILD),1)
-push: ota-check-windows build-ota ota-publish
+ifeq ($(UNAME_S),Windows)
+ota-publish: ota-stage
+	@if "$(MODELSCOPE_TOKEN)"=="" (echo ERROR: set MODELSCOPE_TOKEN environment variable, e.g. $$env:MODELSCOPE_TOKEN = "your-token" && exit /b 1)
+	@if "$(OTA_PUBLISH_PLATFORM)"=="" (echo ERROR: OTA publish unsupported on $(UNAME_S) && exit /b 1)
+	@if "$(OTA_PUBLISH_PLATFORM)"=="unknown" (echo ERROR: OTA publish unsupported on $(UNAME_S) && exit /b 1)
+	@if not exist "$(OTA_STAGED_SETUP)" (echo ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage && exit /b 1)
+	$(OTA_PUBLISH_CMD)
 else
-push: ota-check-windows ota-publish
+ota-publish: ota-stage
+	@test -n "$(MODELSCOPE_TOKEN)" || (echo "ERROR: set MODELSCOPE_TOKEN environment variable" && exit 1)
+	@test -n "$(OTA_PUBLISH_PLATFORM)" && test "$(OTA_PUBLISH_PLATFORM)" != "unknown" || (echo "ERROR: OTA publish unsupported on $(UNAME_S)" && exit 1)
+	@test -f "$(OTA_STAGED_SETUP)" || (echo "ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage" && exit 1)
+	$(OTA_PUBLISH_CMD)
+endif
+
+ifeq ($(BUILD),1)
+push: build-ota ota-publish
+else
+push: ota-publish
 endif
 
 # Bump version: make version 0.4.0  OR  make version VER=0.4.0

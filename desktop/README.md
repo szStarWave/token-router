@@ -8,6 +8,17 @@
 - Node.js 18+ 与 [pnpm](https://pnpm.io/)
 - **Windows**：WebView2（Win10/11 通常已自带）
 - **macOS**：Xcode Command Line Tools（`xcode-select --install`）
+- **Linux**：GTK/WebKit 与托盘依赖（见下方）
+
+### Linux 依赖
+
+```bash
+make setup-linux-desktop-deps
+# 或手动（Ubuntu/Debian）：
+# sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+Flatpak 打包还需 `flatpak`、`flatpak-builder` 与 GNOME 46 runtime，详见 [`packaging/flatpak/README.md`](../packaging/flatpak/README.md)。
 
 ## 网络代理（下载 crates 时）
 
@@ -83,6 +94,24 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-tauri-nsis.ps1
 ```
 
 工具会安装到 `%LOCALAPPDATA%\tauri\NSIS\`（含 `makensis.exe` 与 `Plugins\x86-unicode\additional\nsis_tauri_utils.dll`）。MSI 才需要 WiX，解压到 `%LOCALAPPDATA%\tauri\WixTools314\`。
+
+### Linux（Flatpak / Flathub）
+
+```bash
+make setup-linux-desktop-deps
+make flatpak-build
+# 或 OTA 全流程：
+make build-ota
+```
+
+产物：
+
+| 类型 | 路径 |
+|------|------|
+| `.deb` | `desktop/src-tauri/target/release/bundle/deb/` |
+| Flatpak bundle | `target/flatpak/com.tokenrouter.desktop_<version>.flatpak` |
+
+Flathub 提交流程见 [`packaging/flatpak/README.md`](../packaging/flatpak/README.md)。
 
 ## 功能说明
 
@@ -172,11 +201,16 @@ printf '/status' | nc -U ~/.token-router-desktop/Token-Router-status.sock
 
 ## OTA 发布
 
-### Windows
+按当前系统自动选择安装包格式（Windows NSIS / macOS DMG / Linux Flatpak）：
 
-见仓库根目录 `Makefile` 的 `build-ota` / `push` 目标。
+```bash
+make build-ota          # 构建并 stage 到 target/ota/
+export MODELSCOPE_TOKEN=<token>
+make push               # 上传至 ModelScope
+# 或一步：BUILD=1 make push
+```
 
-Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`
+Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`（Windows）或 `.../macos/`、`.../linux/` 子目录。
 
 ### macOS
 

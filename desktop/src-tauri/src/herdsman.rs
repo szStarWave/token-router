@@ -1014,23 +1014,117 @@ fn resolve_from_callme_file() -> Option<String> {
 }
 
 #[cfg(windows)]
-fn is_portable_herdsman_exe_name(name: &str) -> bool {
+fn is_herdsman_exe_file_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     if !lower.ends_with(".exe") || lower == "uninstall.exe" {
         return false;
     }
-    let rest = match lower.strip_prefix("herdsman-v") {
-        Some(r) => r,
-        None => return false,
+    lower.starts_with("herdsman")
+}
+
+#[cfg(windows)]
+fn desktop_dirs() -> Vec<std::path::PathBuf> {
+    use std::env;
+    use std::path::PathBuf;
+
+    let Some(profile) = env::var("USERPROFILE").ok() else {
+        return Vec::new();
     };
-    let (version, _) = match rest.split_once('-') {
-        Some(parts) => parts,
-        None => return false,
+    let root = PathBuf::from(profile);
+    let candidates = [
+        root.join("Desktop"),
+        root.join("桌面"),
+        root.join("OneDrive").join("Desktop"),
+        root.join("OneDrive").join("桌面"),
+    ];
+    candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+#[cfg(windows)]
+fn downloads_dirs() -> Vec<std::path::PathBuf> {
+    use std::env;
+    use std::path::PathBuf;
+
+    let Some(profile) = env::var("USERPROFILE").ok() else {
+        return Vec::new();
     };
-    !version.is_empty()
-        && version
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.')
+    let root = PathBuf::from(profile);
+    let candidates = [
+        root.join("Downloads"),
+        root.join("下载"),
+    ];
+    candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+#[cfg(windows)]
+fn newest_herdsman_exe_candidate(
+    current: &mut Option<(std::time::SystemTime, String)>,
+    path: std::path::PathBuf,
+) {
+    use std::fs;
+
+    let mtime = match path.metadata().and_then(|meta| meta.modified()) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let path_str = path.to_string_lossy().into_owned();
+    let replace = current
+        .as_ref()
+        .map(|(t, _)| mtime > *t)
+        .unwrap_or(true);
+    if replace {
+        *current = Some((mtime, path_str));
+    }
+}
+
+#[cfg(windows)]
+fn resolve_from_shallow_dirs(dirs: &[std::path::PathBuf]) -> Option<String> {
+    use std::fs;
+
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+
+    for dir in dirs {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name,
+                    None => continue,
+                };
+                if is_herdsman_exe_file_name(name) {
+                    newest_herdsman_exe_candidate(&mut best, path);
+                }
+                continue;
+            }
+            if path.is_dir() {
+                if let Some(found) = find_exe_in_dir(&path) {
+                    newest_herdsman_exe_candidate(&mut best, found);
+                }
+            }
+        }
+    }
+
+    best.map(|(_, path)| path)
+}
+
+#[cfg(windows)]
+fn resolve_from_desktop() -> Option<String> {
+    resolve_from_shallow_dirs(&desktop_dirs())
+}
+
+#[cfg(windows)]
+fn resolve_from_downloads() -> Option<String> {
+    resolve_from_shallow_dirs(&downloads_dirs())
 }
 
 #[cfg(windows)]
@@ -1043,11 +1137,8 @@ fn find_exe_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let name = path.file_name()?.to_string_lossy().to_lowercase();
-        if name.ends_with(".exe")
-            && name != "uninstall.exe"
-            && name.contains("herdsman")
-        {
+        let name = path.file_name()?.to_string_lossy();
+        if is_herdsman_exe_file_name(&name) {
             return Some(path);
         }
     }
@@ -1187,6 +1278,18 @@ fn resolve_known_install_paths() -> Option<String> {
         }
     }
 
+    for desktop in desktop_dirs() {
+        if let Some(found) = find_exe_in_dir(&desktop) {
+            return Some(found.to_string_lossy().into_owned());
+        }
+    }
+
+    for downloads in downloads_dirs() {
+        if let Some(found) = find_exe_in_dir(&downloads) {
+            return Some(found.to_string_lossy().into_owned());
+        }
+    }
+
     None
 }
 
@@ -1269,12 +1372,8 @@ fn resolve_portable_exe_scan() -> Option<String> {
     use std::env;
     use std::path::PathBuf;
 
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(profile) = env::var("USERPROFILE") {
-        let root = PathBuf::from(&profile);
-        dirs.push(root.join("Downloads"));
-        dirs.push(root.join("Desktop"));
-    }
+    let mut dirs: Vec<PathBuf> = desktop_dirs();
+    dirs.extend(downloads_dirs());
     if let Ok(local) = env::var("LOCALAPPDATA") {
         dirs.push(PathBuf::from(local));
     }
@@ -1298,7 +1397,7 @@ fn resolve_portable_exe_scan() -> Option<String> {
                 Some(n) => n,
                 None => continue,
             };
-            if !is_portable_herdsman_exe_name(name) {
+            if !is_herdsman_exe_file_name(name) {
                 continue;
             }
             let mtime = match path.metadata().and_then(|m| m.modified()) {
@@ -1321,10 +1420,12 @@ fn resolve_portable_exe_scan() -> Option<String> {
 
 #[cfg(windows)]
 fn resolve_herdsman_launcher() -> Option<String> {
-    let strategies: [(&str, fn() -> Option<String>); 4] = [
+    let strategies: [(&str, fn() -> Option<String>); 6] = [
         ("callme file", resolve_from_callme_file),
         ("known install paths", resolve_known_install_paths),
         ("registry", resolve_from_registry),
+        ("desktop", resolve_from_desktop),
+        ("downloads", resolve_from_downloads),
         ("portable exe scan", resolve_portable_exe_scan),
     ];
 
@@ -1541,6 +1642,28 @@ pub async fn herdsman_open_or_install(app: tauri::AppHandle) -> Result<HerdsmanO
         opened: "install-page".into(),
         target: DEFAULT_INSTALL_URL.into(),
     })
+}
+
+#[cfg(test)]
+mod exe_name_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_herdsman_exe_variants() {
+        assert!(is_herdsman_exe_file_name("herdsman.exe"));
+        assert!(is_herdsman_exe_file_name("Herdsman.exe"));
+        assert!(is_herdsman_exe_file_name("herdsman-v1.0.0-win.exe"));
+        assert!(is_herdsman_exe_file_name("HerdsmanSetup.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_unrelated_exe_names() {
+        assert!(!is_herdsman_exe_file_name("uninstall.exe"));
+        assert!(!is_herdsman_exe_file_name("setup.exe"));
+        assert!(!is_herdsman_exe_file_name("my-herdsman.exe"));
+    }
 }
 
 #[cfg(test)]
