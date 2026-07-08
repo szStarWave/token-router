@@ -1,6 +1,6 @@
 use serde_json::{json, Map, Value};
 
-use crate::gateway::api::compat::reasoning::infer_reasoning_config;
+use crate::gateway::api::compat::reasoning::{infer_reasoning_config, map_reasoning_effort};
 
 const ANTHROPIC_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
 
@@ -75,8 +75,13 @@ fn anthropic_thinking_enabled(body: &Value) -> bool {
 }
 
 /// Apply DeepSeek/Kimi-style thinking params from an Anthropic request body.
-pub fn apply_anthropic_upstream_options(result: &mut Map<String, Value>, body: &Value, model: &str) {
-    let Some(config) = infer_reasoning_config(model, None) else {
+pub fn apply_anthropic_upstream_options(
+    result: &mut Map<String, Value>,
+    body: &Value,
+    model: &str,
+    upstream_base: Option<&str>,
+) {
+    let Some(config) = infer_reasoning_config(model, upstream_base) else {
         return;
     };
     if !config.supports_thinking {
@@ -95,6 +100,9 @@ pub fn apply_anthropic_upstream_options(result: &mut Map<String, Value>, body: &
             "enable_thinking" => {
                 result.insert("enable_thinking".into(), json!(reasoning_enabled));
             }
+            "reasoning_split" => {
+                result.insert("reasoning_split".into(), json!(reasoning_enabled));
+            }
             _ => {}
         }
     }
@@ -102,15 +110,15 @@ pub fn apply_anthropic_upstream_options(result: &mut Map<String, Value>, body: &
     let Some(effort) = resolve_anthropic_reasoning_effort(body) else {
         return;
     };
-    let mapped = match effort {
-        "minimal" | "low" => "low",
-        "medium" | "standard" => "medium",
-        "high" | "xhigh" => "high",
-        _ => effort,
+    let Some(mapped) = map_reasoning_effort(effort, config.effort_value_mode.as_deref()) else {
+        return;
     };
     match config.effort_param.as_deref() {
         Some("reasoning_effort") => {
             result.insert("reasoning_effort".into(), json!(mapped));
+        }
+        Some("reasoning.effort") => {
+            result.insert("reasoning".into(), json!({"effort": mapped}));
         }
         _ => {}
     }
@@ -144,8 +152,8 @@ mod tests {
         });
         let mut map = Map::new();
         map.insert("model".into(), json!("deepseek-v4-flash"));
-        apply_anthropic_upstream_options(&mut map, &body, "deepseek-v4-flash");
+        apply_anthropic_upstream_options(&mut map, &body, "deepseek-v4-flash", Some("https://api.deepseek.com"));
         assert_eq!(map.get("thinking").and_then(|v| v.get("type")), Some(&json!("enabled")));
-        assert_eq!(map.get("reasoning_effort").and_then(|v| v.as_str()), Some("medium"));
+        assert_eq!(map.get("reasoning_effort").and_then(|v| v.as_str()), Some("high"));
     }
 }

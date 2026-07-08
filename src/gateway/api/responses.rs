@@ -12,8 +12,9 @@ use serde_json::{json, Map, Value};
 
 use crate::gateway::api::chat::{chat_completions_core, ChatOutputFormat};
 use crate::gateway::api::compat::{
-    apply_reasoning_options, convert_responses_input_to_messages, finalize_chat_request_value,
-    response_id_from_chat_id, CodexChatHistoryStore,
+    apply_reasoning_options, convert_responses_input_to_messages, extract_chat_delta_reasoning,
+    extract_reasoning_field_text, finalize_chat_request_value, InlineThinkState,
+    response_id_from_chat_id, CodexChatHistoryStore, StreamContentPiece,
 };
 use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, Role};
 use crate::gateway::api::routes::AppState;
@@ -52,7 +53,24 @@ pub async fn responses_handler(
     state.codex_history.record_calls_from_input(&body);
     let agent_id = super::routes::extract_agent_id(&headers);
     let base_url = state.config_mgr.get().cloud_base_url.clone();
-    let req = responses_request_to_openai_with_base(&body, base_url.as_deref())?;
+    let body_effort = body
+        .pointer("/reasoning/effort")
+        .and_then(|v| v.as_str());
+    let stored_effort = body
+        .get("previous_response_id")
+        .and_then(|v| v.as_str())
+        .and_then(|id| state.codex_history.get_reasoning_effort(id));
+    let apply_effort = body_effort.or(stored_effort.as_deref());
+    if let Some(effort) = apply_effort {
+        state
+            .codex_history
+            .set_pending_reasoning_effort(Some(effort));
+    }
+    let req = responses_request_to_openai_with_base(
+        &body,
+        base_url.as_deref(),
+        stored_effort.as_deref(),
+    )?;
     log_responses_convert(&body, &req, restored_calls);
     tracing::info!(
         original = %serde_json::to_string(&original_body).unwrap_or_default(),
@@ -127,10 +145,14 @@ fn log_responses_convert(body: &Value, req: &ChatCompletionRequest, restored_cal
 }
 
 pub fn responses_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequest> {
-    responses_request_to_openai_with_base(body, None)
+    responses_request_to_openai_with_base(body, None, None)
 }
 
-pub fn responses_request_to_openai_with_base(body: &Value, upstream_base: Option<&str>) -> AppResult<ChatCompletionRequest> {
+pub fn responses_request_to_openai_with_base(
+    body: &Value,
+    upstream_base: Option<&str>,
+    stored_effort: Option<&str>,
+) -> AppResult<ChatCompletionRequest> {
     let obj = body
         .as_object()
         .ok_or_else(|| AppError::BadRequest("invalid request body".into()))?;
@@ -197,7 +219,7 @@ pub fn responses_request_to_openai_with_base(body: &Value, upstream_base: Option
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    apply_reasoning_options(&mut result, body, model, upstream_base);
+    apply_reasoning_options(&mut result, body, model, upstream_base, stored_effort);
 
     let finalized = finalize_chat_request_value(result, model);
     serde_json::from_value(finalized)
@@ -260,6 +282,15 @@ pub fn chat_json_to_responses(chat: &Value) -> Value {
     Value::Object(responses)
 }
 
+#[derive(Default)]
+struct ReasoningStreamState {
+    added: bool,
+    done: bool,
+    output_index: i32,
+    item_id: String,
+    text: String,
+}
+
 pub struct ResponsesSseTransform {
     sent_created: bool,
     text_started: bool,
@@ -278,9 +309,8 @@ pub struct ResponsesSseTransform {
     prompt_tokens: i64,
     completion_tokens: i64,
     cached_tokens: i64,
-    reasoning_text: String,
-    reasoning_started: bool,
-    reasoning_output_index: i32,
+    reasoning: ReasoningStreamState,
+    inline_think: InlineThinkState,
     codex_history: Option<Arc<CodexChatHistoryStore>>,
 }
 
@@ -317,10 +347,182 @@ impl ResponsesSseTransform {
             prompt_tokens: 0,
             completion_tokens: 0,
             cached_tokens: 0,
-            reasoning_text: String::new(),
-            reasoning_started: false,
-            reasoning_output_index: -1,
+            reasoning: ReasoningStreamState::default(),
+            inline_think: InlineThinkState::default(),
             codex_history,
+        }
+    }
+
+    fn push_reasoning_delta(&mut self, delta: &str, out: &mut Vec<Bytes>) {
+        if delta.is_empty() {
+            return;
+        }
+        self.ensure_created(out);
+        if !self.reasoning.added {
+            self.reasoning.output_index = self.next_output_index;
+            self.next_output_index += 1;
+            self.reasoning.item_id = format!("rs_{}", self.response_id);
+            self.reasoning.added = true;
+            out.push(self.emit(
+                "response.output_item.added",
+                event_map! {
+                    "response_id".into() => json!(self.response_id),
+                    "output_index".into() => json!(self.reasoning.output_index),
+                    "item".into() => json!({
+                        "id": self.reasoning.item_id,
+                        "type": "reasoning",
+                        "status": "in_progress",
+                        "summary": [],
+                    }),
+                },
+            ));
+            out.push(self.emit(
+                "response.reasoning_summary_part.added",
+                event_map! {
+                    "response_id".into() => json!(self.response_id),
+                    "item_id".into() => json!(self.reasoning.item_id),
+                    "output_index".into() => json!(self.reasoning.output_index),
+                    "summary_index".into() => json!(0),
+                    "part".into() => json!({"type": "summary_text", "text": ""}),
+                },
+            ));
+        }
+        self.reasoning.text.push_str(delta);
+        out.push(self.emit(
+            "response.reasoning_summary_text.delta",
+            event_map! {
+                "response_id".into() => json!(self.response_id),
+                "item_id".into() => json!(self.reasoning.item_id),
+                "output_index".into() => json!(self.reasoning.output_index),
+                "summary_index".into() => json!(0),
+                "delta".into() => json!(delta),
+            },
+        ));
+    }
+
+    fn finalize_reasoning(&mut self, out: &mut Vec<Bytes>) {
+        if !self.reasoning.added || self.reasoning.done {
+            return;
+        }
+        let output_index = self.reasoning.output_index;
+        let text = self.reasoning.text.clone();
+        let item = json!({
+            "id": self.reasoning.item_id,
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": text}],
+        });
+        self.reasoning.done = true;
+        out.push(self.emit(
+            "response.reasoning_summary_text.done",
+            event_map! {
+                "response_id".into() => json!(self.response_id),
+                "item_id".into() => json!(self.reasoning.item_id),
+                "output_index".into() => json!(output_index),
+                "summary_index".into() => json!(0),
+                "text".into() => json!(text),
+            },
+        ));
+        out.push(self.emit(
+            "response.reasoning_summary_part.done",
+            event_map! {
+                "response_id".into() => json!(self.response_id),
+                "item_id".into() => json!(self.reasoning.item_id),
+                "output_index".into() => json!(output_index),
+                "summary_index".into() => json!(0),
+                "part".into() => json!({"type": "summary_text", "text": text}),
+            },
+        ));
+        out.push(self.emit(
+            "response.output_item.done",
+            event_map! {
+                "response_id".into() => json!(self.response_id),
+                "output_index".into() => json!(output_index),
+                "item".into() => item,
+            },
+        ));
+    }
+
+    fn current_reasoning_text(&self) -> Option<String> {
+        (!self.reasoning.text.trim().is_empty()).then(|| self.reasoning.text.clone())
+    }
+
+    fn push_text_delta(&mut self, content: &str, out: &mut Vec<Bytes>) {
+        if content.is_empty() {
+            return;
+        }
+        self.ensure_created(out);
+        if !self.text_started {
+            self.text_output_index = self.next_output_index;
+            self.next_output_index += 1;
+            let item = responses_message_item_with_status(
+                &self.message_id,
+                &self.role,
+                &[],
+                "in_progress",
+            );
+            out.push(self.emit(
+                "response.output_item.added",
+                event_map! {
+                    "response_id".into() => json!(self.response_id),
+                    "output_index".into() => json!(self.text_output_index),
+                    "item".into() => item,
+                },
+            ));
+            out.push(self.emit(
+                "response.content_part.added",
+                event_map! {
+                    "response_id".into() => json!(self.response_id),
+                    "item_id".into() => json!(self.message_id),
+                    "output_index".into() => json!(self.text_output_index),
+                    "content_index".into() => json!(0),
+                    "part".into() => responses_output_text_part(""),
+                },
+            ));
+            self.text_started = true;
+        }
+        self.output_text.push_str(content);
+        out.push(self.emit(
+            "response.output_text.delta",
+            event_map! {
+                "response_id".into() => json!(self.response_id),
+                "item_id".into() => json!(self.message_id),
+                "output_index".into() => json!(self.text_output_index),
+                "content_index".into() => json!(0),
+                "delta".into() => json!(content),
+            },
+        ));
+    }
+
+    fn push_content_delta(&mut self, delta: &str, out: &mut Vec<Bytes>) {
+        let pieces = self.inline_think.push_content(delta);
+        for piece in pieces {
+            match piece {
+                StreamContentPiece::Reasoning(reasoning) => {
+                    self.push_reasoning_delta(&reasoning, out);
+                    self.finalize_reasoning(out);
+                }
+                StreamContentPiece::Text(text) => {
+                    self.finalize_reasoning(out);
+                    self.push_text_delta(&text, out);
+                }
+            }
+        }
+    }
+
+    fn flush_inline_think_at_boundary(&mut self, out: &mut Vec<Bytes>) {
+        let pieces = self.inline_think.flush();
+        for piece in pieces {
+            match piece {
+                StreamContentPiece::Reasoning(reasoning) => {
+                    self.push_reasoning_delta(&reasoning, out);
+                    self.finalize_reasoning(out);
+                }
+                StreamContentPiece::Text(text) => {
+                    self.finalize_reasoning(out);
+                    self.push_text_delta(&text, out);
+                }
+            }
         }
     }
 
@@ -403,65 +605,20 @@ impl SseTransform for ResponsesSseTransform {
                 if let Some(role) = delta.get("role").and_then(|v| v.as_str()) {
                     self.role = role.to_string();
                 }
-                if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
-                    if !content.is_empty() {
-                        self.ensure_created(&mut out);
-                        if !self.text_started {
-                            self.text_output_index = self.next_output_index;
-                            self.next_output_index += 1;
-                            let item = responses_message_item_with_status(
-                                &self.message_id,
-                                &self.role,
-                                &[],
-                                "in_progress",
-                            );
-                            out.push(self.emit(
-                                "response.output_item.added",
-                                event_map! {
-                                    "response_id".into() => json!(self.response_id),
-                                    "output_index".into() => json!(self.text_output_index),
-                                    "item".into() => item,
-                                },
-                            ));
-                            out.push(self.emit(
-                                "response.content_part.added",
-                                event_map! {
-                                    "response_id".into() => json!(self.response_id),
-                                    "item_id".into() => json!(self.message_id),
-                                    "output_index".into() => json!(self.text_output_index),
-                                    "content_index".into() => json!(0),
-                                    "part".into() => responses_output_text_part(""),
-                                },
-                            ));
-                            self.text_started = true;
-                        }
-                        self.output_text.push_str(content);
-                        out.push(self.emit(
-                            "response.output_text.delta",
-                            event_map! {
-                                "response_id".into() => json!(self.response_id),
-                                "item_id".into() => json!(self.message_id),
-                                "output_index".into() => json!(self.text_output_index),
-                                "content_index".into() => json!(0),
-                                "delta".into() => json!(content),
-                            },
-                        ));
-                    }
+                if let Some(reasoning) = extract_chat_delta_reasoning(delta) {
+                    self.push_reasoning_delta(&reasoning, &mut out);
                 }
 
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
-                    if !reasoning.is_empty() {
-                        self.ensure_created(&mut out);
-                        if !self.reasoning_started {
-                            self.reasoning_output_index = self.next_output_index;
-                            self.next_output_index += 1;
-                            self.reasoning_started = true;
-                        }
-                        self.reasoning_text.push_str(reasoning);
+                if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                    if !content.is_empty() {
+                        self.push_content_delta(content, &mut out);
                     }
                 }
 
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                    self.flush_inline_think_at_boundary(&mut out);
+                    let reasoning_for_tool = self.current_reasoning_text();
+                    self.finalize_reasoning(&mut out);
                     for tc in tool_calls {
                         let index = tc.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                         let call_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -493,7 +650,7 @@ impl SseTransform for ResponsesSseTransform {
                             };
                             self.next_output_index += 1;
                             self.tool_call_order.push(index);
-                            let item = tool_call_item(&state, false);
+                            let item = tool_call_item(&state, false, reasoning_for_tool.as_deref());
                             out.push(self.emit(
                                 "response.output_item.added",
                                 event_map! {
@@ -549,6 +706,9 @@ impl SseTransform for ResponsesSseTransform {
         self.done = true;
         let mut out = Vec::new();
 
+        self.flush_inline_think_at_boundary(&mut out);
+        self.finalize_reasoning(&mut out);
+
         if !self.sent_created {
             out.push(self.emit(
                 "response.created",
@@ -564,17 +724,16 @@ impl SseTransform for ResponsesSseTransform {
         let mut output_items: Vec<Option<Value>> =
             vec![None; self.next_output_index.max(0) as usize];
 
-        if self.reasoning_started {
-            let reasoning = std::mem::take(&mut self.reasoning_text);
-            let item_id = format!("reason_{}", self.message_id);
+        if self.reasoning.added {
+            let reasoning = self.reasoning.text.clone();
             let item = json!({
-                "id": item_id,
+                "id": self.reasoning.item_id,
                 "type": "reasoning",
                 "status": "completed",
-                "content": [{"type": "text", "text": reasoning, "annotations": []}],
+                "summary": [{"type": "summary_text", "text": reasoning}],
             });
-            if self.reasoning_output_index >= 0 {
-                output_items[self.reasoning_output_index as usize] = Some(item);
+            if self.reasoning.output_index >= 0 {
+                output_items[self.reasoning.output_index as usize] = Some(item);
             }
         }
 
@@ -635,7 +794,7 @@ impl SseTransform for ResponsesSseTransform {
                     "arguments".into() => json!(state.arguments),
                 },
             ));
-            let item = tool_call_item(&state, true);
+            let item = tool_call_item(&state, true, None);
             out.push(self.emit(
                 "response.output_item.done",
                 event_map! {
@@ -697,6 +856,9 @@ impl SseTransform for ResponsesSseTransform {
         );
         if let Some(store) = &self.codex_history {
             store.record_response(&completed_response);
+            if let Some(effort) = store.take_pending_reasoning_effort() {
+                store.record_reasoning_effort(&self.response_id, effort);
+            }
         }
         tracing::info!(
             response_id = %self.response_id,
@@ -716,15 +878,21 @@ impl SseTransform for ResponsesSseTransform {
     }
 }
 
-fn tool_call_item(state: &ToolCallState, completed: bool) -> Value {
-    json!({
+fn tool_call_item(state: &ToolCallState, completed: bool, reasoning_content: Option<&str>) -> Value {
+    let mut item = json!({
         "id": state.item_id,
         "type": "function_call",
         "status": if completed { "completed" } else { "in_progress" },
         "call_id": state.call_id,
         "name": state.name,
         "arguments": state.arguments,
-    })
+    });
+    if let Some(obj) = item.as_object_mut() {
+        if let Some(reasoning) = reasoning_content.filter(|s| !s.trim().is_empty()) {
+            obj.insert("reasoning_content".into(), json!(reasoning));
+        }
+    }
+    item
 }
 
 fn convert_responses_tools_to_chat(tools: &[Value]) -> Vec<Value> {
@@ -827,16 +995,12 @@ fn convert_chat_message_to_responses_output_items(
 ) -> Vec<Value> {
     let mut output = Vec::new();
 
-    if let Some(reasoning) = msg
-        .get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-    {
+    if let Some(reasoning) = extract_reasoning_field_text(msg) {
         output.push(json!({
             "id": format!("reason_{chat_id}_{choice_index}"),
             "type": "reasoning",
             "status": "completed",
-            "content": [{"type": "text", "text": reasoning, "annotations": []}],
+            "summary": [{"type": "summary_text", "text": reasoning}],
         }));
     }
 
@@ -1052,7 +1216,7 @@ mod tests {
         let resp = chat_json_to_responses(&chat);
         let output = resp["output"].as_array().unwrap();
         assert_eq!(output[0]["type"], "reasoning");
-        assert_eq!(output[0]["content"][0]["text"], "Let me think...");
+        assert_eq!(output[0]["summary"][0]["text"], "Let me think...");
         assert_eq!(output[1]["type"], "message");
         assert_eq!(output[1]["content"][0]["text"], "Hello");
     }
@@ -1112,7 +1276,7 @@ mod tests {
             "input": "hello",
             "reasoning": {"effort": "medium"}
         });
-        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1"), None).unwrap();
         assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
     }
@@ -1126,7 +1290,7 @@ mod tests {
                 {"role": "user", "content": "follow-up"}
             ]
         });
-        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1"), None).unwrap();
         assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
     }
@@ -1138,7 +1302,7 @@ mod tests {
             "input": "hello",
             "reasoning": {"effort": "none"}
         });
-        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1"), None).unwrap();
         assert_eq!(req.thinking, Some(json!({"type": "disabled"})));
         assert!(req.reasoning_effort.is_none());
     }
@@ -1150,7 +1314,7 @@ mod tests {
             "input": "hello",
             "reasoning": {"effort": "xhigh"}
         });
-        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1"), None).unwrap();
         assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
         assert_eq!(req.reasoning_effort.as_deref(), Some("max"));
     }
@@ -1182,9 +1346,57 @@ mod tests {
             "model": "deepseek-v4-flash",
             "input": "hello"
         });
-        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1")).unwrap();
+        let req = responses_request_to_openai_with_base(&body, Some("https://api.deepseek.com/v1"), None).unwrap();
         assert!(req.thinking.is_none());
         assert!(req.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn responses_deepseek_turn2_uses_stored_max_effort() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                {"role": "assistant", "reasoning_content": "I think...", "content": "Answer"},
+                {"role": "user", "content": "follow-up"}
+            ]
+        });
+        let req = responses_request_to_openai_with_base(
+            &body,
+            Some("https://api.deepseek.com/v1"),
+            Some("max"),
+        )
+        .unwrap();
+        assert_eq!(req.thinking, Some(json!({"type": "enabled"})));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn sse_reasoning_content_emits_summary_deltas() {
+        use crate::gateway::api::sse_transform::SseTransform;
+
+        let mut transform = ResponsesSseTransform::new();
+        let chunk = json!({
+            "id": "abc",
+            "model": "deepseek",
+            "created": 1,
+            "choices": [{"delta": {"reasoning_content": "thinking..."}}]
+        });
+        let line = format!("data: {}\n", chunk);
+        let out = transform.transform_line(line.as_bytes());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<String>();
+        assert!(text.contains("event: response.reasoning_summary_text.delta"));
+        assert!(text.contains("thinking..."));
+
+        let finish = transform.finish();
+        let finish_text = finish
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<String>();
+        assert!(finish_text.contains("event: response.completed"));
+        assert!(finish_text.contains("response.reasoning_summary_text.done"));
     }
 
     #[test]

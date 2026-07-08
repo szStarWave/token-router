@@ -35,6 +35,12 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_split: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
@@ -56,6 +62,9 @@ impl Default for ChatCompletionRequest {
             stream_options: None,
             thinking: None,
             reasoning_effort: None,
+            enable_thinking: None,
+            reasoning_split: None,
+            reasoning: None,
             temperature: None,
             top_p: None,
             parallel_tool_calls: None,

@@ -18,6 +18,8 @@ struct CodexChatHistoryInner {
     responses: HashMap<String, CachedResponse>,
     response_order: VecDeque<String>,
     call_index: HashMap<String, String>,
+    reasoning_efforts: HashMap<String, String>,
+    pending_reasoning_effort: Option<String>,
 }
 
 /// Restores missing Responses `function_call` items before `function_call_output`
@@ -175,6 +177,34 @@ impl CodexChatHistoryStore {
                 "codex_history enrich hit"
             );
         }
+    }
+
+    pub fn set_pending_reasoning_effort(&self, effort: Option<&str>) {
+        let Some(effort) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        inner.pending_reasoning_effort = Some(effort.to_string());
+    }
+
+    pub fn take_pending_reasoning_effort(&self) -> Option<String> {
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        inner.pending_reasoning_effort.take()
+    }
+
+    pub fn get_reasoning_effort(&self, response_id: &str) -> Option<String> {
+        let id = response_id_from_chat_id(Some(response_id));
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        inner.reasoning_efforts.get(&id).cloned()
+    }
+
+    pub fn record_reasoning_effort(&self, response_id: &str, effort: String) {
+        let id = response_id_from_chat_id(Some(response_id));
+        if id == "resp_unknown" || effort.trim().is_empty() {
+            return;
+        }
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        inner.reasoning_efforts.insert(id, effort);
     }
 }
 

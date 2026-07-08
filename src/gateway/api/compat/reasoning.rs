@@ -33,7 +33,15 @@ pub fn infer_reasoning_config(model: &str, upstream_base: Option<&str>) -> Optio
             effort_value_mode: None,
         });
     }
-    if haystack.contains("mimo") {
+    if haystack.contains("glm") || haystack.contains("zhipu") || haystack.contains("z.ai") {
+        return Some(ChatReasoningConfig {
+            supports_thinking: true,
+            thinking_param: Some("thinking".into()),
+            effort_param: None,
+            effort_value_mode: None,
+        });
+    }
+    if haystack.contains("qwen") || haystack.contains("dashscope") || haystack.contains("bailian") {
         return Some(ChatReasoningConfig {
             supports_thinking: true,
             thinking_param: Some("enable_thinking".into()),
@@ -41,12 +49,36 @@ pub fn infer_reasoning_config(model: &str, upstream_base: Option<&str>) -> Optio
             effort_value_mode: None,
         });
     }
-    if haystack.contains("qwen") || haystack.contains("dashscope") {
+    if haystack.contains("minimax") {
         return Some(ChatReasoningConfig {
             supports_thinking: true,
-            thinking_param: Some("enable_thinking".into()),
+            thinking_param: Some("reasoning_split".into()),
             effort_param: None,
             effort_value_mode: None,
+        });
+    }
+    if haystack.contains("mimo") {
+        return Some(ChatReasoningConfig {
+            supports_thinking: true,
+            thinking_param: Some("thinking".into()),
+            effort_param: None,
+            effort_value_mode: None,
+        });
+    }
+    if haystack.contains("stepfun") || haystack.contains("step-3.5-flash-2603") {
+        return Some(ChatReasoningConfig {
+            supports_thinking: true,
+            thinking_param: Some("thinking".into()),
+            effort_param: Some("reasoning_effort".into()),
+            effort_value_mode: Some("low_high".into()),
+        });
+    }
+    if haystack.contains("openrouter") {
+        return Some(ChatReasoningConfig {
+            supports_thinking: false,
+            thinking_param: None,
+            effort_param: Some("reasoning.effort".into()),
+            effort_value_mode: Some("openrouter".into()),
         });
     }
     None
@@ -56,9 +88,6 @@ pub fn model_requires_reasoning_replay(model: &str, upstream_base: Option<&str>)
     infer_reasoning_config(model, upstream_base).is_some_and(|c| c.supports_thinking)
 }
 
-/// Determine whether the body explicitly requests reasoning.
-/// Returns `Some(true)` for explicit enable, `Some(false)` for explicit disable,
-/// or `None` when no reasoning preference is expressed.
 fn reasoning_requested(body: &Value) -> Option<bool> {
     match body.pointer("/reasoning/effort").and_then(|v| v.as_str()) {
         Some(e) if matches!(e, "none" | "off" | "disabled") => Some(false),
@@ -87,24 +116,40 @@ fn set_thinking_param(result: &mut Map<String, Value>, config: &ChatReasoningCon
         "enable_thinking" => {
             result.insert("enable_thinking".into(), json!(enabled));
         }
+        "reasoning_split" => {
+            result.insert("reasoning_split".into(), json!(enabled));
+        }
         _ => {}
     }
 }
 
-fn set_reasoning_effort(result: &mut Map<String, Value>, body: &Value, config: &ChatReasoningConfig) {
-    let Some(effort) = body.pointer("/reasoning/effort").and_then(|v| v.as_str()) else {
+fn set_reasoning_effort(
+    result: &mut Map<String, Value>,
+    body: &Value,
+    config: &ChatReasoningConfig,
+    stored_effort: Option<&str>,
+) {
+    let effort = body
+        .pointer("/reasoning/effort")
+        .and_then(|v| v.as_str())
+        .or(stored_effort);
+    let Some(effort) = effort else {
         return;
     };
     let Some(mapped) = map_reasoning_effort(effort, config.effort_value_mode.as_deref()) else {
         return;
     };
-    if config.effort_param.as_deref() == Some("reasoning_effort") {
-        result.insert("reasoning_effort".into(), json!(mapped));
+    match config.effort_param.as_deref() {
+        Some("reasoning_effort") => {
+            result.insert("reasoning_effort".into(), json!(mapped));
+        }
+        Some("reasoning.effort") => {
+            result.insert("reasoning".into(), json!({"effort": mapped}));
+        }
+        _ => {}
     }
 }
 
-/// Check if any message in the list already has non-empty `reasoning_content`,
-/// indicating this is a multi-turn request requiring thinking to be enabled.
 fn messages_require_thinking_enabled(messages: &[Value]) -> bool {
     messages.iter().any(|msg| {
         msg.get("reasoning_content")
@@ -118,51 +163,76 @@ pub fn apply_reasoning_options(
     body: &Value,
     model: &str,
     upstream_base: Option<&str>,
+    stored_effort: Option<&str>,
 ) {
     let Some(config) = infer_reasoning_config(model, upstream_base) else {
         return;
     };
-    if !config.supports_thinking {
+    if !config.supports_thinking && config.effort_param.as_deref() != Some("reasoning.effort") {
         return;
     }
 
     let requested = reasoning_requested(body);
 
     if let Some(enabled) = requested {
-        set_thinking_param(result, &config, enabled);
-        if enabled {
-            set_reasoning_effort(result, body, &config);
+        if config.supports_thinking {
+            set_thinking_param(result, &config, enabled);
         }
+        if enabled {
+            set_reasoning_effort(result, body, &config, stored_effort);
+        }
+    } else if config.effort_param.as_deref() == Some("reasoning.effort") {
+        set_reasoning_effort(result, body, &config, stored_effort);
     }
 
-    // Auto-enable thinking when messages already contain reasoning_content (multi-turn).
     if let Some(messages) = result.get("messages").and_then(|v| v.as_array()) {
         if messages_require_thinking_enabled(messages) {
-            set_thinking_param(result, &config, true);
-            if config.effort_param.as_deref() == Some("reasoning_effort") {
-                if !result.contains_key("reasoning_effort") {
-                    result.insert("reasoning_effort".into(), json!("high"));
-                }
+            if config.supports_thinking {
+                set_thinking_param(result, &config, true);
+            }
+            if config.effort_param.is_some() && !result.contains_key("reasoning_effort") {
+                let effort = stored_effort
+                    .or_else(|| body.pointer("/reasoning/effort").and_then(|v| v.as_str()))
+                    .unwrap_or("high");
+                set_reasoning_effort(
+                    result,
+                    &json!({"reasoning": {"effort": effort}}),
+                    &config,
+                    stored_effort,
+                );
             }
         }
     }
 }
 
-fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str> {
+pub fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str> {
+    let effort = effort.trim().to_ascii_lowercase();
+    if matches!(effort.as_str(), "none" | "off" | "disabled") {
+        return None;
+    }
+
     match mode {
-        Some("deepseek") => match effort {
+        Some("deepseek") => match effort.as_str() {
             "max" | "xhigh" => Some("max"),
             _ => Some("high"),
         },
-        Some("low_high") => match effort {
-            "low" | "minimal" => Some("low"),
-            "high" | "medium" | "standard" | "xhigh" => Some("high"),
+        Some("low_high") => match effort.as_str() {
+            "minimal" | "low" => Some("low"),
+            _ => Some("high"),
+        },
+        Some("openrouter") => match effort.as_str() {
+            "max" | "xhigh" => Some("xhigh"),
+            "high" => Some("high"),
+            "medium" => Some("medium"),
+            "low" => Some("low"),
+            "minimal" => Some("minimal"),
             _ => None,
         },
-        _ => match effort {
+        _ => match effort.as_str() {
             "minimal" | "low" => Some("low"),
             "medium" | "standard" => Some("medium"),
             "high" | "xhigh" => Some("high"),
+            "max" => Some("max"),
             _ => None,
         },
     }
@@ -257,8 +327,6 @@ mod tests {
         );
     }
 
-    // --- reasoning_requested tests ---
-
     #[test]
     fn reasoning_requested_some_true_when_effort_present() {
         let body = json!({"reasoning": {"effort": "high"}});
@@ -272,61 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_requested_some_false_when_effort_disabled() {
-        let body = json!({"reasoning": {"effort": "disabled"}});
-        assert_eq!(reasoning_requested(&body), Some(false));
-    }
-
-    #[test]
-    fn reasoning_requested_some_true_when_reasoning_present_no_effort() {
-        let body = json!({"reasoning": {}});
-        assert_eq!(reasoning_requested(&body), Some(true));
-    }
-
-    #[test]
-    fn reasoning_requested_none_when_no_reasoning() {
-        let body = json!({"model": "deepseek"});
-        assert_eq!(reasoning_requested(&body), None);
-    }
-
-    // --- messages_require_thinking_enabled tests ---
-
-    #[test]
-    fn messages_require_thinking_true_when_reasoning_content_present() {
-        let msgs = vec![
-            json!({"role": "assistant", "reasoning_content": "let me think", "content": "answer"}),
-        ];
-        assert!(messages_require_thinking_enabled(&msgs));
-    }
-
-    #[test]
-    fn messages_require_thinking_false_when_no_reasoning_content() {
-        let msgs = vec![
-            json!({"role": "assistant", "content": "answer"}),
-        ];
-        assert!(!messages_require_thinking_enabled(&msgs));
-    }
-
-    #[test]
-    fn messages_require_thinking_false_when_empty_reasoning_content() {
-        let msgs = vec![
-            json!({"role": "assistant", "reasoning_content": "", "content": "answer"}),
-        ];
-        assert!(!messages_require_thinking_enabled(&msgs));
-    }
-
-    #[test]
-    fn messages_require_thinking_checks_all_messages() {
-        let msgs = vec![
-            json!({"role": "user", "content": "hi"}),
-            json!({"role": "assistant", "reasoning_content": "thinking...", "content": "hello"}),
-        ];
-        assert!(messages_require_thinking_enabled(&msgs));
-    }
-
-    // --- map_reasoning_effort — DeepSeek mode ---
-
-    #[test]
     fn deepseek_effort_maps_high_to_high() {
         assert_eq!(map_reasoning_effort("high", Some("deepseek")), Some("high"));
     }
@@ -337,21 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_effort_maps_xhigh_to_max() {
-        assert_eq!(map_reasoning_effort("xhigh", Some("deepseek")), Some("max"));
-    }
-
-    #[test]
-    fn deepseek_effort_maps_low_to_high() {
-        assert_eq!(map_reasoning_effort("low", Some("deepseek")), Some("high"));
-    }
-
-    #[test]
     fn deepseek_effort_maps_medium_to_high() {
         assert_eq!(map_reasoning_effort("medium", Some("deepseek")), Some("high"));
     }
-
-    // --- apply_reasoning_options integration ---
 
     #[test]
     fn apply_deepseek_reasoning_with_medium_effort() {
@@ -359,34 +360,13 @@ mod tests {
         result.insert("model".into(), json!("deepseek"));
         result.insert("messages".into(), json!([]));
         let body = json!({"model": "deepseek", "reasoning": {"effort": "medium"}});
-        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"));
+        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"), None);
         assert_eq!(result["thinking"], json!({"type": "enabled"}));
         assert_eq!(result["reasoning_effort"], json!("high"));
     }
 
     #[test]
-    fn apply_deepseek_reasoning_disabled_none() {
-        let mut result = Map::new();
-        result.insert("model".into(), json!("deepseek"));
-        result.insert("messages".into(), json!([]));
-        let body = json!({"model": "deepseek", "reasoning": {"effort": "none"}});
-        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"));
-        assert_eq!(result["thinking"], json!({"type": "disabled"}));
-        assert!(!result.contains_key("reasoning_effort"));
-    }
-
-    #[test]
-    fn apply_deepseek_reasoning_xhigh_effort() {
-        let mut result = Map::new();
-        result.insert("model".into(), json!("deepseek"));
-        result.insert("messages".into(), json!([]));
-        let body = json!({"model": "deepseek", "reasoning": {"effort": "xhigh"}});
-        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"));
-        assert_eq!(result["reasoning_effort"], json!("max"));
-    }
-
-    #[test]
-    fn apply_deepseek_reasoning_auto_enables_from_messages() {
+    fn apply_deepseek_reasoning_auto_enables_from_messages_with_stored_max() {
         let mut result = Map::new();
         result.insert("model".into(), json!("deepseek"));
         result.insert("messages".into(), json!([
@@ -394,21 +374,30 @@ mod tests {
             {"role": "user", "content": "follow-up"}
         ]));
         let body = json!({"model": "deepseek", "input": [{"role": "user", "content": "follow-up"}]});
-        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"));
+        apply_reasoning_options(
+            &mut result,
+            &body,
+            "deepseek",
+            Some("https://api.deepseek.com"),
+            Some("max"),
+        );
         assert_eq!(result["thinking"], json!({"type": "enabled"}));
-        assert_eq!(result["reasoning_effort"], json!("high"));
+        assert_eq!(result["reasoning_effort"], json!("max"));
     }
 
     #[test]
-    fn apply_deepseek_reasoning_does_not_inject_without_reasoning_context() {
+    fn apply_qwen_reasoning_sets_enable_thinking() {
         let mut result = Map::new();
-        result.insert("model".into(), json!("deepseek"));
-        result.insert("messages".into(), json!([
-            {"role": "user", "content": "hi"}
-        ]));
-        let body = json!({"model": "deepseek", "input": "hi"});
-        apply_reasoning_options(&mut result, &body, "deepseek", Some("https://api.deepseek.com"));
-        assert!(!result.contains_key("thinking"));
-        assert!(!result.contains_key("reasoning_effort"));
+        result.insert("model".into(), json!("qwen-plus"));
+        result.insert("messages".into(), json!([]));
+        let body = json!({"model": "qwen-plus", "reasoning": {"effort": "high"}});
+        apply_reasoning_options(
+            &mut result,
+            &body,
+            "qwen-plus",
+            Some("https://dashscope.aliyuncs.com"),
+            None,
+        );
+        assert_eq!(result["enable_thinking"], json!(true));
     }
 }

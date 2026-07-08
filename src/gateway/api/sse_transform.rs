@@ -1,10 +1,15 @@
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_stream::stream;
 use bytes::Bytes;
 use futures::StreamExt;
+use tokio::time::{interval, MissedTickBehavior};
 
 pub type ByteStream = Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const KEEPALIVE_BYTES: &[u8] = b": keepalive\n\n";
 
 pub trait SseTransform: Send {
     fn transform_line(&mut self, line: &[u8]) -> Vec<Bytes>;
@@ -14,6 +19,8 @@ pub trait SseTransform: Send {
 }
 
 /// Buffer incoming SSE bytes into lines and apply `transform` per line.
+/// Sends SSE comment keepalives when upstream is silent for longer than
+/// [`KEEPALIVE_INTERVAL`].
 pub fn wrap_sse_transform<S, T>(inner: S, transform: T) -> ByteStream
 where
     S: futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -23,19 +30,32 @@ where
         let mut transform = transform;
         let mut buffer = Vec::new();
         futures::pin_mut!(inner);
-        while let Some(item) = inner.next().await {
-            let chunk = match item {
-                Ok(b) => b,
-                Err(e) => {
-                    yield Err(e);
-                    continue;
+        let mut keepalive = interval(KEEPALIVE_INTERVAL);
+        keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        keepalive.tick().await;
+
+        loop {
+            tokio::select! {
+                item = inner.next() => {
+                    match item {
+                        None => break,
+                        Some(Ok(chunk)) => {
+                            keepalive.reset();
+                            buffer.extend_from_slice(&chunk);
+                            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                let line: Vec<u8> = buffer.drain(..=pos).collect();
+                                for out in transform.transform_line(&line) {
+                                    yield Ok(out);
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            yield Err(e);
+                        }
+                    }
                 }
-            };
-            buffer.extend_from_slice(&chunk);
-            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = buffer.drain(..=pos).collect();
-                for out in transform.transform_line(&line) {
-                    yield Ok(out);
+                _ = keepalive.tick() => {
+                    yield Ok(Bytes::from_static(KEEPALIVE_BYTES));
                 }
             }
         }

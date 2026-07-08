@@ -3,6 +3,7 @@ mod codex_history;
 mod diagnostics;
 mod messages;
 mod reasoning;
+mod reasoning_delta;
 mod responses_input;
 
 pub use anthropic::{
@@ -17,7 +18,12 @@ pub use diagnostics::{
 pub use messages::{collapse_system_messages, finalize_chat_request_value, finalize_upstream_request};
 pub use reasoning::{
     apply_reasoning_options, backfill_tool_call_reasoning_placeholders, infer_reasoning_config,
-    model_requires_reasoning_replay, ChatReasoningConfig, TOOL_CALL_REASONING_PLACEHOLDER,
+    map_reasoning_effort, model_requires_reasoning_replay, ChatReasoningConfig,
+    TOOL_CALL_REASONING_PLACEHOLDER,
+};
+pub use reasoning_delta::{
+    extract_chat_delta_reasoning, extract_reasoning_field_text, InlineThinkState,
+    StreamContentPiece,
 };
 pub use responses_input::convert_responses_input_to_messages;
 

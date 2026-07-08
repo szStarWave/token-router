@@ -9,9 +9,10 @@ use serde_json::{json, Value};
 
 use crate::gateway::api::chat::{chat_completions_core, ChatOutputFormat};
 use crate::gateway::api::compat::{
-    apply_anthropic_upstream_options, finalize_chat_request_value,
-    inject_stream_include_usage, strip_leading_anthropic_billing_header,
-    ANTHROPIC_REDACTED_THINKING_PLACEHOLDER, TOOL_CALL_REASONING_PLACEHOLDER,
+    apply_anthropic_upstream_options, extract_chat_delta_reasoning, extract_reasoning_field_text,
+    finalize_chat_request_value, inject_stream_include_usage, InlineThinkState,
+    strip_leading_anthropic_billing_header, ANTHROPIC_REDACTED_THINKING_PLACEHOLDER,
+    StreamContentPiece, TOOL_CALL_REASONING_PLACEHOLDER,
 };
 use crate::gateway::api::openai::ChatCompletionRequest;
 use crate::gateway::api::routes::AppState;
@@ -27,7 +28,8 @@ pub async fn anthropic_messages_handler(
     Json(body): Json<Value>,
 ) -> AppResult<impl IntoResponse> {
     let agent_id = super::routes::extract_agent_id(&headers);
-    let req = anthropic_request_to_openai(&body)?;
+    let base_url = state.config_mgr.get().cloud_base_url.clone();
+    let req = anthropic_request_to_openai_with_base(&body, base_url.as_deref())?;
     let model = req.model.clone();
     chat_completions_core(
         state,
@@ -40,6 +42,13 @@ pub async fn anthropic_messages_handler(
 }
 
 pub fn anthropic_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequest> {
+    anthropic_request_to_openai_with_base(body, None)
+}
+
+pub fn anthropic_request_to_openai_with_base(
+    body: &Value,
+    upstream_base: Option<&str>,
+) -> AppResult<ChatCompletionRequest> {
     let obj = body
         .as_object()
         .ok_or_else(|| AppError::BadRequest("invalid request body".into()))?;
@@ -80,7 +89,7 @@ pub fn anthropic_request_to_openai(body: &Value) -> AppResult<ChatCompletionRequ
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    apply_anthropic_upstream_options(&mut oai, body, model);
+    apply_anthropic_upstream_options(&mut oai, body, model, upstream_base);
     inject_stream_include_usage(&mut oai);
 
     let finalized = finalize_chat_request_value(oai, model);
@@ -122,11 +131,7 @@ pub fn chat_json_to_anthropic(body: &[u8], fallback_model: &str) -> Value {
         .unwrap_or_default();
 
     let mut content_blocks = Vec::new();
-    if let Some(reasoning) = message
-        .get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(reasoning) = extract_reasoning_field_text(&message) {
         content_blocks.push(json!({"type": "thinking", "thinking": reasoning}));
     }
     if let Some(text) = content_str.filter(|s| !s.is_empty()) {
@@ -201,6 +206,7 @@ pub struct AnthropicSseTransform {
     sent_message_stop: bool,
     done: bool,
     latest_usage: Value,
+    inline_think: InlineThinkState,
 }
 
 #[derive(Default)]
@@ -227,6 +233,7 @@ impl AnthropicSseTransform {
             sent_message_stop: false,
             done: false,
             latest_usage: json!({"input_tokens": 0, "output_tokens": 0}),
+            inline_think: InlineThinkState::default(),
         }
     }
 
@@ -307,12 +314,77 @@ impl AnthropicSseTransform {
         });
     }
 
-    fn reasoning_delta(delta: &Value) -> Option<&str> {
-        delta
-            .get("reasoning_content")
-            .or_else(|| delta.get("reasoning"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
+    fn push_thinking_delta(&mut self, reasoning: &str, out: &mut Vec<Bytes>) {
+        self.ensure_message_start(out);
+        if self.non_tool_block_kind != Some("thinking") {
+            self.start_non_tool_block(
+                out,
+                "thinking",
+                json!({"type": "thinking", "thinking": ""}),
+            );
+        }
+        if let Some(index) = self.non_tool_block_index {
+            out.push(self.emit_event(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning},
+                }),
+            ));
+        }
+    }
+
+    fn push_text_delta(&mut self, content: &str, out: &mut Vec<Bytes>) {
+        if content.is_empty() {
+            return;
+        }
+        self.ensure_message_start(out);
+        if self.non_tool_block_kind != Some("text") {
+            self.start_non_tool_block(
+                out,
+                "text",
+                json!({"type": "text", "text": ""}),
+            );
+        }
+        if let Some(index) = self.non_tool_block_index {
+            out.push(self.emit_event(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "text_delta", "text": content},
+                }),
+            ));
+        }
+    }
+
+    fn push_content_delta(&mut self, delta: &str, out: &mut Vec<Bytes>) {
+        let pieces = self.inline_think.push_content(delta);
+        for piece in pieces {
+            match piece {
+                StreamContentPiece::Reasoning(reasoning) => {
+                    self.push_thinking_delta(&reasoning, out);
+                }
+                StreamContentPiece::Text(text) => {
+                    self.push_text_delta(&text, out);
+                }
+            }
+        }
+    }
+
+    fn flush_inline_think_at_boundary(&mut self, out: &mut Vec<Bytes>) {
+        let pieces = self.inline_think.flush();
+        for piece in pieces {
+            match piece {
+                StreamContentPiece::Reasoning(reasoning) => {
+                    self.push_thinking_delta(&reasoning, out);
+                }
+                StreamContentPiece::Text(text) => {
+                    self.push_text_delta(&text, out);
+                }
+            }
+        }
     }
 
     fn queue_message_delta(&mut self, stop_reason: &str) {
@@ -381,59 +453,26 @@ impl SseTransform for AnthropicSseTransform {
         if role == "assistant" {
             self.ensure_message_start(&mut out);
         } else if !self.sent_message_start
-            && (Self::reasoning_delta(&delta).is_some()
+            && (extract_chat_delta_reasoning(&delta).is_some()
                 || delta.get("content").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
                 || delta.get("tool_calls").and_then(|v| v.as_array()).is_some_and(|t| !t.is_empty()))
         {
             self.ensure_message_start(&mut out);
         }
 
-        if let Some(reasoning) = Self::reasoning_delta(&delta) {
-            self.ensure_message_start(&mut out);
-            if self.non_tool_block_kind != Some("thinking") {
-                self.start_non_tool_block(
-                    &mut out,
-                    "thinking",
-                    json!({"type": "thinking", "thinking": ""}),
-                );
-            }
-            if let Some(index) = self.non_tool_block_index {
-                out.push(self.emit_event(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {"type": "thinking_delta", "thinking": reasoning},
-                    }),
-                ));
-            }
+        if let Some(reasoning) = extract_chat_delta_reasoning(&delta) {
+            self.push_thinking_delta(&reasoning, &mut out);
         }
 
         if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
             if !content.is_empty() {
-                self.ensure_message_start(&mut out);
-                if self.non_tool_block_kind != Some("text") {
-                    self.start_non_tool_block(
-                        &mut out,
-                        "text",
-                        json!({"type": "text", "text": ""}),
-                    );
-                }
-                if let Some(index) = self.non_tool_block_index {
-                    out.push(self.emit_event(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": {"type": "text_delta", "text": content},
-                        }),
-                    ));
-                }
+                self.push_content_delta(content, &mut out);
             }
         }
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             self.ensure_message_start(&mut out);
+            self.flush_inline_think_at_boundary(&mut out);
             self.close_non_tool_block(&mut out);
             for tc in tool_calls {
                 let index = tc.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -936,6 +975,67 @@ mod tests {
         });
         let req = anthropic_request_to_openai(&body).unwrap();
         assert_eq!(req.messages[0].content.as_deref(), Some("Be helpful."));
+    }
+
+    #[test]
+    fn sse_reasoning_content_emits_thinking_delta() {
+        use crate::gateway::api::sse_transform::SseTransform;
+
+        let mut transform = AnthropicSseTransform::new("deepseek".into());
+        let chunk = json!({
+            "id": "abc",
+            "choices": [{"delta": {"reasoning_content": "planning..."}}]
+        });
+        let line = format!("data: {}\n", chunk);
+        let out = transform.transform_line(line.as_bytes());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<String>();
+        assert!(text.contains("event: content_block_delta"));
+        assert!(text.contains("thinking_delta"));
+        assert!(text.contains("planning..."));
+    }
+
+    #[test]
+    fn sse_reasoning_details_emits_thinking_delta() {
+        use crate::gateway::api::sse_transform::SseTransform;
+
+        let mut transform = AnthropicSseTransform::new("minimax".into());
+        let chunk = json!({
+            "id": "abc",
+            "choices": [{"delta": {"reasoning_details": [{"text": "step one"}]}}]
+        });
+        let line = format!("data: {}\n", chunk);
+        let out = transform.transform_line(line.as_bytes());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<String>();
+        assert!(text.contains("thinking_delta"));
+        assert!(text.contains("step one"));
+    }
+
+    #[test]
+    fn sse_inline_think_content_emits_thinking_without_tag_leak() {
+        use crate::gateway::api::sse_transform::SseTransform;
+
+        let mut transform = AnthropicSseTransform::new("minimax".into());
+        let chunk = json!({
+            "id": "abc",
+            "choices": [{"delta": {"content": "<think>plan</think>Answer"}}]
+        });
+        let line = format!("data: {}\n", chunk);
+        let out = transform.transform_line(line.as_bytes());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<String>();
+        assert!(text.contains("thinking_delta"));
+        assert!(text.contains("plan"));
+        assert!(!text.contains("<think>"));
+        assert!(text.contains("text_delta"));
+        assert!(text.contains("Answer"));
     }
 
     #[test]
