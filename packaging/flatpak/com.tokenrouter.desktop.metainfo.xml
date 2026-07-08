@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.tokenrouter.desktop</id>
+  <name>Token Router</name>
+  <summary>Edge-cloud LLM routing gateway for AI agents</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <categories>
+    <category>Development</category>
+    <category>Network</category>
+    <category>Utility</category>
+  </categories>
+  <icon type="stock">com.tokenrouter.desktop</icon>
+  <description>
+    <p>
+      Token Router is a desktop gateway that routes LLM requests between local edge
+      models and cloud providers. It integrates with OpenClaw, Hermes, Claude Code,
+      Codex, and other OpenAI-compatible agents.
+    </p>
+    <p>
+      The desktop app embeds the gateway, provides a web UI, and runs in the system tray.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.tokenrouter.desktop.desktop</launchable>
+  <developer_name>Token Router</developer_name>
+  <url type="homepage">https://github.com/flowy2025/FlowyRouter</url>
+  <url type="bugtracker">https://github.com/flowy2025/FlowyRouter/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.15.3" date="2026-07-08">
+      <description>
+        <p>Initial Flatpak packaging support.</p>
+      </description>
+    </release>
+  </releases>
+</component>

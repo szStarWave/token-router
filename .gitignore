@@ -10,3 +10,4 @@ desktop/.env
 tauri-build.log
 desktop/app-icon.png
 build.log
+.flatpak-builder

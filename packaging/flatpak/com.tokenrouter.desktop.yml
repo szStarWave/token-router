@@ -1,0 +1,60 @@
+# Local Flatpak manifest — builds from a Tauri-generated .deb.
+# Used by: scripts/build-flatpak.sh
+# For Flathub submission, see flathub/com.tokenrouter.desktop.yml
+
+id: com.tokenrouter.desktop
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: token-router-desktop
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --filesystem=xdg-run/tray-icon:create
+  - --talk-name=org.com_tokenrouter_desktop.SingleInstance
+  - --own-name=org.com_tokenrouter_desktop.SingleInstance
+
+modules:
+  - name: token-router-desktop
+    buildsystem: simple
+    sources:
+      - type: file
+        path: com.tokenrouter.desktop.metainfo.xml
+      - type: file
+        path: .build/token-router-desktop.deb
+    build-commands:
+      - set -e
+      - mkdir deb-extract
+      - ar -x token-router-desktop.deb --output deb-extract
+      - tar -C deb-extract -xf deb-extract/data.tar.*
+      - install -Dm755 deb-extract/usr/bin/token-router-desktop /app/bin/token-router-desktop
+      - |
+        if [ -d deb-extract/usr/lib/token-router-desktop ]; then
+          mkdir -p /app/lib/token-router-desktop
+          cp -r deb-extract/usr/lib/token-router-desktop/. /app/lib/token-router-desktop/
+          find /app/lib/token-router-desktop -type f -exec chmod 644 {} \;
+        fi
+      - |
+        DESKTOP="$(find deb-extract/usr/share/applications -name '*.desktop' | head -1)"
+        test -n "$DESKTOP"
+        sed -i 's/^Icon=.*/Icon=com.tokenrouter.desktop/' "$DESKTOP"
+        if grep -q '^Categories=' "$DESKTOP"; then
+          sed -i 's/^Categories=.*/Categories=Development;Network;Utility;/' "$DESKTOP"
+        else
+          echo 'Categories=Development;Network;Utility;' >> "$DESKTOP"
+        fi
+        install -Dm644 "$DESKTOP" /app/share/applications/com.tokenrouter.desktop.desktop
+      - |
+        for size in 32x32 128x128 256x256@2; do
+          SRC="$(find deb-extract/usr/share/icons/hicolor/$size/apps -name '*.png' 2>/dev/null | head -1 || true)"
+          if [ -n "$SRC" ]; then
+            install -Dm644 "$SRC" "/app/share/icons/hicolor/$size/apps/com.tokenrouter.desktop.png"
+          fi
+        done
+      - install -Dm644 com.tokenrouter.desktop.metainfo.xml /app/share/metainfo/com.tokenrouter.desktop.metainfo.xml
