@@ -374,25 +374,28 @@ build-ota:
 	@exit 1
 endif
 
-ota-publish: ota-stage
-ifeq ($(UNAME_S),Windows)
-	@if "$(MODELSCOPE_TOKEN)"=="" (echo ERROR: set MODELSCOPE_TOKEN environment variable, e.g. $$env:MODELSCOPE_TOKEN = "your-token" && exit /b 1)
-else
-	@test -n "$(MODELSCOPE_TOKEN)" || (echo "ERROR: set MODELSCOPE_TOKEN environment variable" && exit 1)
-endif
-	@test -n "$(OTA_PUBLISH_PLATFORM)" && test "$(OTA_PUBLISH_PLATFORM)" != "unknown" || (echo "ERROR: OTA publish unsupported on $(UNAME_S)" && exit 1)
-ifeq ($(UNAME_S),Windows)
-	@if not exist "$(OTA_STAGED_SETUP)" (echo ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage && exit /b 1)
-else
-	@test -f "$(OTA_STAGED_SETUP)" || (echo "ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage" && exit 1)
-endif
-	$(UV) run --with modelscope python $(OTA_PUBLISH_SCRIPT) \
+OTA_PUBLISH_CMD      = $(UV) run --with modelscope python $(OTA_PUBLISH_SCRIPT) \
 		--channel $(OTA_CHANNEL) \
 		--region-scope $(OTA_REGION) \
 		--version v$(DESKTOP_VERSION) \
 		--enable-account-system $(OTA_ENABLE_ACCOUNT) \
 		--platform $(OTA_PUBLISH_PLATFORM) \
 		--setup-path "$(OTA_STAGED_SETUP)"
+
+ifeq ($(UNAME_S),Windows)
+ota-publish: ota-stage
+	@if "$(MODELSCOPE_TOKEN)"=="" (echo ERROR: set MODELSCOPE_TOKEN environment variable, e.g. $$env:MODELSCOPE_TOKEN = "your-token" && exit /b 1)
+	@if "$(OTA_PUBLISH_PLATFORM)"=="" (echo ERROR: OTA publish unsupported on $(UNAME_S) && exit /b 1)
+	@if "$(OTA_PUBLISH_PLATFORM)"=="unknown" (echo ERROR: OTA publish unsupported on $(UNAME_S) && exit /b 1)
+	@if not exist "$(OTA_STAGED_SETUP)" (echo ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage && exit /b 1)
+	$(OTA_PUBLISH_CMD)
+else
+ota-publish: ota-stage
+	@test -n "$(MODELSCOPE_TOKEN)" || (echo "ERROR: set MODELSCOPE_TOKEN environment variable" && exit 1)
+	@test -n "$(OTA_PUBLISH_PLATFORM)" && test "$(OTA_PUBLISH_PLATFORM)" != "unknown" || (echo "ERROR: OTA publish unsupported on $(UNAME_S)" && exit 1)
+	@test -f "$(OTA_STAGED_SETUP)" || (echo "ERROR: missing $(OTA_STAGED_SETUP). Run: make ota-stage" && exit 1)
+	$(OTA_PUBLISH_CMD)
+endif
 
 ifeq ($(BUILD),1)
 push: build-ota ota-publish
