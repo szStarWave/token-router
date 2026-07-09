@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node --import tsx --test src/lib/routing-log.test.ts src/lib/routing-reasons.test.ts src/lib/stats-utils.test.ts"
+    "test": "node --import tsx --test src/lib/routing-log.test.ts src/lib/routing-reasons.test.ts src/lib/stats-utils.test.ts src/lib/edge-upstream.test.ts"
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.91.0",

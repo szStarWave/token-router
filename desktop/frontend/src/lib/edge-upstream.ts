@@ -66,21 +66,55 @@ const EDGE_USER_CONFIGURED_KEY = 'tr-edge-user-configured'
 const EDGE_MANUAL_ENTRIES_KEY = 'tr-edge-manual-entries'
 const HERDSMAN_CONNECTION_POLL_MS = 12_000
 
+function isValidManualEntry(entry: unknown): entry is ManualEdgeEntry {
+  return (
+    !!entry
+    && typeof entry === 'object'
+    && typeof (entry as ManualEdgeEntry).id === 'string'
+    && typeof (entry as ManualEdgeEntry).name === 'string'
+    && typeof (entry as ManualEdgeEntry).base_url === 'string'
+    && typeof (entry as ManualEdgeEntry).model === 'string'
+  )
+}
+
+function edgeEndpointSignature(baseUrl: string, model: string): string {
+  return `${normalizeHerdsmanEndpoint(baseUrl)}|${(model || '').trim()}`
+}
+
+function preferManualEntry(a: ManualEdgeEntry, b: ManualEdgeEntry): ManualEdgeEntry {
+  if (a.fromSetupRestore && !b.fromSetupRestore) return b
+  if (b.fromSetupRestore && !a.fromSetupRestore) return a
+  if (a.name !== a.model && b.name === b.model) return a
+  if (b.name !== b.model && a.name === a.model) return b
+  return a
+}
+
+function dedupeManualEntries(entries: ManualEdgeEntry[]): ManualEdgeEntry[] {
+  const bySig = new Map<string, ManualEdgeEntry>()
+  for (const entry of entries) {
+    const normalized: ManualEdgeEntry = {
+      ...entry,
+      base_url: normalizeHerdsmanEndpoint(entry.base_url),
+    }
+    const sig = edgeEndpointSignature(normalized.base_url, normalized.model)
+    const existing = bySig.get(sig)
+    bySig.set(sig, existing ? preferManualEntry(existing, normalized) : normalized)
+  }
+  return Array.from(bySig.values())
+}
+
 function loadManualEntriesFromStorage(): ManualEdgeEntry[] {
   try {
     const raw = localStorage.getItem(EDGE_MANUAL_ENTRIES_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (entry): entry is ManualEdgeEntry =>
-        !!entry
-        && typeof entry === 'object'
-        && typeof (entry as ManualEdgeEntry).id === 'string'
-        && typeof (entry as ManualEdgeEntry).name === 'string'
-        && typeof (entry as ManualEdgeEntry).base_url === 'string'
-        && typeof (entry as ManualEdgeEntry).model === 'string',
-    )
+    const valid = parsed.filter(isValidManualEntry)
+    const deduped = dedupeManualEntries(valid)
+    if (deduped.length !== valid.length || JSON.stringify(valid) !== JSON.stringify(deduped)) {
+      persistManualEntries(deduped)
+    }
+    return deduped
   } catch {
     return []
   }
@@ -365,10 +399,6 @@ function entryKey(type: 'herdsman' | 'manual', id: string): string {
   return `${type}:${id}`
 }
 
-function normalizeUrl(url: string | null | undefined): string {
-  return (url || '').trim().replace(/\/+$/, '')
-}
-
 function filterHerdsmanModels(models: unknown): HerdsmanModel[] {
   if (!Array.isArray(models)) return []
   return models
@@ -386,14 +416,13 @@ function filterHerdsmanModels(models: unknown): HerdsmanModel[] {
 }
 
 function herdsmanModelSignature(baseUrl: string, modelId: string): string {
-  return `${normalizeUrl(baseUrl)}|${(modelId || '').trim()}`
+  return edgeEndpointSignature(baseUrl, modelId)
 }
 
 function findHerdsmanItem(modelId: string, baseUrl: string): HerdsmanModel | undefined {
-  const model = (modelId || '').trim()
-  const url = normalizeUrl(baseUrl)
+  const sig = edgeEndpointSignature(baseUrl, modelId)
   return getEdgeStoreState().cachedModels.find(
-    (m) => m.id === model && normalizeUrl(m.endpoint) === url,
+    (m) => edgeEndpointSignature(m.endpoint, m.id) === sig,
   )
 }
 
@@ -489,11 +518,8 @@ function edgeSelectionMatchesSetup(
   const model = setupEdge?.model?.trim()
   const url = setupEdge?.base_url?.trim()
   if (!model || !url) return false
-  const itemModel = item.type === 'manual' ? item.model : item.id
-  return (
-    normalizeUrl(item.base_url) === normalizeUrl(url)
-    && (itemModel === model || item.id === model)
-  )
+  const itemModel = item.type === 'manual' ? (item.model || '') : (item.id || '')
+  return edgeEndpointSignature(item.base_url, itemModel) === edgeEndpointSignature(url, model)
 }
 
 function setupEdgeMatchesDisplayItems(setupEdge: SetupEdge | null | undefined): boolean {
@@ -600,13 +626,14 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
   }
 
   const model = (preferredModel || '').trim()
-  const url = normalizeUrl(preferredUrl)
+  const url = (preferredUrl || '').trim()
 
   if (model && url) {
-    const matches = items.filter(
-      (item) => (item.model === model || item.id === model)
-        && normalizeUrl(item.base_url) === url,
-    )
+    const targetSig = edgeEndpointSignature(url, model)
+    const matches = items.filter((item) => {
+      const itemModel = item.type === 'manual' ? (item.model || '') : (item.id || '')
+      return edgeEndpointSignature(item.base_url, itemModel) === targetSig
+    })
     const herdsman = matches.find((item) => item.type === 'herdsman')
     if (herdsman) {
       state.setSelectedKey(herdsman.key)
@@ -660,6 +687,7 @@ export function upsertManualEntry(entry: ManualEdgeEntry): void {
   const state = getEdgeStoreState()
   const normalized: ManualEdgeEntry = {
     ...entry,
+    base_url: normalizeHerdsmanEndpoint(entry.base_url),
     fromSetupRestore: false,
     context_window: normalizeContextWindow(entry.context_window),
   }
@@ -726,7 +754,7 @@ export function syncEdgeFromSetup(edge: SetupEdge | null | undefined): void {
 
   maybeMigrateLegacyEdgeConfirmation(edge)
 
-  const url = edge.base_url.trim()
+  const url = normalizeHerdsmanEndpoint(edge.base_url.trim())
   const model = edge.model.trim()
   state.setPendingSetupSelection({ model, url })
   const herdsmanMatch = findHerdsmanItem(model, url)
@@ -741,7 +769,7 @@ export function syncEdgeFromSetup(edge: SetupEdge | null | undefined): void {
   }
 
   let entry = state.manualEntries.find(
-    (e) => normalizeUrl(e.base_url) === normalizeUrl(url) && e.model === model,
+    (e) => edgeEndpointSignature(e.base_url, e.model) === edgeEndpointSignature(url, model),
   )
 
   if (!isEdgeUserConfigured()) {
@@ -761,12 +789,25 @@ export function syncEdgeFromSetup(edge: SetupEdge | null | undefined): void {
     const manualEntries = [...state.manualEntries, entry]
     state.setManualEntries(manualEntries)
     persistManualEntries(manualEntries)
-  } else if (edge.api_key) {
-    const manualEntries = state.manualEntries.map((e) =>
-      e.id === entry!.id ? { ...e, api_key: edge.api_key || undefined } : e,
-    )
-    state.setManualEntries(manualEntries)
-    persistManualEntries(manualEntries)
+  } else {
+    let changed = false
+    const manualEntries = state.manualEntries.map((e) => {
+      if (e.id !== entry!.id) return e
+      const next: ManualEdgeEntry = { ...e }
+      if (e.base_url !== url) {
+        next.base_url = url
+        changed = true
+      }
+      if (edge.api_key && e.api_key !== edge.api_key) {
+        next.api_key = edge.api_key
+        changed = true
+      }
+      return next
+    })
+    if (changed) {
+      state.setManualEntries(manualEntries)
+      persistManualEntries(manualEntries)
+    }
   }
 
   ensureSelectedKey(model, url)
