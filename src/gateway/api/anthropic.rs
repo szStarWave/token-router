@@ -700,8 +700,8 @@ fn build_messages(obj: &serde_json::Map<String, Value>) -> Vec<Value> {
             "assistant" => messages.push(convert_assistant_message(role, content)),
             "user" => {
                 let (user_msgs, tool_msgs) = convert_user_message(role, content);
-                messages.extend(user_msgs);
                 messages.extend(tool_msgs);
+                messages.extend(user_msgs);
             }
             _ => {
                 messages.push(json!({
@@ -888,6 +888,7 @@ fn hash_bytes(b: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::api::openai::Role;
 
     #[test]
     fn converts_system_and_user_message() {
@@ -1045,5 +1046,37 @@ mod tests {
         assert_eq!(anth["content"][0]["type"], "thinking");
         assert_eq!(anth["content"][0]["thinking"], "plan");
         assert_eq!(anth["content"][1]["text"], "hi");
+    }
+
+    #[test]
+    fn converts_tool_result_before_user_text() {
+        let body = json!({
+            "model": "claude-3",
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "Bash",
+                        "input": {"command": "date"}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "continue"},
+                        {"type": "tool_result", "tool_use_id": "call_1", "content": "10:27 AM"}
+                    ]
+                }
+            ]
+        });
+        let req = anthropic_request_to_openai(&body).unwrap();
+        assert_eq!(req.messages.len(), 3);
+        assert_eq!(req.messages[0].role, Role::Assistant);
+        assert_eq!(req.messages[1].role, Role::Tool);
+        assert_eq!(req.messages[1].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(req.messages[2].role, Role::User);
     }
 }

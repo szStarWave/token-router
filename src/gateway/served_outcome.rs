@@ -5,7 +5,7 @@ use crate::gateway::routing::RouteDecision;
 use crate::gateway::routing::RouteTier;
 use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::session::SessionStore;
-use crate::gateway::stats::metrics::tokens_from_response;
+use crate::gateway::stats::metrics::{effective_upstream_model, tokens_from_response};
 
 /// Result of a completed upstream call (actual tier + token usage).
 #[derive(Debug, Clone)]
@@ -27,10 +27,11 @@ impl ServedOutcome {
         let (prompt, _completion, cached) =
             tokens_from_response(resp, decision.tokens_in_estimate);
         let served_tier = infer_served_tier(decision, fallback);
+        let forwarded = resp.upstream_forwarded_model.as_deref().unwrap_or("");
         Self {
             outcome,
             served_tier,
-            served_model: resp.model.clone(),
+            served_model: effective_upstream_model(forwarded, &resp.model),
             cached_tokens: cached,
             prompt_tokens: prompt,
         }

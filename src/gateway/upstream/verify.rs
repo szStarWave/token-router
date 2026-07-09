@@ -86,6 +86,7 @@ mod tests {
             }],
             usage: None,
             token_router_meta: None,
+            upstream_forwarded_model: None,
         }
     }
 
@@ -109,6 +110,7 @@ mod tests {
             }],
             usage: None,
             token_router_meta: None,
+            upstream_forwarded_model: None,
         }
     }
 

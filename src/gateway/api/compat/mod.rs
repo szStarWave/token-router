@@ -19,7 +19,7 @@ pub use diagnostics::{
 };
 pub use messages::{
     collapse_system_messages, finalize_chat_request_value, finalize_upstream_request,
-    normalize_trailing_assistant_tool_calls,
+    normalize_trailing_assistant_tool_calls, repair_assistant_tool_call_adjacency,
 };
 pub use reasoning::{
     apply_reasoning_options, apply_reasoning_options_to_chat_request,

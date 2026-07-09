@@ -24,6 +24,15 @@ pub fn normalize_upstream_model(model: &str) -> String {
     }
 }
 
+/// Prefer the model actually sent upstream; fall back to the response echo when forwarded is empty/auto.
+pub fn effective_upstream_model(forwarded: &str, response: &str) -> String {
+    let f = forwarded.trim();
+    if !f.is_empty() && !f.eq_ignore_ascii_case("auto") {
+        return normalize_upstream_model(f);
+    }
+    normalize_upstream_model(response)
+}
+
 /// Client-visible response served from edge — counts toward cloud token savings.
 #[derive(Debug, Clone)]
 pub struct FinalResponseMetrics {
@@ -242,6 +251,20 @@ mod tests {
         );
         assert_eq!(acc.chunk_count, 2);
         assert_eq!(acc.resolve_completion(), 99);
+    }
+
+    #[test]
+    fn effective_upstream_model_prefers_forwarded() {
+        assert_eq!(
+            effective_upstream_model("deepseek-v4-flash", "Pro/MiniMaxAI/MiniMax-M2.5"),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn effective_upstream_model_falls_back_to_response() {
+        assert_eq!(effective_upstream_model("", "some-model"), "some-model");
+        assert_eq!(effective_upstream_model("auto", "some-model"), "some-model");
     }
 
     #[test]

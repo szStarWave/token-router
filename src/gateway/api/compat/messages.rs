@@ -1,9 +1,96 @@
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::gateway::api::compat::reasoning::{
     apply_reasoning_options_to_chat_request, apply_reasoning_to_upstream_messages,
 };
 use crate::gateway::api::openai::{ChatCompletionRequest, Message, Role};
+
+fn assistant_has_tool_calls(msg: &Message) -> bool {
+    msg.role == Role::Assistant
+        && msg
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+}
+
+fn assistant_tool_call_ids(msg: &Message) -> Vec<String> {
+    msg.tool_calls
+        .as_ref()
+        .map(|calls| calls.iter().map(|c| c.id.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Reorder messages so every `assistant(tool_calls)` turn is immediately followed
+/// by its `tool` responses. Agent clients (e.g. Claude Code after an interrupt) may
+/// insert a user message between the assistant call and the tool result.
+pub fn repair_assistant_tool_call_adjacency(messages: &mut Vec<Message>) {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut i = 0;
+
+    while i < messages.len() {
+        let msg = messages[i].clone();
+        if !assistant_has_tool_calls(&msg) {
+            repaired.push(msg);
+            i += 1;
+            continue;
+        }
+
+        let expected_ids = assistant_tool_call_ids(&msg);
+        let mut found_ids = HashSet::new();
+        let mut found_tools = Vec::new();
+        let mut deferred = Vec::new();
+        let mut j = i + 1;
+
+        while j < messages.len() {
+            let next = &messages[j];
+            if assistant_has_tool_calls(next) {
+                break;
+            }
+            if next.role == Role::Tool {
+                if let Some(id) = next.tool_call_id.as_deref() {
+                    if expected_ids.iter().any(|expected| expected == id)
+                        && found_ids.insert(id.to_string())
+                    {
+                        found_tools.push(next.clone());
+                        j += 1;
+                        continue;
+                    }
+                }
+            }
+            if found_ids.len() == expected_ids.len() {
+                break;
+            }
+            deferred.push(next.clone());
+            j += 1;
+        }
+
+        let mut assistant_msg = msg;
+        if found_ids.len() < expected_ids.len() {
+            if let Some(tool_calls) = assistant_msg.tool_calls.as_mut() {
+                tool_calls.retain(|call| found_ids.contains(&call.id));
+                if tool_calls.is_empty() {
+                    assistant_msg.tool_calls = None;
+                }
+            }
+        }
+
+        repaired.push(assistant_msg);
+        for id in &expected_ids {
+            if let Some(tool) = found_tools
+                .iter()
+                .find(|tool| tool.tool_call_id.as_deref() == Some(id.as_str()))
+            {
+                repaired.push(tool.clone());
+            }
+        }
+        repaired.extend(deferred);
+        i = j;
+    }
+
+    *messages = repaired;
+}
 
 fn message_has_visible_content(msg: &Message) -> bool {
     msg.content.as_deref().is_some_and(|s| !s.trim().is_empty())
@@ -140,6 +227,7 @@ pub fn finalize_upstream_request(
     req.messages = merged;
 
     apply_reasoning_to_upstream_messages(&mut req.messages, &req.model, upstream_base);
+    repair_assistant_tool_call_adjacency(&mut req.messages);
     normalize_trailing_assistant_tool_calls(&mut req.messages);
     apply_reasoning_options_to_chat_request(&mut req, upstream_base);
     req
@@ -323,5 +411,138 @@ mod tests {
         normalize_trailing_assistant_tool_calls(&mut msgs);
         assert_eq!(msgs.len(), 3);
         assert!(msgs[0].tool_calls.as_ref().is_some_and(|c| !c.is_empty()));
+    }
+
+    fn assistant_with_tool_call(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: None,
+            content_parts: None,
+            tool_calls: Some(vec![ToolCall {
+                id: id.into(),
+                call_type: "function".into(),
+                function: FunctionCallPayload {
+                    name: "Bash".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+            tool_call_id: None,
+            reasoning_content: Some("thinking".into()),
+        }
+    }
+
+    fn tool_message(id: &str, content: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: Some(content.into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: Some(id.into()),
+            reasoning_content: None,
+        }
+    }
+
+    fn user_message(content: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: Some(content.into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    #[test]
+    fn repairs_interrupted_tool_response_order() {
+        let mut msgs = vec![
+            assistant_with_tool_call("call_1"),
+            user_message("[Request interrupted by user]\n继续"),
+            tool_message("call_1", "Thu, Jul  9, 2026 10:27:35 AM"),
+        ];
+        repair_assistant_tool_call_adjacency(&mut msgs);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, Role::Assistant);
+        assert_eq!(msgs[1].role, Role::Tool);
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(msgs[2].role, Role::User);
+    }
+
+    #[test]
+    fn repairs_parallel_tool_calls_with_interrupt() {
+        let mut msgs = vec![
+            Message {
+                role: Role::Assistant,
+                content: None,
+                content_parts: None,
+                tool_calls: Some(vec![
+                    ToolCall {
+                        id: "c1".into(),
+                        call_type: "function".into(),
+                        function: FunctionCallPayload {
+                            name: "a".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                    ToolCall {
+                        id: "c2".into(),
+                        call_type: "function".into(),
+                        function: FunctionCallPayload {
+                            name: "b".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                ]),
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+            user_message("continue"),
+            tool_message("c2", "out2"),
+            tool_message("c1", "out1"),
+        ];
+        repair_assistant_tool_call_adjacency(&mut msgs);
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(msgs[2].tool_call_id.as_deref(), Some("c2"));
+        assert_eq!(msgs[3].role, Role::User);
+    }
+
+    #[test]
+    fn preserves_correct_tool_order() {
+        let mut msgs = vec![
+            assistant_with_tool_call("call_1"),
+            tool_message("call_1", "ok"),
+            user_message("thanks"),
+        ];
+        repair_assistant_tool_call_adjacency(&mut msgs);
+        assert_eq!(msgs[1].role, Role::Tool);
+        assert_eq!(msgs[2].role, Role::User);
+    }
+
+    #[test]
+    fn strips_unfulfilled_tool_calls_when_response_missing() {
+        let mut msgs = vec![
+            assistant_with_tool_call("call_1"),
+            user_message("interrupted"),
+        ];
+        repair_assistant_tool_call_adjacency(&mut msgs);
+        assert!(msgs[0].tool_calls.is_none());
+        assert_eq!(msgs[1].role, Role::User);
+    }
+
+    #[test]
+    fn finalize_upstream_repairs_interrupted_tool_turn_for_deepseek() {
+        let req = ChatCompletionRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![
+                assistant_with_tool_call("call_1"),
+                user_message("[Request interrupted by user]\n继续"),
+                tool_message("call_1", "Thu, Jul  9, 2026 10:27:35 AM"),
+            ],
+            ..Default::default()
+        };
+        let out = finalize_upstream_request(req, Some("https://api.deepseek.com/v1"));
+        assert_eq!(out.messages[0].role, Role::Assistant);
+        assert_eq!(out.messages[1].role, Role::Tool);
+        assert_eq!(out.messages[2].role, Role::User);
     }
 }

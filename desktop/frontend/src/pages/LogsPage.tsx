@@ -132,12 +132,11 @@ export function LogsPage() {
     if (!incoming.length) return
 
     setRoutingEntries((prev) => {
-      const seen = new Set(prev.map((e) => e.id))
-      const next = [...prev]
+      const byId = new Map(prev.map((e) => [e.id, e]))
       for (const entry of incoming) {
-        if (!seen.has(entry.id)) next.push(entry)
+        byId.set(entry.id, entry)
       }
-      return next
+      return Array.from(byId.values()).sort((a, b) => a.id - b.id)
     })
   }, [routingQuery.data, logView, pollAfterId])
 

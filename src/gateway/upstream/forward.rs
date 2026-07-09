@@ -14,7 +14,8 @@ use std::sync::Arc;
 use crate::gateway::edge_load::{EdgeInferenceGuard, EdgeInferenceTracker};
 use crate::gateway::routing::{RouteDecision, RouteTier, WorkStrategy};
 use crate::gateway::stats::metrics::{
-    tokens_from_response, FinalResponseMetrics, UpstreamCallMetrics,
+    effective_upstream_model, normalize_upstream_model, tokens_from_response, FinalResponseMetrics,
+    UpstreamCallMetrics,
 };
 use crate::gateway::stats::{AuthKeyContext, GatewayStats};
 use crate::gateway::upstream::sse::{instrument_stream, StreamRecordContext, SseStream};
@@ -130,7 +131,7 @@ impl UpstreamClient {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
                     let t = self.target_cloud(agent_id);
                     let resp = self.call_target(req, t, decision.tokens_in_estimate, auth_key).await?;
-                    Ok(self.finish_non_stream(resp, decision, "cloud", false, agent_id, auth_key))
+                    Ok(self.finish_non_stream(req, resp, decision, "cloud", false, agent_id, auth_key))
                 } else {
                     let edge = self.target_edge(agent_id);
                     let edge_tried = edge.base_url.is_some();
@@ -141,7 +142,7 @@ impl UpstreamClient {
                         {
                             if cascade_gate_pass(&resp) {
                                 self.stats.record_cascade_edge_ok();
-                                return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+                                return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
                             }
                         }
                         self.stats.record_cascade_fallback();
@@ -150,7 +151,7 @@ impl UpstreamClient {
                     let resp = self
                         .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
                         .await?;
-                    Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id, auth_key))
+                    Ok(self.finish_non_stream(req, resp, decision, "cloud", edge_tried, agent_id, auth_key))
                 }
             }
             RouteTier::Cascade => {
@@ -176,7 +177,7 @@ impl UpstreamClient {
             {
                 if cascade_gate_pass(&resp) {
                     self.stats.record_cascade_edge_ok();
-                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+                    return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
                 }
             }
             self.stats.record_cascade_fallback();
@@ -185,7 +186,7 @@ impl UpstreamClient {
         let resp = self
             .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id, auth_key))
+        Ok(self.finish_non_stream(req, resp, decision, "cloud", edge_tried, agent_id, auth_key))
     }
 
     pub async fn stream(
@@ -235,13 +236,13 @@ impl UpstreamClient {
                 let resp = self
                     .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate, auth_key)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key))
+                Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key))
             }
             MultimodalStrategy::CachedCloud => {
                 let resp = self
                     .call_target(req, self.target_cloud(agent_id), decision.tokens_in_estimate, auth_key)
                     .await?;
-                Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id, auth_key))
+                Ok(self.finish_non_stream(req, resp, decision, "cloud", true, agent_id, auth_key))
             }
             MultimodalStrategy::Probe => {
                 self.complete_multimodal_probe(req, decision, agent_id, auth_key).await
@@ -268,7 +269,7 @@ impl UpstreamClient {
                 Ok(resp) if cascade_gate_pass(&resp) => {
                     self.multimodal.record_edge(&self.cfg(), model, true);
                     self.stats.record_cascade_edge_ok();
-                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+                    return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
                 }
                 Ok(_) => self.multimodal.record_edge(&self.cfg(), model, false),
                 Err(_) => self.multimodal.record_edge(&self.cfg(), model, false),
@@ -283,7 +284,7 @@ impl UpstreamClient {
         {
             Ok(resp) => {
                 self.multimodal.record_cloud(&self.cfg(), model, true);
-                return Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id, auth_key));
+                return Ok(self.finish_non_stream(req, resp, decision, "cloud", true, agent_id, auth_key));
             }
             Err(_) => self.multimodal.record_cloud(&self.cfg(), model, false),
         }
@@ -291,7 +292,7 @@ impl UpstreamClient {
         let resp = self
             .call_target(req, self.target_edge(agent_id), decision.tokens_in_estimate, auth_key)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "edge", true, agent_id, auth_key))
+        Ok(self.finish_non_stream(req, resp, decision, "edge", true, agent_id, auth_key))
     }
 
     async fn complete_work_verify(
@@ -317,7 +318,7 @@ impl UpstreamClient {
                     {
                         if cloud_verifies_edge(&edge_resp, &_cloud_resp) {
                             self.stats.record_cascade_edge_ok();
-                            return Ok(self.finish_non_stream(edge_resp, decision, "edge", false, agent_id, auth_key));
+                            return Ok(self.finish_non_stream(req, edge_resp, decision, "edge", false, agent_id, auth_key));
                         }
                     }
                 }
@@ -331,7 +332,7 @@ impl UpstreamClient {
         let resp = self
             .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "cloud", edge_tried, agent_id, auth_key))
+        Ok(self.finish_non_stream(req, resp, decision, "cloud", edge_tried, agent_id, auth_key))
     }
 
     async fn stream_multimodal(
@@ -550,13 +551,7 @@ impl UpstreamClient {
         let latency_ms = start.elapsed().as_millis() as u64;
         let (prompt, completion, cached) = tokens_from_response(&body, prompt_fallback);
         let tier_static = tier_static(tier);
-        let model_name = crate::gateway::stats::metrics::normalize_upstream_model(
-            if body.model.trim().is_empty() {
-                upstream_req.model.as_str()
-            } else {
-                body.model.as_str()
-            },
-        );
+        let model_name = normalize_upstream_model(upstream_req.model.as_str());
         self.stats.record_upstream_metrics(
             &UpstreamCallMetrics {
                 tier: tier_static,
@@ -730,7 +725,8 @@ impl UpstreamClient {
 
     fn finish_non_stream(
         &self,
-        resp: ChatCompletionResponse,
+        req: &ChatCompletionRequest,
+        mut resp: ChatCompletionResponse,
         decision: &RouteDecision,
         served_tier: &'static str,
         fallback: bool,
@@ -754,7 +750,9 @@ impl UpstreamClient {
         if served_tier == "cloud" {
             self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
         }
-        let served_model = &resp.model;
+        let forwarded = self.resolve_served_model(req, served_tier, agent_id);
+        let served_model = effective_upstream_model(&forwarded, &resp.model);
+        resp.upstream_forwarded_model = Some(forwarded);
         log_upstream_served(
             Some(self.routing_logs.as_ref()),
             decision.routing_log_id,
@@ -762,10 +760,30 @@ impl UpstreamClient {
             served_tier,
             fallback,
             false,
-            Some(served_model),
+            Some(&served_model),
             agent_id,
         );
         attach_meta(resp, decision, fallback)
+    }
+
+    fn resolve_served_model(
+        &self,
+        req: &ChatCompletionRequest,
+        served_tier: &str,
+        agent_id: Option<&str>,
+    ) -> String {
+        let target = if served_tier == "cloud" {
+            self.target_cloud(agent_id)
+        } else {
+            self.target_edge(agent_id)
+        };
+        apply_upstream_model(
+            req,
+            target.model.as_deref(),
+            served_tier,
+            target.base_url.as_deref(),
+        )
+        .model
     }
 
     fn cloud_configured(&self) -> bool {
@@ -787,7 +805,7 @@ impl UpstreamClient {
                 .await
             {
                 Ok(resp) => {
-                    return Ok(self.finish_non_stream(resp, decision, "edge", false, agent_id, auth_key));
+                    return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
                 }
                 Err(err) if is_context_overflow_upstream_error(&err) && self.cloud_configured() => {
                     self.stats.record_cascade_fallback();
@@ -802,7 +820,7 @@ impl UpstreamClient {
         let resp = self
             .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
             .await?;
-        Ok(self.finish_non_stream(resp, decision, "cloud", true, agent_id, auth_key))
+        Ok(self.finish_non_stream(req, resp, decision, "cloud", true, agent_id, auth_key))
     }
 
     async fn stream_edge_with_context_fallback(
@@ -995,6 +1013,7 @@ mod cascade_gate_tests {
             }],
             usage: None,
             token_router_meta: None,
+            upstream_forwarded_model: None,
         }
     }
 

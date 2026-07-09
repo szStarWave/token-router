@@ -259,6 +259,9 @@ pub struct ChatCompletionResponse {
     pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_router_meta: Option<TokenRouterMeta>,
+    /// Model sent to upstream after config override; not serialized to clients.
+    #[serde(skip, default)]
+    pub upstream_forwarded_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

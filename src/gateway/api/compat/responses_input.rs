@@ -13,6 +13,7 @@ pub fn convert_responses_input_to_messages(input: &Value, instructions: &str) ->
     let mut pending_tool_calls: Vec<Value> = Vec::new();
     let mut pending_reasoning: Option<String> = None;
     let mut last_assistant_index: Option<usize> = None;
+    let mut deferred_messages: Vec<Value> = Vec::new();
 
     match input {
         Value::String(s) => messages.push(json!({"role": "user", "content": s})),
@@ -24,6 +25,7 @@ pub fn convert_responses_input_to_messages(input: &Value, instructions: &str) ->
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
                     &mut last_assistant_index,
+                    &mut deferred_messages,
                 );
             }
         }
@@ -34,6 +36,7 @@ pub fn convert_responses_input_to_messages(input: &Value, instructions: &str) ->
                 &mut pending_tool_calls,
                 &mut pending_reasoning,
                 &mut last_assistant_index,
+                &mut deferred_messages,
             );
         }
         _ => {}
@@ -45,6 +48,7 @@ pub fn convert_responses_input_to_messages(input: &Value, instructions: &str) ->
         &mut pending_reasoning,
         &mut last_assistant_index,
     );
+    flush_deferred_messages(&mut messages, &mut deferred_messages);
     backfill_tool_call_reasoning_placeholders(&mut messages);
 
     let has_non_system = messages.iter().any(|m| {
@@ -64,6 +68,7 @@ fn append_responses_item(
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
+    deferred_messages: &mut Vec<Value>,
 ) {
     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -107,17 +112,17 @@ fn append_responses_item(
             }
         }
         "message" | "" => {
-            flush_pending_tool_calls(
-                messages,
-                pending_tool_calls,
-                pending_reasoning,
-                last_assistant_index,
-            );
             if item.get("role").is_none() && item.get("content").is_none() {
                 return;
             }
             let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
             if role == "tool" {
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
                 let call_id = item.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
                 let output = item.get("content").and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
@@ -149,7 +154,15 @@ fn append_responses_item(
                     "tool_call_id": call_id,
                     "content": output,
                 }));
+            } else if should_defer_during_pending_tool_calls(role, pending_tool_calls) {
+                deferred_messages.push(message_item_to_chat(item, pending_reasoning));
             } else {
+                flush_pending_tool_calls(
+                    messages,
+                    pending_tool_calls,
+                    pending_reasoning,
+                    last_assistant_index,
+                );
                 let message = message_item_to_chat(item, pending_reasoning);
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
@@ -157,14 +170,14 @@ fn append_responses_item(
         }
         _ => {
             if item.get("role").is_some() || item.get("content").is_some() {
-                flush_pending_tool_calls(
-                    messages,
-                    pending_tool_calls,
-                    pending_reasoning,
-                    last_assistant_index,
-                );
                 let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
                 if role == "tool" {
+                    flush_pending_tool_calls(
+                        messages,
+                        pending_tool_calls,
+                        pending_reasoning,
+                        last_assistant_index,
+                    );
                     let call_id = item.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
                     let output = item.get("content").and_then(|v| match v {
                         Value::String(s) => Some(s.clone()),
@@ -196,7 +209,15 @@ fn append_responses_item(
                         "tool_call_id": call_id,
                         "content": output,
                     }));
+                } else if should_defer_during_pending_tool_calls(role, pending_tool_calls) {
+                    deferred_messages.push(message_item_to_chat(item, pending_reasoning));
                 } else {
+                    flush_pending_tool_calls(
+                        messages,
+                        pending_tool_calls,
+                        pending_reasoning,
+                        last_assistant_index,
+                    );
                     let message = message_item_to_chat(item, pending_reasoning);
                     update_last_assistant_index(messages, &message, last_assistant_index);
                     messages.push(message);
@@ -204,6 +225,14 @@ fn append_responses_item(
             }
         }
     }
+}
+
+fn should_defer_during_pending_tool_calls(role: &str, pending_tool_calls: &[Value]) -> bool {
+    !pending_tool_calls.is_empty() && role != "assistant" && role != "tool"
+}
+
+fn flush_deferred_messages(messages: &mut Vec<Value>, deferred_messages: &mut Vec<Value>) {
+    messages.append(deferred_messages);
 }
 
 fn flush_pending_tool_calls(
@@ -468,5 +497,38 @@ mod tests {
         let assistants: Vec<_> = msgs.iter().filter(|m| m.get("role") == Some(&json!("assistant"))).collect();
         assert_eq!(assistants.len(), 1);
         assert_eq!(assistants[0]["tool_calls"][0]["id"], "c1");
+    }
+
+    #[test]
+    fn defers_user_message_until_function_call_outputs_arrive() {
+        let input = json!([
+            {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+            {"role": "user", "content": "[Request interrupted by user]\n继续"},
+            {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+        ]);
+        let msgs = convert_responses_input_to_messages(&input, "");
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "c1");
+        assert_eq!(msgs[2]["role"], "user");
+    }
+
+    #[test]
+    fn keeps_parallel_tool_calls_adjacent_to_outputs_with_interrupted_user() {
+        let input = json!([
+            {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+            {"type": "function_call", "call_id": "c2", "name": "list", "arguments": "{}"},
+            {"role": "user", "content": "Continue"},
+            {"type": "function_call_output", "call_id": "c1", "output": "one"},
+            {"type": "function_call_output", "call_id": "c2", "output": "two"}
+        ]);
+        let msgs = convert_responses_input_to_messages(&input, "");
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "c1");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "c2");
+        assert_eq!(msgs[3]["role"], "user");
     }
 }
