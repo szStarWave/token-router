@@ -7,6 +7,11 @@ use token_router::config::auth_keys::{collect_inbound_api_keys, default_gateway_
 use token_router::config::{ensure_initialized, load_from_path};
 use token_router::gateway::AppConfig;
 
+use crate::codex_catalog::{
+    codex_catalog_specs_for_agent, write_token_router_codex_catalog,
+    TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME,
+};
+
 const OPENCLAW_PROVIDER: &str = "token-router";
 const OPENCLAW_MODEL_DISPLAY: &str = "Token Router Auto Route";
 const OPENCLAW_CONTEXT_WINDOW: u64 = 1_000_000;
@@ -318,6 +323,8 @@ pub fn configure_codex_at(
     let context_window = resolve_agent_context_window(&config, None);
     merge_codex_config(&mut doc, openai_v1_base, &model, &key, context_window);
     write_toml_file(&path, &doc)?;
+    let specs = codex_catalog_specs_for_agent(&config, context_window);
+    write_token_router_codex_catalog(home, &specs)?;
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
@@ -778,6 +785,10 @@ fn merge_codex_config(
         "model_context_window".into(),
         toml::Value::Integer(context_window as i64),
     );
+    root.insert(
+        "model_catalog_json".into(),
+        toml::Value::String(TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME.to_string()),
+    );
 
     let mut provider = toml::map::Map::new();
     provider.insert(
@@ -907,6 +918,9 @@ fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Resu
     let context_window = resolve_agent_context_window(&config, context_window);
     merge_codex_config(&mut doc, &base_url, &model, &key, context_window);
     write_toml_file(&path, &doc)?;
+    let home = home_dir()?;
+    let specs = codex_catalog_specs_for_agent(&config, context_window);
+    write_token_router_codex_catalog(&home, &specs)?;
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
@@ -1220,6 +1234,10 @@ mod tests {
         assert_eq!(doc["model"], toml::Value::String("auto".into()));
         assert_eq!(doc["model_provider"], toml::Value::String("token_router".into()));
         assert_eq!(doc["model_context_window"], toml::Value::Integer(1_000_000));
+        assert_eq!(
+            doc["model_catalog_json"],
+            toml::Value::String("token-router-model-catalog.json".into())
+        );
         assert_eq!(
             doc["model_providers"]["token_router"]["wire_api"],
             toml::Value::String("responses".into())

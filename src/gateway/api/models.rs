@@ -6,8 +6,10 @@ use axum::{
     http::HeaderMap,
 };
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::gateway::api::auth::require_gateway_api_key;
+use crate::gateway::api::codex_catalog::build_codex_model_catalog_from_config;
 use crate::gateway::api::routes::{extract_agent_id, AppState};
 use crate::gateway::config::AppConfig;
 use crate::gateway::error::{AppError, AppResult};
@@ -31,6 +33,8 @@ pub struct ModelObject {
 pub struct ModelsListResponse {
     pub object: &'static str,
     pub data: Vec<ModelObject>,
+    /// Codex `/v1/models` probe expects this catalog-shaped field (cc-switch compatible).
+    pub models: Vec<Value>,
 }
 
 pub async fn list_models(
@@ -40,9 +44,16 @@ pub async fn list_models(
     require_gateway_api_key(&headers, &state.config().inbound_api_keys)?;
     let agent_id = extract_agent_id(&headers);
     let data = build_models(&state.config(), agent_id.as_deref());
+    let catalog = build_codex_model_catalog_from_config(&state.config(), agent_id.as_deref());
+    let models = catalog
+        .get("models")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
     Ok(Json(ModelsListResponse {
         object: "list",
         data,
+        models,
     }))
 }
 
@@ -208,5 +219,24 @@ mod tests {
         let models = build_models(&cfg, None);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "auto");
+    }
+
+    #[test]
+    fn codex_catalog_matches_openai_model_ids() {
+        use crate::gateway::api::codex_catalog::build_codex_model_catalog_from_config;
+
+        let cfg = test_config(true, true, Some("deepseek-v4-flash"), None);
+        let openai = build_models(&cfg, None);
+        let catalog = build_codex_model_catalog_from_config(&cfg, None);
+        let slugs: Vec<_> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("slug").and_then(|slug| slug.as_str()))
+            .collect();
+        assert_eq!(slugs.len(), openai.len());
+        for model in openai {
+            assert!(slugs.contains(&model.id.as_str()));
+        }
     }
 }

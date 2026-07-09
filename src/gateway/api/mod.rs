@@ -3,6 +3,7 @@ pub mod anthropic;
 pub mod auth;
 pub mod auth_keys;
 pub mod chat;
+pub mod codex_catalog;
 pub mod compat;
 pub mod meta;
 pub mod models;

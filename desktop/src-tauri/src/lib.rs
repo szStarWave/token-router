@@ -11,6 +11,7 @@ use tauri::{
 use token_router::embedded;
 
 mod agent_setup;
+mod codex_catalog;
 mod devtools_gate;
 mod feedback;
 mod flowy_test_server;

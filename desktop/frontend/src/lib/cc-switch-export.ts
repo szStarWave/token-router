@@ -48,6 +48,7 @@ function buildCodexToml(baseUrl: string, model: string, apiKey: string, contextW
   const lines = [
     `model = "${model}"`,
     `model_provider = "${CODEX_PROVIDER}"`,
+    `model_catalog_json = "token-router-model-catalog.json"`,
   ]
   if (contextWindow != null && contextWindow > 0) {
     lines.push(`model_context_window = ${contextWindow}`)
