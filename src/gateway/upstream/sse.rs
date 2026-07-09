@@ -36,13 +36,13 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
         let mut inner = inner;
         while let Some(item) = inner.next().await {
             if let Ok(bytes) = &item {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                inspect_sse_bytes(bytes, &mut acc, elapsed_ms);
+                inspect_sse_bytes(bytes, &mut acc, &mut || start.elapsed().as_micros() as u64);
             }
             yield item;
         }
 
-        let latency_ms = start.elapsed().as_millis() as u64;
+        let latency_us = start.elapsed().as_micros() as u64;
+        let latency_ms = latency_us / 1000;
         let prompt = acc.resolve_prompt(ctx.prompt_fallback);
         let completion = acc.resolve_completion();
         let cached = acc.cached_tokens();
@@ -57,6 +57,9 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
                 latency_ms,
                 ttft_ms: acc.first_token_ms,
                 last_token_ms: acc.last_token_ms,
+                latency_us,
+                ttft_us: acc.first_token_us,
+                last_token_us: acc.last_token_us,
                 stream: true,
             },
             ctx.auth_key.as_ref(),

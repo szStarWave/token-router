@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::config::DEFAULT_CLOUD_BUDGET_AGENT_ID;
 use crate::gateway::agent_usage::AgentCloudUsageStore;
+use crate::gateway::api::codex_catalog::is_router_auto_model;
 use crate::gateway::api::openai::{ChatCompletionRequest, ChatCompletionResponse, TokenRouterMeta};
 use crate::gateway::config::AppConfig;
 use crate::gateway::config_manager::ConfigManager;
@@ -548,7 +549,8 @@ impl UpstreamClient {
             );
             AppError::Upstream(msg)
         })?;
-        let latency_ms = start.elapsed().as_millis() as u64;
+        let latency_us = start.elapsed().as_micros() as u64;
+        let latency_ms = latency_us / 1000;
         let (prompt, completion, cached) = tokens_from_response(&body, prompt_fallback);
         let tier_static = tier_static(tier);
         let model_name = normalize_upstream_model(upstream_req.model.as_str());
@@ -562,6 +564,9 @@ impl UpstreamClient {
                 latency_ms,
                 ttft_ms: None,
                 last_token_ms: None,
+                latency_us,
+                ttft_us: None,
+                last_token_us: None,
                 stream: false,
             },
             auth_key,
@@ -874,7 +879,7 @@ fn apply_upstream_model(
     };
     if let Some(model) = endpoint_model {
         let m = model.trim();
-        if !m.is_empty() && !m.eq_ignore_ascii_case("auto") {
+        if !m.is_empty() && !is_router_auto_model(m) {
             upstream_req.model = m.to_string();
         }
     }

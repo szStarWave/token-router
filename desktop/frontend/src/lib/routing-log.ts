@@ -36,6 +36,7 @@ const DECISIVE_PREFIXES = [
   'UPSTREAM_',
   'PLAN_',
   'INITIAL_PLAN_',
+  'LONG_GEN_',
   'MULTIMODAL_',
   'WORK_',
   'STICKY_',
@@ -222,20 +223,32 @@ export function parseDifficultyBreakdown(codes: string[]): DifficultyBreakdown |
   return { parts, linearSum, heuristic, fuse, adjustments, final }
 }
 
-/** Codes that directly override the planned route (last match wins). */
-export function isRouteOverrideCode(code: string): boolean {
-  if (code.startsWith('GATE_')) return true
+/** Config / upstream availability — the only codes that bypass difficulty scoring. */
+export function isHardRouteOverrideCode(code: string): boolean {
   if (code.startsWith('CONFIG_ROUTE_')) return true
-  if (code.startsWith('UPSTREAM_')) return true
-  if (code.startsWith('MULTIMODAL_')) return true
-  if (code.startsWith('LONG_GEN_')) return true
-  if (code === 'WORK_TOOL_ERROR_VERIFY') return true
-  if (code === 'WORK_CACHE_EDGE') return true
-  if (code === 'CLOUD_CACHE_BOOST' || code === 'REQ_ROUTE_CACHE_CLOUD') return true
-  if (code === 'STICKY_CASCADE_RETRY') return true
-  if (code === 'CLOUD_INTENT' || code === 'EDGE_INTENT') return true
-  if (code === 'CASUAL_PREFER_EDGE') return true
-  return false
+  return code === 'UPSTREAM_EDGE_ONLY' || code === 'UPSTREAM_CLOUD_ONLY'
+}
+
+/** @deprecated Use isHardRouteOverrideCode; kept for tag ordering of legacy decisive codes. */
+export function isRouteOverrideCode(code: string): boolean {
+  return isHardRouteOverrideCode(code)
+}
+
+function pickDominantDifficultyFactor(codes: string[], route: RouteTier): string | null {
+  const breakdown = parseDifficultyBreakdown(codes)
+  if (!breakdown || breakdown.parts.length === 0) return null
+
+  const wantCloud = route !== 'edge'
+  const aligned = breakdown.parts.filter((p) => {
+    const delta = p.scoreDelta
+    if (delta == null || delta === 0) return false
+    return wantCloud ? delta > 0 : delta < 0
+  })
+
+  if (aligned.length === 0) return null
+
+  aligned.sort((a, b) => Math.abs(b.scoreDelta ?? 0) - Math.abs(a.scoreDelta ?? 0))
+  return aligned[0].key
 }
 
 export function extractDifficultyScore(
@@ -252,24 +265,43 @@ export function extractDifficultyScore(
   return null
 }
 
-/** Last route override, or difficulty-based policy when no override exists. */
-export function pickFinalRouteFactorCode(codes: string[]): string | null {
+/**
+ * Primary factor for the routing conclusion: hard override, then the largest
+ * difficulty contributor aligned with the chosen route, then DIFFICULTY_*.
+ */
+export function pickFinalRouteFactorCode(
+  codes: string[],
+  route: RouteTier = 'edge',
+): string | null {
   for (let i = codes.length - 1; i >= 0; i--) {
-    if (isRouteOverrideCode(codes[i])) return codes[i]
+    if (isHardRouteOverrideCode(codes[i])) return codes[i]
   }
+
+  const dominant = pickDominantDifficultyFactor(codes, route)
+  if (dominant) return dominant
+
   for (let i = codes.length - 1; i >= 0; i--) {
     if (codes[i].startsWith('DIFFICULTY_')) return codes[i]
   }
-  return codes.find((c) => c.startsWith('CONFIG_ROUTE_')) ?? null
+  return null
+}
+
+const DISPLAY_PRIORITY_PREFIXES = ['GATE_', 'CONFIG_ROUTE_', 'UPSTREAM_', 'LONG_GEN_'] as const
+
+function displayTagPriority(code: string): number {
+  const idx = DISPLAY_PRIORITY_PREFIXES.findIndex((p) => code.startsWith(p))
+  return idx >= 0 ? idx : DISPLAY_PRIORITY_PREFIXES.length
 }
 
 export function pickDisplayReasonCodes(codes: string[], max = 4): { shown: string[]; overflow: number } {
-  const overrides = codes.filter(isRouteOverrideCode)
+  const hardOverrides = codes.filter(isHardRouteOverrideCode)
   const decisive = codes.filter(isDecisiveReasonCode)
   const pool = [
-    ...overrides,
+    ...hardOverrides,
     ...(decisive.length ? decisive : codes.filter((c) => !c.startsWith('STEP_') && !c.startsWith('TOK_'))),
-  ].filter((code, index, arr) => arr.indexOf(code) === index)
+  ]
+    .filter((code, index, arr) => arr.indexOf(code) === index)
+    .sort((a, b) => displayTagPriority(a) - displayTagPriority(b))
   const shown = pool.slice(0, max)
   const overflow = Math.max(0, pool.length - shown.length)
   return { shown, overflow }

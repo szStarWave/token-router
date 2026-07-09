@@ -118,7 +118,7 @@ Flathub 提交流程见 [`packaging/flatpak/README.md`](../packaging/flatpak/REA
 | 能力 | 说明 |
 |------|------|
 | Gateway | 启动时自动 `embedded::start()`，无需单独 CLI 守护进程；数据目录 `~/.token-router-desktop/`（Windows：`%USERPROFILE%\.token-router-desktop\`） |
-| Agent 快捷配置 | 一键写入 OpenClaw / Hermes / Claude Code / Codex / OpenCode 配置（macOS / Windows 桌面版） |
+| Agent 快捷配置 | 一键写入 OpenClaw / Hermes / Claude Code / Codex / OpenCode / CodeBuddy / WorkBuddy 配置（macOS / Windows 桌面版） |
 | Herdsman 集成 | Windows：命名管道 + HTTP；**macOS**：HTTP 探测 + `.app` 启动检测 |
 | WSL Agent 配置 | 仅 Windows 桌面版 |
 | UI | React + Vite 前端 |
@@ -221,9 +221,9 @@ Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`（Win
 export MODELSCOPE_TOKEN=<token>
 uv run --with modelscope python scripts/publish_ota/publish.py \
   --platform macos \
-  --channel flowy --region-scope CN --version v0.16.7 \
+  --channel flowy --region-scope CN --version v0.17.1 \
   --enable-account-system true \
-  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.16.7_aarch64.dmg"
+  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.17.1_aarch64.dmg"
 ```
 
 Manifest：`{region}/{channel}/{with_account|without_account}/macos/latest.json`

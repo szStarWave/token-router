@@ -29,6 +29,16 @@ description = "Writes Token Router provider config into OpenCode opencode.json."
 commands.allow = ["configure_opencode_agent"]
 
 [[permission]]
+identifier = "allow-configure-codebuddy-agent"
+description = "Writes Token Router model config into CodeBuddy models.json."
+commands.allow = ["configure_codebuddy_agent"]
+
+[[permission]]
+identifier = "allow-configure-workbuddy-agent"
+description = "Writes Token Router model config into WorkBuddy models.json."
+commands.allow = ["configure_workbuddy_agent"]
+
+[[permission]]
 identifier = "allow-read-inbound-auth-key"
 description = "Reads inbound gateway auth keys from config.toml for agent setup."
 commands.allow = ["read_inbound_auth_key_cmd", "read_default_auth_key_cmd"]

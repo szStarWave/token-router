@@ -2,36 +2,67 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use crate::gateway::api::models::{build_models, ModelObject};
+use crate::gateway::api::models::{build_models, DEFAULT_CLOUD_MAX_CONTEXT_LENGTH, ModelObject};
 use crate::gateway::config::AppConfig;
 
 pub const TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME: &str = "token-router-model-catalog.json";
-const AUTO_MODEL_DISPLAY: &str = "Auto";
+pub const CODEX_MODELS_CACHE_FILENAME: &str = "models_cache.json";
+pub const CODEX_CATALOG_MODEL_ID: &str = "token-router";
+pub const CODEX_CATALOG_PROVIDER_DISPLAY_NAME: &str = "TokenRouter";
+pub const CODEX_CATALOG_TIER_ID: &str = "auto";
+pub const CODEX_CATALOG_TIER_DISPLAY_NAME: &str = "Auto";
+const ROUTER_AUTO_MODEL_ID: &str = "auto";
+
+pub fn is_router_auto_model(model: &str) -> bool {
+    let model = model.trim();
+    model.is_empty()
+        || model.eq_ignore_ascii_case(ROUTER_AUTO_MODEL_ID)
+        || model.eq_ignore_ascii_case(CODEX_CATALOG_MODEL_ID)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexCatalogVisibility {
+    List,
+    Hide,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCatalogModelSpec {
     pub model: String,
     pub display_name: String,
     pub context_window: u64,
+    pub visibility: CodexCatalogVisibility,
 }
 
-pub fn codex_catalog_specs_from_models(models: &[ModelObject]) -> Vec<CodexCatalogModelSpec> {
+fn auto_model_context_window(models: &[ModelObject]) -> u64 {
     models
         .iter()
-        .map(|model| CodexCatalogModelSpec {
-            model: model.id.clone(),
-            display_name: if model.id.eq_ignore_ascii_case("auto") {
-                AUTO_MODEL_DISPLAY.to_string()
-            } else {
-                model.id.clone()
-            },
-            context_window: model.max_context_length as u64,
-        })
-        .collect()
+        .find(|model| model.id.eq_ignore_ascii_case(ROUTER_AUTO_MODEL_ID))
+        .map(|model| model.max_context_length as u64)
+        .unwrap_or(DEFAULT_CLOUD_MAX_CONTEXT_LENGTH as u64)
 }
 
 pub fn codex_catalog_specs_from_config(config: &AppConfig, agent_id: Option<&str>) -> Vec<CodexCatalogModelSpec> {
-    codex_catalog_specs_from_models(&build_models(config, agent_id))
+    let models = build_models(config, agent_id);
+    if models.is_empty() {
+        return Vec::new();
+    }
+
+    let context_window = auto_model_context_window(&models);
+    vec![
+        CodexCatalogModelSpec {
+            model: CODEX_CATALOG_MODEL_ID.to_string(),
+            display_name: CODEX_CATALOG_PROVIDER_DISPLAY_NAME.to_string(),
+            context_window,
+            visibility: CodexCatalogVisibility::Hide,
+        },
+        CodexCatalogModelSpec {
+            model: ROUTER_AUTO_MODEL_ID.to_string(),
+            display_name: CODEX_CATALOG_TIER_DISPLAY_NAME.to_string(),
+            context_window,
+            visibility: CodexCatalogVisibility::List,
+        },
+    ]
 }
 
 fn load_codex_native_responses_template() -> Value {
@@ -46,8 +77,16 @@ fn codex_catalog_model_entry(template: &Value, spec: &CodexCatalogModelSpec, pri
     };
 
     entry_obj.insert("slug".to_string(), json!(spec.model));
+    entry_obj.insert("model".to_string(), json!(spec.model));
     entry_obj.insert("display_name".to_string(), json!(spec.display_name));
     entry_obj.insert("description".to_string(), json!(spec.display_name));
+    entry_obj.insert(
+        "visibility".to_string(),
+        json!(match spec.visibility {
+            CodexCatalogVisibility::List => "list",
+            CodexCatalogVisibility::Hide => "hide",
+        }),
+    );
     entry_obj.insert("context_window".to_string(), json!(spec.context_window));
     entry_obj.insert("max_context_window".to_string(), json!(spec.context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
@@ -88,6 +127,10 @@ pub fn catalog_path_in_codex_dir(home: &Path) -> std::path::PathBuf {
     home.join(".codex").join(TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME)
 }
 
+pub fn models_cache_path_in_codex_dir(home: &Path) -> std::path::PathBuf {
+    home.join(".codex").join(CODEX_MODELS_CACHE_FILENAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,25 +158,41 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_specs_match_build_models() {
+    fn codex_catalog_specs_expose_hidden_parent_and_visible_auto() {
         let config = test_config(true, true, Some("edge-model"), Some("cloud-model"));
         let specs = codex_catalog_specs_from_config(&config, None);
-        assert_eq!(specs.len(), 3);
-        assert_eq!(specs[0].model, "auto");
-        assert_eq!(specs[1].model, "edge-model");
-        assert_eq!(specs[2].model, "cloud-model");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].model, CODEX_CATALOG_MODEL_ID);
+        assert_eq!(specs[0].display_name, CODEX_CATALOG_PROVIDER_DISPLAY_NAME);
+        assert_eq!(specs[0].visibility, CodexCatalogVisibility::Hide);
+        assert_eq!(specs[1].model, ROUTER_AUTO_MODEL_ID);
+        assert_eq!(specs[1].display_name, CODEX_CATALOG_TIER_DISPLAY_NAME);
+        assert_eq!(specs[1].visibility, CodexCatalogVisibility::List);
+    }
+
+    #[test]
+    fn is_router_auto_model_matches_codex_catalog_and_legacy_auto() {
+        assert!(is_router_auto_model("auto"));
+        assert!(is_router_auto_model("token-router"));
+        assert!(!is_router_auto_model("deepseek-v4-flash"));
     }
 
     #[test]
     fn codex_catalog_entry_has_required_fields() {
         let spec = CodexCatalogModelSpec {
-            model: "auto".into(),
-            display_name: "Auto".into(),
+            model: ROUTER_AUTO_MODEL_ID.into(),
+            display_name: CODEX_CATALOG_TIER_DISPLAY_NAME.into(),
             context_window: 1_000_000,
+            visibility: CodexCatalogVisibility::List,
         };
         let catalog = build_codex_model_catalog(&[spec]);
         let entry = &catalog["models"][0];
-        assert_eq!(entry["slug"], "auto");
+        assert_eq!(entry["slug"], ROUTER_AUTO_MODEL_ID);
+        assert_eq!(entry["model"], ROUTER_AUTO_MODEL_ID);
+        assert_eq!(entry["display_name"], CODEX_CATALOG_TIER_DISPLAY_NAME);
+        assert_eq!(entry["visibility"], "list");
+        assert_eq!(entry["additional_speed_tiers"], json!([]));
+        assert_eq!(entry["service_tiers"], json!([]));
         assert_eq!(entry["context_window"], 1_000_000);
         assert!(entry.get("base_instructions").is_some());
         assert_eq!(entry["shell_type"], "shell_command");

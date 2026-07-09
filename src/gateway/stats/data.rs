@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::error::AppError;
 use crate::gateway::routing::{RouteDecision, RouteTier, StepKind};
-use crate::gateway::stats::metrics::{FinalResponseMetrics, UpstreamCallMetrics};
+use crate::gateway::stats::metrics::{FinalResponseMetrics, UpstreamCallMetrics, tps_x1000_from_metrics};
 
 pub const STATS_VERSION: u32 = 3;
 
@@ -200,30 +200,16 @@ impl StatsData {
             self.ttft_count += 1;
         }
         if m.completion_tokens > 0 {
-            let gen_ms = if m.stream {
-                match (m.ttft_ms, m.last_token_ms) {
-                    (Some(first), Some(last)) if last > first => (last - first).max(1),
-                    _ => m
-                        .latency_ms
-                        .saturating_sub(m.ttft_ms.unwrap_or(0))
-                        .max(1),
-                }
-            } else {
-                m.latency_ms
-                    .saturating_sub(m.ttft_ms.unwrap_or(0))
-                    .max(1)
-            };
-            let tps_x1000 =
-                (m.completion_tokens as u64 * 1000 * 1000).saturating_div(gen_ms);
-            self.tps_sum_x1000 = tps_x1000;
+            let tps_x1000 = tps_x1000_from_metrics(m);
+            self.tps_sum_x1000 += tps_x1000;
             self.tps_count += 1;
             match m.tier {
                 "edge" => {
-                    self.edge_tps_sum_x1000 = tps_x1000;
+                    self.edge_tps_sum_x1000 += tps_x1000;
                     self.edge_tps_count += 1;
                 }
                 "cloud" => {
-                    self.cloud_tps_sum_x1000 = tps_x1000;
+                    self.cloud_tps_sum_x1000 += tps_x1000;
                     self.cloud_tps_count += 1;
                 }
                 _ => {}
@@ -328,12 +314,12 @@ impl StatsData {
         }
     }
 
-    /// Latest edge generation TPS (tokens/s) from the most recent edge upstream sample.
+    /// Average edge generation TPS (tokens/s) across edge upstream samples.
     pub fn edge_tps(&self) -> Option<f64> {
         if self.edge_tps_count == 0 {
             None
         } else {
-            Some((self.edge_tps_sum_x1000 as f64) / 1000.0)
+            Some((self.edge_tps_sum_x1000 as f64) / (self.edge_tps_count as f64) / 1000.0)
         }
     }
 }

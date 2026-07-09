@@ -363,6 +363,12 @@
           "markdownDescription": "Writes Token Router gateway settings into Claude Code settings.json."
         },
         {
+          "description": "Writes Token Router model config into CodeBuddy models.json.",
+          "type": "string",
+          "const": "allow-configure-codebuddy-agent",
+          "markdownDescription": "Writes Token Router model config into CodeBuddy models.json."
+        },
+        {
           "description": "Writes Token Router provider config into Codex config.toml.",
           "type": "string",
           "const": "allow-configure-codex-agent",
@@ -391,6 +397,12 @@
           "type": "string",
           "const": "allow-configure-opencode-agent",
           "markdownDescription": "Writes Token Router provider config into OpenCode opencode.json."
+        },
+        {
+          "description": "Writes Token Router model config into WorkBuddy models.json.",
+          "type": "string",
+          "const": "allow-configure-workbuddy-agent",
+          "markdownDescription": "Writes Token Router model config into WorkBuddy models.json."
         },
         {
           "description": "Returns the desktop app version for feedback.",

@@ -12,10 +12,11 @@ const OPENCLAW_MODEL_DISPLAY = 'Token Router Auto Route'
 const OPENCLAW_CONTEXT_WINDOW = 1_000_000
 const OPENCLAW_TIMEOUT_SECONDS = 300
 const CODEX_PROVIDER = 'token_router'
-const CODEX_PROVIDER_NAME = 'Token Router'
+const CODEX_PROVIDER_NAME = 'TokenRouter'
 const OPENCODE_PROVIDER = 'token-router'
 const OPENCODE_PROVIDER_NAME = 'Token Router'
 const OPENCODE_MODEL_DISPLAY = 'Token Router Auto Route'
+const CODEX_MODEL = 'auto'
 const DEFAULT_MODEL = 'auto'
 
 const CC_SWITCH_AGENT_MAP: Record<CcSwitchApp, AgentKind> = {
@@ -49,6 +50,8 @@ function buildCodexToml(baseUrl: string, model: string, apiKey: string, contextW
     `model = "${model}"`,
     `model_provider = "${CODEX_PROVIDER}"`,
     `model_catalog_json = "token-router-model-catalog.json"`,
+    `model_reasoning_effort = "medium"`,
+    `disable_response_storage = true`,
   ]
   if (contextWindow != null && contextWindow > 0) {
     lines.push(`model_context_window = ${contextWindow}`)
@@ -60,6 +63,7 @@ function buildCodexToml(baseUrl: string, model: string, apiKey: string, contextW
     `base_url = "${baseUrl}"`,
     `experimental_bearer_token = "${apiKey}"`,
     'wire_api = "responses"',
+    'requires_openai_auth = true',
     '',
   )
   return lines.join('\n')
@@ -196,7 +200,7 @@ export async function exportToCcSwitch(app: CcSwitchApp): Promise<string> {
   }
 
   const baseUrl = resolveEndpoint(app, gatewayBase)
-  const model = resolveModel()
+  const model = app === 'codex' ? CODEX_MODEL : resolveModel()
   const contextWindow = app === 'codex' ? resolveAgentContextWindow() : undefined
   return buildCcSwitchImportUrl(app, { baseUrl, apiKey, model, contextWindow })
 }

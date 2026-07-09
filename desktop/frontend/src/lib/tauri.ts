@@ -133,6 +133,8 @@ export type AgentKind =
   | 'claude-code'
   | 'codex'
   | 'opencode'
+  | 'codebuddy'
+  | 'workbuddy'
 
 export async function checkAgentInitialized(agent: AgentKind) {
   return tauriInvoke<AgentInitStatusPayload>('check_agent_initialized', { agent })
@@ -183,6 +185,26 @@ export async function configureCodexAgent(
 export async function configureOpenCodeAgent(apiKey?: string | null) {
   return tauriInvoke<AgentSetupResultPayload>('configure_opencode_agent', {
     apiKey: apiKey ?? null,
+  })
+}
+
+export async function configureCodeBuddyAgent(
+  apiKey?: string | null,
+  contextWindow?: number | null,
+) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_codebuddy_agent', {
+    apiKey: apiKey ?? null,
+    contextWindow: contextWindow ?? null,
+  })
+}
+
+export async function configureWorkBuddyAgent(
+  apiKey?: string | null,
+  contextWindow?: number | null,
+) {
+  return tauriInvoke<AgentSetupResultPayload>('configure_workbuddy_agent', {
+    apiKey: apiKey ?? null,
+    contextWindow: contextWindow ?? null,
   })
 }
 

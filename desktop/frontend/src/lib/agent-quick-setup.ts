@@ -5,6 +5,8 @@ import {
   configureClaudeCodeAgent,
   configureCodexAgent,
   configureOpenCodeAgent,
+  configureCodeBuddyAgent,
+  configureWorkBuddyAgent,
   configureHermesAgent,
   configureHermesFlashAgent,
   configureOpenClawAgent,
@@ -42,7 +44,7 @@ export class AgentNotInitializedError extends Error {
 }
 
 const AGENT_KIND_PATTERN =
-  'openclaw|hermes-flash|hermes|claude-code|codex|opencode'
+  'openclaw|hermes-flash|hermes|claude-code|codex|opencode|codebuddy|workbuddy'
 
 export function parseAgentNotInitializedError(err: unknown): AgentNotInitializedError | null {
   const msg = invokeErrorMessage(err)
@@ -129,6 +131,10 @@ const CONFIGURE_HANDLERS: Record<
     configureClaudeCodeAgent(apiKey, resolveAgentContextWindow() ?? null),
   codex: (apiKey) => configureCodexAgent(apiKey, resolveAgentContextWindow() ?? null),
   opencode: (apiKey) => configureOpenCodeAgent(apiKey),
+  codebuddy: (apiKey) =>
+    configureCodeBuddyAgent(apiKey, resolveAgentContextWindow() ?? null),
+  workbuddy: (apiKey) =>
+    configureWorkBuddyAgent(apiKey, resolveAgentContextWindow() ?? null),
 }
 
 export async function configureAgent(agent: AgentKind): Promise<AgentSetupResult> {
@@ -161,6 +167,14 @@ export function configureOpenCode() {
   return configureAgent('opencode')
 }
 
+export function configureCodeBuddy() {
+  return configureAgent('codebuddy')
+}
+
+export function configureWorkBuddy() {
+  return configureAgent('workbuddy')
+}
+
 export function agentKindLabel(agent: AgentKind): string {
   switch (agent) {
     case 'openclaw':
@@ -175,6 +189,10 @@ export function agentKindLabel(agent: AgentKind): string {
       return 'Codex'
     case 'opencode':
       return 'OpenCode'
+    case 'codebuddy':
+      return 'CodeBuddy'
+    case 'workbuddy':
+      return 'WorkBuddy'
   }
 }
 

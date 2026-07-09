@@ -1,6 +1,7 @@
 pub mod data;
 pub mod db;
 pub mod metrics;
+pub mod tps;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -111,6 +112,14 @@ impl GatewayStats {
                 Some(metrics.latency_ms);
         }
         self.with_mut(|d| d.record_upstream_metrics(metrics));
+        if metrics.completion_tokens > 0 {
+            let tps_x1000 = metrics::tps_x1000_from_metrics(metrics);
+            if tps_x1000 > 0 && (metrics.tier == "edge" || metrics.tier == "cloud") {
+                if let Err(e) = self.db.record_tps_sample(metrics.tier, tps_x1000) {
+                    tracing::warn!(error = %e, "stats tps sample write failed");
+                }
+            }
+        }
         if let Some(ctx) = auth_key {
             self.auth_key_with_mut(ctx, |d| d.record_upstream_metrics(metrics));
         }
@@ -231,7 +240,7 @@ impl GatewayStats {
         self.db.flush()
     }
 
-    /// Latest session edge generation TPS from the most recent edge upstream sample.
+    /// Average session edge generation TPS across edge upstream samples.
     pub fn session_edge_tps(&self) -> Option<f64> {
         self.db
             .load_totals(StatsScope::Session)
@@ -286,8 +295,39 @@ impl GatewayStats {
             });
         if scope == StatsScope::Global {
             snap.requests_per_minute = self.global_requests_per_minute(&data, data.requests_total);
+            Self::apply_global_recent_tps(&mut snap, &self.db);
         }
         snap
+    }
+
+    fn apply_global_recent_tps(snap: &mut StatsSnapshot, db: &StatsDb) {
+        let samples = match db.load_tps_samples(StatsScope::Global) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "stats db load tps samples failed");
+                return;
+            }
+        };
+        if samples.is_empty() {
+            return;
+        }
+        let since = data::now_unix().saturating_sub(tps::RECENT_TPS_WINDOW_SECS);
+        let recent_count = samples
+            .iter()
+            .filter(|s| s.recorded_at_unix >= since)
+            .count() as u64;
+        if let Some(v) = tps::recent_tps(&samples, since, None) {
+            snap.latency.avg_tps = v;
+        }
+        if let Some(v) = tps::recent_tps(&samples, since, Some("edge")) {
+            snap.latency.edge_tps = v;
+        }
+        if let Some(v) = tps::recent_tps(&samples, since, Some("cloud")) {
+            snap.latency.cloud_tps = v;
+        }
+        if recent_count > 0 {
+            snap.latency.tps_samples = recent_count;
+        }
     }
 
     fn global_requests_per_minute(&self, data: &StatsData, requests: u64) -> f64 {
@@ -513,9 +553,9 @@ pub fn build_snapshot(
         latency: LatencyStats {
             avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
             avg_ttft_ms: avg(data.ttft_sum_ms, data.ttft_count),
-            avg_tps: latest_tps(data.tps_sum_x1000, data.tps_count),
-            edge_tps: latest_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
-            cloud_tps: latest_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
             p95_ms: 0.0,
             p99_ms: 0.0,
             upstream_samples: data.latency_count,
@@ -648,9 +688,9 @@ fn auth_key_snapshot_from_data(
         },
         latency: AuthKeyLatencyStats {
             avg_request_ms: avg(data.latency_sum_ms, data.latency_count),
-            avg_tps: latest_tps(data.tps_sum_x1000, data.tps_count),
-            edge_tps: latest_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
-            cloud_tps: latest_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
+            avg_tps: avg_tps(data.tps_sum_x1000, data.tps_count),
+            edge_tps: avg_tps(data.edge_tps_sum_x1000, data.edge_tps_count),
+            cloud_tps: avg_tps(data.cloud_tps_sum_x1000, data.cloud_tps_count),
         },
         routing: RouteCounts {
             edge: route_edge,
@@ -691,11 +731,11 @@ fn avg(sum: u64, count: u64) -> f64 {
     }
 }
 
-fn latest_tps(tps_x1000: u64, count: u64) -> f64 {
+fn avg_tps(tps_sum_x1000: u64, count: u64) -> f64 {
     if count == 0 {
         0.0
     } else {
-        (tps_x1000 as f64) / 1000.0
+        (tps_sum_x1000 as f64) / (count as f64) / 1000.0
     }
 }
 
@@ -1014,6 +1054,9 @@ mod tests {
                 latency_ms: 200,
                 ttft_ms: Some(50),
                 last_token_ms: None,
+                latency_us: 0,
+                ttft_us: None,
+                last_token_us: None,
                 stream: true,
             },
             None,
@@ -1028,6 +1071,9 @@ mod tests {
                 latency_ms: 500,
                 ttft_ms: None,
                 last_token_ms: None,
+                latency_us: 0,
+                ttft_us: None,
+                last_token_us: None,
                 stream: false,
             },
             None,
@@ -1075,68 +1121,71 @@ mod tests {
         assert_eq!(edge_model.cached, 80);
     }
 
-    fn expected_tps(completion_tokens: u32, latency_ms: u64, ttft_ms: Option<u64>) -> f64 {
-        let gen_ms = latency_ms.saturating_sub(ttft_ms.unwrap_or(0)).max(1);
-        (completion_tokens as f64 * 1000.0) / gen_ms as f64
+    use crate::gateway::stats::metrics::tps_x1000_from_metrics;
+
+    fn test_upstream_metrics(
+        tier: &'static str,
+        completion_tokens: u32,
+        latency_ms: u64,
+        ttft_ms: Option<u64>,
+        stream: bool,
+    ) -> UpstreamCallMetrics {
+        UpstreamCallMetrics {
+            tier,
+            model: "test-model".to_string(),
+            prompt_tokens: 10,
+            completion_tokens,
+            cached_tokens: 0,
+            latency_ms,
+            ttft_ms,
+            last_token_ms: None,
+            latency_us: latency_ms.saturating_mul(1000),
+            ttft_us: ttft_ms.map(|ms| ms.saturating_mul(1000)),
+            last_token_us: None,
+            stream,
+        }
+    }
+
+    fn expected_tps(completion_tokens: u32, latency_ms: u64, ttft_ms: Option<u64>, stream: bool) -> f64 {
+        tps_x1000_from_metrics(&test_upstream_metrics(
+            "edge",
+            completion_tokens,
+            latency_ms,
+            ttft_ms,
+            stream,
+        )) as f64
+            / 1000.0
     }
 
     #[test]
-    fn upstream_metrics_tps_uses_latest_request() {
+    fn upstream_metrics_tps_uses_average() {
         let stats = GatewayStats::new_in_memory();
         stats.record_upstream_metrics(
-            &UpstreamCallMetrics {
-                tier: "edge",
-                model: "test-model".to_string(),
-                prompt_tokens: 10,
-                completion_tokens: 50,
-                cached_tokens: 0,
-                latency_ms: 200,
-                ttft_ms: Some(50),
-                last_token_ms: None,
-                stream: true,
-            },
+            &test_upstream_metrics("edge", 50, 200, Some(50), true),
             None,
         );
-        let first_edge_tps = expected_tps(50, 200, Some(50));
+        let first_edge_tps = expected_tps(50, 200, Some(50), true);
         stats.record_upstream_metrics(
-            &UpstreamCallMetrics {
-                tier: "edge",
-                model: "test-model".to_string(),
-                prompt_tokens: 10,
-                completion_tokens: 100,
-                cached_tokens: 0,
-                latency_ms: 200,
-                ttft_ms: Some(100),
-                last_token_ms: None,
-                stream: true,
-            },
+            &test_upstream_metrics("edge", 100, 200, Some(100), true),
             None,
         );
-        let second_edge_tps = expected_tps(100, 200, Some(100));
+        let second_edge_tps = expected_tps(100, 200, Some(100), true);
+        let avg_edge_tps = (first_edge_tps + second_edge_tps) / 2.0;
         let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
-        assert!((snap.latency.edge_tps - second_edge_tps).abs() < 0.01);
-        assert!((snap.latency.avg_tps - second_edge_tps).abs() < 0.01);
+        assert!((snap.latency.edge_tps - avg_edge_tps).abs() < 0.01);
+        assert!((snap.latency.avg_tps - avg_edge_tps).abs() < 0.01);
         assert_ne!(first_edge_tps, second_edge_tps);
 
         stats.record_upstream_metrics(
-            &UpstreamCallMetrics {
-                tier: "cloud",
-                model: "test-model".to_string(),
-                prompt_tokens: 10,
-                completion_tokens: 80,
-                cached_tokens: 0,
-                latency_ms: 400,
-                ttft_ms: None,
-                last_token_ms: None,
-                stream: false,
-            },
+            &test_upstream_metrics("cloud", 80, 400, None, false),
             None,
         );
-        let cloud_tps = expected_tps(80, 400, None);
+        let cloud_tps = expected_tps(80, 400, None, false);
+        let avg_all_tps = (first_edge_tps + second_edge_tps + cloud_tps) / 3.0;
         let snap = stats.snapshot(StatsScope::Session, 60, None, None, None, None, &[]);
-        assert!((snap.latency.edge_tps - second_edge_tps).abs() < 0.01);
+        assert!((snap.latency.edge_tps - avg_edge_tps).abs() < 0.01);
         assert!((snap.latency.cloud_tps - cloud_tps).abs() < 0.01);
-        assert!((snap.latency.avg_tps - cloud_tps).abs() < 0.01);
+        assert!((snap.latency.avg_tps - avg_all_tps).abs() < 0.01);
     }
 
     #[test]
@@ -1160,6 +1209,9 @@ mod tests {
                     latency_ms: 200,
                     ttft_ms: Some(50),
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: true,
                 },
                 None,
@@ -1174,6 +1226,9 @@ mod tests {
                     latency_ms: 500,
                     ttft_ms: None,
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: false,
                 },
                 None,
@@ -1235,6 +1290,9 @@ mod tests {
                     latency_ms: 100,
                     ttft_ms: None,
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: false,
                 },
                 None,
@@ -1357,5 +1415,24 @@ mod tests {
             .unwrap();
         let snap = stats.snapshot(StatsScope::Global, 0, None, None, None, None, &[]);
         assert!(snap.requests_per_minute > 0.0);
+    }
+
+    #[test]
+    fn global_snapshot_uses_recent_trimmed_tps() {
+        let stats = GatewayStats::new_in_memory();
+        stats.record_upstream_metrics(
+            &test_upstream_metrics("edge", 50, 200, Some(50), true),
+            None,
+        );
+        stats.record_upstream_metrics(
+            &test_upstream_metrics("edge", 100, 200, Some(100), true),
+            None,
+        );
+        let first = expected_tps(50, 200, Some(50), true);
+        let second = expected_tps(100, 200, Some(100), true);
+        let expected_avg = (first + second) / 2.0;
+
+        let global = stats.snapshot(StatsScope::Global, 0, None, None, None, None, &[]);
+        assert!((global.latency.edge_tps - expected_avg).abs() < 0.5);
     }
 }

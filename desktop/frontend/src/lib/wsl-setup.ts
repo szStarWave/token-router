@@ -76,7 +76,7 @@ export async function configureWslAgents(distro: string): Promise<WslConfigureRe
 }
 
 export function wslAgentLabel(agent: string): AgentKind | null {
-  if (agent === 'openclaw' || agent === 'hermes' || agent === 'claude-code' || agent === 'codex' || agent === 'opencode') {
+  if (agent === 'openclaw' || agent === 'hermes' || agent === 'claude-code' || agent === 'codex' || agent === 'opencode' || agent === 'codebuddy' || agent === 'workbuddy') {
     return agent
   }
   return null

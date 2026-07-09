@@ -23,6 +23,8 @@ const AGENT_NAME_KEYS: Record<string, string> = {
   'claude-code': 'overview.agentClaudeCodeName',
   codex: 'overview.agentCodexName',
   opencode: 'overview.agentOpenCodeName',
+  codebuddy: 'overview.agentCodeBuddyName',
+  workbuddy: 'overview.agentWorkBuddyName',
 }
 
 function pickDefaultDistro(distros: WslDistroInfo[], current: string | null): string | null {

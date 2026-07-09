@@ -5,6 +5,8 @@ import hermesIcon from '@lobehub/icons-static-svg/icons/hermesagent.svg?url'
 import claudecodeIcon from '@lobehub/icons-static-svg/icons/claudecode-color.svg?url'
 import codexIcon from '@lobehub/icons-static-svg/icons/codex-color.svg?url'
 import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?url'
+import codebuddyIcon from '../../assets/codebuddy.png?url'
+import workbuddyIcon from '../../assets/workbuddy.png?url'
 import { useAppStore } from '../../stores/appStore'
 import { useI18n } from '../../hooks/useI18n'
 import { isTauri } from '../../lib/tauri'
@@ -27,6 +29,8 @@ type AgentNameKey =
   | 'overview.agentClaudeCodeName'
   | 'overview.agentCodexName'
   | 'overview.agentOpenCodeName'
+  | 'overview.agentCodeBuddyName'
+  | 'overview.agentWorkBuddyName'
 
 type AgentCardId = 'flowyaipc' | AgentKind
 
@@ -71,6 +75,18 @@ const AGENT_ACTIONS: Array<{
     kind: 'opencode',
     nameKey: 'overview.agentOpenCodeName',
     icon: opencodeIcon,
+  },
+  {
+    id: 'codebuddy',
+    kind: 'codebuddy',
+    nameKey: 'overview.agentCodeBuddyName',
+    icon: codebuddyIcon,
+  },
+  {
+    id: 'workbuddy',
+    kind: 'workbuddy',
+    nameKey: 'overview.agentWorkBuddyName',
+    icon: workbuddyIcon,
   },
 ]
 

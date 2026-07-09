@@ -7,11 +7,19 @@ use token_router::gateway::AppConfig;
 
 use crate::agent_setup::{
     agent_deploy_state_at, agent_init_status_at, configure_claude_code_at, configure_codex_at,
-    configure_hermes_at, configure_openclaw_at, configure_opencode_at, AgentInitStatus,
-    AgentSetupResult,
+    configure_codebuddy_at, configure_hermes_at, configure_openclaw_at, configure_opencode_at,
+    configure_workbuddy_at, AgentInitStatus, AgentSetupResult,
 };
 
-const WSL_AGENTS: &[&str] = &["openclaw", "hermes", "claude-code", "codex", "opencode"];
+const WSL_AGENTS: &[&str] = &[
+    "openclaw",
+    "hermes",
+    "claude-code",
+    "codex",
+    "opencode",
+    "codebuddy",
+    "workbuddy",
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -468,6 +476,8 @@ fn configure_wsl_agents(distro: &str, api_key: Option<String>) -> Result<WslConf
             "claude-code" => configure_claude_code_at(&home, &anthropic_base, api_key.clone()),
             "codex" => configure_codex_at(&home, &openai_v1_base, api_key.clone()),
             "opencode" => configure_opencode_at(&home, &openai_v1_base, api_key.clone()),
+            "codebuddy" => configure_codebuddy_at(&home, &openai_v1_base, api_key.clone()),
+            "workbuddy" => configure_workbuddy_at(&home, &openai_v1_base, api_key.clone()),
             _ => continue,
         };
         match result {

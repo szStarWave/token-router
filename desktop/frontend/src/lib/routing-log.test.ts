@@ -63,30 +63,47 @@ test('extracts difficulty from codes or fallback', () => {
   assert.equal(extractDifficultyScore(['STEP_DIRECT_CHAT'], 0.15), 0.15)
 })
 
-test('picks last route override as final factor', () => {
+test('picks hard config override as final factor', () => {
+  const codes = ['STEP_DIRECT_CHAT', 'GATE_USER_REJECT', 'CONFIG_ROUTE_cloud', 'DIFFICULTY_0.20']
+  assert.equal(pickFinalRouteFactorCode(codes, 'cloud'), 'CONFIG_ROUTE_cloud')
+})
+
+test('picks dominant cloud-aligned difficulty factor', () => {
   const codes = [
-    'STEP_TOOL_ARG_FILL',
-    'TOOL_LOOP_9',
-    'DIFFICULTY_0.00',
-    'WORK_EXEC_EDGE',
-    'WORK_CACHE_EDGE',
+    'STEP_INITIAL_PLAN',
+    'GATE_USER_REJECT',
+    'DIFF_L:GATE_USER_REJECT:+0.550',
+    'DIFF_D:GATE_USER_REJECT:+0.1120',
+    'DIFF_L:LONG_GEN_EDGE:-0.150',
+    'DIFF_D:LONG_GEN_EDGE:-0.0258',
+    'DIFFICULTY_0.91',
   ]
-  assert.equal(pickFinalRouteFactorCode(codes), 'WORK_CACHE_EDGE')
+  assert.equal(pickFinalRouteFactorCode(codes, 'cloud'), 'GATE_USER_REJECT')
 })
 
-test('falls back to difficulty when no override exists', () => {
+test('does not cite edge-biased factor for cloud route', () => {
+  const codes = [
+    'LONG_GEN_EDGE',
+    'DIFF_L:LONG_GEN_EDGE:-0.150',
+    'DIFF_D:LONG_GEN_EDGE:-0.0258',
+    'DIFFICULTY_0.91',
+  ]
+  assert.equal(pickFinalRouteFactorCode(codes, 'cloud'), 'DIFFICULTY_0.91')
+})
+
+test('falls back to difficulty when no breakdown exists', () => {
   const codes = ['STEP_DIRECT_CHAT', 'DIFFICULTY_0.20', 'TOK_IN_120']
-  assert.equal(pickFinalRouteFactorCode(codes), 'DIFFICULTY_0.20')
+  assert.equal(pickFinalRouteFactorCode(codes, 'edge'), 'DIFFICULTY_0.20')
 })
 
-test('prefers difficulty over work execution tags', () => {
+test('prefers difficulty over work execution tags when no breakdown', () => {
   const codes = [
     'STEP_TOOL_ARG_FILL',
     'DIFFICULTY_0.64',
     'WORK_EXEC_EDGE',
     'WORK_VERIFY_SAMPLE(p=0.10)',
   ]
-  assert.equal(pickFinalRouteFactorCode(codes), 'DIFFICULTY_0.64')
+  assert.equal(pickFinalRouteFactorCode(codes, 'edge'), 'DIFFICULTY_0.64')
 })
 
 test('prioritizes route overrides in display tags', () => {

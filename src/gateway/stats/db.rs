@@ -7,9 +7,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::data::{self, StatsData};
+use super::tps::TpsSample;
 use super::StatsScope;
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 const MIGRATION_FLAG_STATS_JSON: &str = "migrated_stats_json_v1";
 const COUNTER_COLS: &str = "requests_total, requests_stream, requests_non_stream, requests_cancelled, \
      route_edge, route_cloud, route_cascade, \
@@ -389,6 +390,14 @@ impl StatsDb {
                latency_ms INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_latency_samples_scope ON latency_samples(scope, recorded_at_unix);
+             CREATE TABLE IF NOT EXISTS tps_samples (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               scope TEXT NOT NULL,
+               recorded_at_unix INTEGER NOT NULL,
+               tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+               tps_x1000 INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_tps_samples_scope_ts ON tps_samples(scope, recorded_at_unix);
              CREATE TABLE IF NOT EXISTS auth_key_meta (
                id TEXT PRIMARY KEY,
                name TEXT NOT NULL,
@@ -587,6 +596,20 @@ impl StatsDb {
                 )?;
                 ver = 4;
             }
+            if ver < 5 {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS tps_samples (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       scope TEXT NOT NULL,
+                       recorded_at_unix INTEGER NOT NULL,
+                       tier TEXT NOT NULL CHECK(tier IN ('edge','cloud')),
+                       tps_x1000 INTEGER NOT NULL
+                     );
+                     CREATE INDEX IF NOT EXISTS idx_tps_samples_scope_ts
+                       ON tps_samples(scope, recorded_at_unix);",
+                )?;
+                ver = 5;
+            }
             if ver < SCHEMA_VERSION {
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
@@ -613,6 +636,7 @@ impl StatsDb {
         tx.execute("DELETE FROM stats_step_kinds WHERE scope = ?1", params![scope])?;
         tx.execute("DELETE FROM stats_hourly WHERE scope = ?1", params![scope])?;
         tx.execute("DELETE FROM latency_samples WHERE scope = ?1", params![scope])?;
+        tx.execute("DELETE FROM tps_samples WHERE scope = ?1", params![scope])?;
         tx.execute(
             "UPDATE stats_totals SET
                first_record_at_unix = NULL, last_updated_at_unix = NULL, version = 2,
@@ -711,6 +735,42 @@ impl StatsDb {
         rows.collect::<Result<Vec<_>, _>>().context("load latency samples")
     }
 
+    pub fn load_tps_samples(&self, scope: StatsScope) -> anyhow::Result<Vec<TpsSample>> {
+        let conn = self.conn.lock().expect("stats db mutex");
+        let mut stmt = conn.prepare(
+            "SELECT recorded_at_unix, tier, tps_x1000 FROM tps_samples
+             WHERE scope = ?1 ORDER BY recorded_at_unix ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![scope.as_str()], |row| {
+            Ok(TpsSample {
+                recorded_at_unix: row.get::<_, i64>(0)?.max(0) as u64,
+                tier: row.get(1)?,
+                tps_x1000: row.get::<_, i64>(2)?.max(0) as u64,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().context("load tps samples")
+    }
+
+    pub fn record_tps_sample(&self, tier: &str, tps_x1000: u64) -> anyhow::Result<()> {
+        if (tier != "edge" && tier != "cloud") || tps_x1000 == 0 {
+            return Ok(());
+        }
+        let now = data::now_unix();
+        let conn = self.conn.lock().expect("stats db mutex");
+        for scope in [StatsScope::Global, StatsScope::Session] {
+            conn.execute(
+                "INSERT INTO tps_samples (scope, recorded_at_unix, tier, tps_x1000) VALUES (?1, ?2, ?3, ?4)",
+                params![scope.as_str(), now as i64, tier, tps_x1000 as i64],
+            )?;
+        }
+        let prune_before = now.saturating_sub(7 * 86400) as i64;
+        conn.execute(
+            "DELETE FROM tps_samples WHERE scope = ?1 AND recorded_at_unix < ?2",
+            params![StatsScope::Global.as_str(), prune_before],
+        )?;
+        Ok(())
+    }
+
     pub fn latency_percentiles(&self, scope: StatsScope) -> anyhow::Result<(f64, f64)> {
         let samples = self.load_latency_samples(scope)?;
         Ok(latency_percentiles_from_samples(&samples))
@@ -755,11 +815,7 @@ impl StatsDb {
         let step_delta = step_kind_delta(&before.step_kinds, &after.step_kinds);
 
         self.save_totals_in_tx(tx, scope, &after)?;
-        let mut deltas = delta_values(&before, &after);
-        // TPS sum fields store latest value (overwrite), not cumulative — skip hourly sum deltas.
-        for idx in [39usize, 41, 43] {
-            deltas[idx] = 0;
-        }
+        let deltas = delta_values(&before, &after);
         if deltas.iter().any(|&v| v > 0) {
             self.upsert_hourly_delta(tx, scope, bucket_ts, &deltas)?;
         }
@@ -2019,6 +2075,9 @@ mod tests {
                     latency_ms: 120,
                     ttft_ms: Some(30),
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: true,
                 });
             },
@@ -2201,6 +2260,9 @@ mod tests {
                     latency_ms: 90,
                     ttft_ms: None,
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: false,
                 });
             },
@@ -2258,6 +2320,9 @@ mod tests {
                     latency_ms: 80,
                     ttft_ms: None,
                     last_token_ms: None,
+                    latency_us: 0,
+                    ttft_us: None,
+                    last_token_us: None,
                     stream: true,
                 });
             },

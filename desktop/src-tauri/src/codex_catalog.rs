@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 
 use token_router::gateway::api::codex_catalog::{
     build_codex_model_catalog, catalog_path_in_codex_dir, codex_catalog_specs_from_config,
+    models_cache_path_in_codex_dir,
 };
 use token_router::gateway::AppConfig;
 
 pub use token_router::gateway::api::codex_catalog::CodexCatalogModelSpec;
+pub use token_router::gateway::api::codex_catalog::CODEX_CATALOG_TIER_ID;
 pub use token_router::gateway::api::codex_catalog::TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME;
 
 pub fn codex_catalog_specs_for_agent(config: &AppConfig, context_window: u64) -> Vec<CodexCatalogModelSpec> {
@@ -25,13 +27,18 @@ pub fn write_token_router_codex_catalog(home: &Path, specs: &[CodexCatalogModelS
     let path = catalog_path_in_codex_dir(home);
     let text = serde_json::to_string_pretty(&catalog).map_err(|e| e.to_string())?;
     fs::write(&path, text).map_err(|e| e.to_string())?;
+
+    let cache_path = models_cache_path_in_codex_dir(home);
+    let cache_text = serde_json::to_string_pretty(&catalog).map_err(|e| e.to_string())?;
+    fs::write(&cache_path, cache_text).map_err(|e| e.to_string())?;
+
     Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use token_router::config::ConfigFile;
 
     fn test_config(edge_model: Option<&str>, cloud_model: Option<&str>) -> AppConfig {
@@ -55,28 +62,45 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_specs_include_router_models() {
+    fn codex_catalog_specs_expose_hidden_parent_and_visible_auto() {
         let config = test_config(Some("deepseek-v4-flash"), None);
         let specs = codex_catalog_specs_for_agent(&config, 1_000_000);
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].model, "auto");
-        assert_eq!(specs[1].model, "deepseek-v4-flash");
-        assert!(specs.iter().all(|spec| spec.context_window == 1_000_000));
+        assert_eq!(specs[0].model, "token-router");
+        assert_eq!(specs[0].display_name, "TokenRouter");
+        assert_eq!(specs[1].model, "auto");
+        assert_eq!(specs[1].display_name, "Auto");
+        assert_eq!(specs[0].context_window, 1_000_000);
+        assert_eq!(specs[1].context_window, 1_000_000);
     }
 
     #[test]
     fn write_token_router_codex_catalog_writes_file() {
         let dir = std::env::temp_dir().join(format!("codex-catalog-test-{}", uuid::Uuid::new_v4()));
-        let specs = vec![CodexCatalogModelSpec {
-            model: "auto".into(),
-            display_name: "Auto".into(),
-            context_window: 1_000_000,
-        }];
+        let specs = vec![
+            CodexCatalogModelSpec {
+                model: "token-router".into(),
+                display_name: "TokenRouter".into(),
+                context_window: 1_000_000,
+                visibility: token_router::gateway::api::codex_catalog::CodexCatalogVisibility::Hide,
+            },
+            CodexCatalogModelSpec {
+                model: "auto".into(),
+                display_name: "Auto".into(),
+                context_window: 1_000_000,
+                visibility: token_router::gateway::api::codex_catalog::CodexCatalogVisibility::List,
+            },
+        ];
         let path = write_token_router_codex_catalog(&dir, &specs).unwrap();
         assert!(path.is_file());
         let text = fs::read_to_string(&path).unwrap();
         let catalog: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(catalog["models"][0]["slug"], "auto");
+        assert_eq!(catalog["models"][0]["slug"], "token-router");
+        assert_eq!(catalog["models"][0]["visibility"], "hide");
+        assert_eq!(catalog["models"][1]["slug"], "auto");
+        assert_eq!(catalog["models"][1]["display_name"], "Auto");
+        assert_eq!(catalog["models"][1]["service_tiers"], json!([]));
+        assert!(models_cache_path_in_codex_dir(&dir).is_file());
         let _ = fs::remove_dir_all(dir);
     }
 }

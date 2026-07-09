@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { UpstreamSetupView } from '../types/gateway'
+import { useAppStore } from './appStore'
 
 interface SetupStoreState {
   setup: UpstreamSetupView | null
@@ -9,7 +10,10 @@ interface SetupStoreState {
 
 export const useSetupStore = create<SetupStoreState>()((set, get) => ({
   setup: null,
-  setSetup: (setup) => set({ setup }),
+  setSetup: (setup) => {
+    set({ setup })
+    useAppStore.getState().setRouteTab(setup?.gateway?.route ?? 'auto')
+  },
   patchSetup: (patch) => {
     const current = get().setup
     if (!current) {

@@ -34,7 +34,7 @@ export function RoutingLogCard({ entry }: Props) {
   const previewTitle = entry.hasUserPreview ? entry.userPreview : undefined
   const { shown: reasonTags, overflow } = pickDisplayReasonCodes(entry.reasonCodes)
   const finalDifficulty = extractDifficultyScore(entry.reasonCodes, entry.difficulty)
-  const finalFactorCode = pickFinalRouteFactorCode(entry.reasonCodes)
+  const finalFactorCode = pickFinalRouteFactorCode(entry.reasonCodes, entry.route)
   const finalFactorText = finalFactorCode
     ? explainFinalRouteFactor(finalFactorCode, entry.route, t)
     : null

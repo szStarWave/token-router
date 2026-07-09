@@ -9,7 +9,7 @@ use token_router::gateway::AppConfig;
 
 use crate::codex_catalog::{
     codex_catalog_specs_for_agent, write_token_router_codex_catalog,
-    TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME,
+    CODEX_CATALOG_TIER_ID, TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME,
 };
 
 const OPENCLAW_PROVIDER: &str = "token-router";
@@ -17,10 +17,13 @@ const OPENCLAW_MODEL_DISPLAY: &str = "Token Router Auto Route";
 const OPENCLAW_CONTEXT_WINDOW: u64 = 1_000_000;
 const OPENCLAW_TIMEOUT_SECONDS: u64 = 300;
 const CODEX_PROVIDER: &str = "token_router";
-const CODEX_PROVIDER_NAME: &str = "Token Router";
+const CODEX_PROVIDER_NAME: &str = "TokenRouter";
 const OPENCODE_PROVIDER: &str = "token-router";
 const OPENCODE_PROVIDER_NAME: &str = "Token Router";
 const OPENCODE_MODEL_DISPLAY: &str = "Token Router Auto Route";
+const MODELS_JSON_VENDOR: &str = "Token Router";
+const MODELS_JSON_MODEL_DISPLAY: &str = "Token Router Auto Route";
+const MODELS_JSON_MAX_OUTPUT_TOKENS: u64 = 8192;
 const DEFAULT_MODEL: &str = "auto";
 const CONTEXT_WINDOW_MIN: u64 = 4096;
 const CONTEXT_WINDOW_MAX: u64 = 2_000_000;
@@ -63,6 +66,8 @@ fn agent_config_path(agent: &str) -> Result<PathBuf, String> {
         "claude-code" => claude_code_settings_path(),
         "codex" => codex_config_path(),
         "opencode" => opencode_config_path(),
+        "codebuddy" => codebuddy_config_path(),
+        "workbuddy" => workbuddy_config_path(),
         _ => Err(format!("unknown agent: {agent}")),
     }
 }
@@ -74,8 +79,8 @@ fn agent_init_state(agent: &str) -> Result<(bool, PathBuf), String> {
             let legacy = home_dir()?.join(".claude.json");
             Ok((settings.is_file() || legacy.is_file(), settings))
         }
-        "opencode" => {
-            let path = opencode_config_path()?;
+        "opencode" | "codebuddy" | "workbuddy" => {
+            let path = agent_config_path(agent)?;
             Ok((true, path))
         }
         _ => {
@@ -142,6 +147,22 @@ fn opencode_config_path() -> Result<PathBuf, String> {
     Ok(opencode_config_dir()?.join("opencode.json"))
 }
 
+fn codebuddy_config_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".codebuddy"))
+}
+
+fn codebuddy_config_path() -> Result<PathBuf, String> {
+    Ok(codebuddy_config_dir()?.join("models.json"))
+}
+
+fn workbuddy_config_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".workbuddy"))
+}
+
+fn workbuddy_config_path() -> Result<PathBuf, String> {
+    Ok(workbuddy_config_dir()?.join("models.json"))
+}
+
 fn agent_config_path_at(home: &Path, agent: &str) -> Result<PathBuf, String> {
     match agent {
         "openclaw" => Ok(home.join(".openclaw").join("openclaw.json")),
@@ -150,6 +171,8 @@ fn agent_config_path_at(home: &Path, agent: &str) -> Result<PathBuf, String> {
         "claude-code" => Ok(home.join(".claude").join("settings.json")),
         "codex" => Ok(home.join(".codex").join("config.toml")),
         "opencode" => Ok(home.join(".config").join("opencode").join("opencode.json")),
+        "codebuddy" => Ok(home.join(".codebuddy").join("models.json")),
+        "workbuddy" => Ok(home.join(".workbuddy").join("models.json")),
         _ => Err(format!("unknown agent: {agent}")),
     }
 }
@@ -161,7 +184,7 @@ fn agent_init_state_at(home: &Path, agent: &str) -> Result<(bool, PathBuf), Stri
             let legacy = home.join(".claude.json");
             Ok((settings.is_file() || legacy.is_file(), settings))
         }
-        "opencode" => {
+        "opencode" | "codebuddy" | "workbuddy" => {
             let path = agent_config_path_at(home, agent)?;
             Ok((true, path))
         }
@@ -210,6 +233,7 @@ pub fn agent_deploy_state_at(home: &Path, agent: &str) -> Result<AgentDeployStat
         "claude-code" => claude_code_deployed_at(home)?,
         "codex" => codex_has_token_router(&path)?,
         "opencode" => opencode_has_token_router(&path)?,
+        "codebuddy" | "workbuddy" => models_json_has_token_router(&path)?,
         _ => return Err(format!("unknown agent: {agent}")),
     };
 
@@ -316,19 +340,18 @@ pub fn configure_codex_at(
     let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized_at(home, "codex")?;
     let config = load_app_config()?;
-    let model = resolved_model(&config);
     let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_toml_file(&path)?;
     let context_window = resolve_agent_context_window(&config, None);
-    merge_codex_config(&mut doc, openai_v1_base, &model, &key, context_window);
+    merge_codex_config(&mut doc, openai_v1_base, CODEX_CATALOG_TIER_ID, &key, context_window);
     write_toml_file(&path, &doc)?;
     let specs = codex_catalog_specs_for_agent(&config, context_window);
     write_token_router_codex_catalog(home, &specs)?;
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
-        model: model.clone(),
+        model: CODEX_CATALOG_TIER_ID.to_string(),
         base_url: openai_v1_base.to_string(),
         agent: "codex".to_string(),
     })
@@ -357,6 +380,51 @@ pub fn configure_opencode_at(
         model: model.clone(),
         base_url: openai_v1_base.to_string(),
         agent: "opencode".to_string(),
+    })
+}
+
+pub fn configure_codebuddy_at(
+    home: &Path,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    configure_models_json_at(home, "codebuddy", openai_v1_base, api_key)
+}
+
+pub fn configure_workbuddy_at(
+    home: &Path,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    configure_models_json_at(home, "workbuddy", openai_v1_base, api_key)
+}
+
+fn configure_models_json_at(
+    home: &Path,
+    agent: &str,
+    openai_v1_base: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = agent_config_path_at(home, agent)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let config = load_app_config()?;
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+    let context_window = resolve_agent_context_window(&config, None);
+    let chat_url = models_json_chat_completions_url(openai_v1_base);
+
+    let mut doc = read_json_file(&path)?;
+    merge_models_json_config(&mut doc, &chat_url, &model, &key, context_window);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: chat_url,
+        agent: agent.to_string(),
     })
 }
 
@@ -765,6 +833,65 @@ fn merge_opencode_config(existing: &mut Value, base_url: &str, model_id: &str, a
     );
 }
 
+fn models_json_chat_completions_url(openai_v1_base: &str) -> String {
+    format!(
+        "{}/chat/completions",
+        openai_v1_base.trim_end_matches('/')
+    )
+}
+
+fn merge_models_json_config(
+    existing: &mut Value,
+    chat_url: &str,
+    model_id: &str,
+    api_key: &str,
+    max_input_tokens: u64,
+) {
+    if !existing.is_object() {
+        *existing = json!({});
+    }
+    let root = existing.as_object_mut().unwrap();
+
+    let models = root.entry("models").or_insert_with(|| json!([]));
+    if !models.is_array() {
+        *models = json!([]);
+    }
+    let models_arr = models.as_array_mut().unwrap();
+
+    let new_model = json!({
+        "id": model_id,
+        "name": MODELS_JSON_MODEL_DISPLAY,
+        "vendor": MODELS_JSON_VENDOR,
+        "apiKey": api_key,
+        "maxInputTokens": max_input_tokens,
+        "maxOutputTokens": MODELS_JSON_MAX_OUTPUT_TOKENS,
+        "url": chat_url,
+        "supportsToolCall": true,
+        "supportsImages": true
+    });
+
+    if let Some(idx) = models_arr
+        .iter()
+        .position(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
+    {
+        models_arr[idx] = new_model;
+    } else {
+        models_arr.push(new_model);
+    }
+
+    let available = root.entry("availableModels").or_insert_with(|| json!([]));
+    if !available.is_array() {
+        *available = json!([]);
+    }
+    let available_arr = available.as_array_mut().unwrap();
+    if !available_arr
+        .iter()
+        .any(|v| v.as_str() == Some(model_id))
+    {
+        available_arr.insert(0, json!(model_id));
+    }
+}
+
 fn merge_codex_config(
     existing: &mut toml::Value,
     base_url: &str,
@@ -789,6 +916,14 @@ fn merge_codex_config(
         "model_catalog_json".into(),
         toml::Value::String(TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME.to_string()),
     );
+    root.insert(
+        "disable_response_storage".into(),
+        toml::Value::Boolean(true),
+    );
+    root.insert(
+        "model_reasoning_effort".into(),
+        toml::Value::String("medium".to_string()),
+    );
 
     let mut provider = toml::map::Map::new();
     provider.insert(
@@ -806,6 +941,10 @@ fn merge_codex_config(
     provider.insert(
         "wire_api".into(),
         toml::Value::String("responses".to_string()),
+    );
+    provider.insert(
+        "requires_openai_auth".into(),
+        toml::Value::Boolean(true),
     );
 
     let providers = root
@@ -911,12 +1050,11 @@ fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Resu
     let (auth_enabled, default_key) = load_gateway_auth_state()?;
     let path = ensure_agent_initialized("codex")?;
     let base_url = gateway_agent_base_url(&config);
-    let model = resolved_model(&config);
     let key = resolve_api_key(auth_enabled, api_key, default_key);
 
     let mut doc = read_toml_file(&path)?;
     let context_window = resolve_agent_context_window(&config, context_window);
-    merge_codex_config(&mut doc, &base_url, &model, &key, context_window);
+    merge_codex_config(&mut doc, &base_url, CODEX_CATALOG_TIER_ID, &key, context_window);
     write_toml_file(&path, &doc)?;
     let home = home_dir()?;
     let specs = codex_catalog_specs_for_agent(&config, context_window);
@@ -924,7 +1062,7 @@ fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Resu
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
-        model: model.clone(),
+        model: CODEX_CATALOG_TIER_ID.to_string(),
         base_url,
         agent: "codex".to_string(),
     })
@@ -950,6 +1088,43 @@ fn configure_opencode(api_key: Option<String>) -> Result<AgentSetupResult, Strin
         model: model.clone(),
         base_url,
         agent: "opencode".to_string(),
+    })
+}
+
+fn configure_codebuddy(api_key: Option<String>, context_window: Option<u64>) -> Result<AgentSetupResult, String> {
+    configure_models_json("codebuddy", api_key, context_window)
+}
+
+fn configure_workbuddy(api_key: Option<String>, context_window: Option<u64>) -> Result<AgentSetupResult, String> {
+    configure_models_json("workbuddy", api_key, context_window)
+}
+
+fn configure_models_json(
+    agent: &str,
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
+    let config = load_app_config()?;
+    let (auth_enabled, default_key) = load_gateway_auth_state()?;
+    let path = agent_config_path(agent)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let openai_v1_base = gateway_agent_base_url(&config);
+    let model = resolved_model(&config);
+    let key = resolve_api_key(auth_enabled, api_key, default_key);
+    let context_window = resolve_agent_context_window(&config, context_window);
+    let chat_url = models_json_chat_completions_url(&openai_v1_base);
+
+    let mut doc = read_json_file(&path)?;
+    merge_models_json_config(&mut doc, &chat_url, &model, &key, context_window);
+    write_json_file(&path, &doc)?;
+
+    Ok(AgentSetupResult {
+        path: path.display().to_string(),
+        model: model.clone(),
+        base_url: chat_url,
+        agent: agent.to_string(),
     })
 }
 
@@ -1038,6 +1213,24 @@ fn opencode_has_token_router(path: &Path) -> Result<bool, String> {
     Ok(has_base || model)
 }
 
+fn models_json_has_token_router(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let doc = read_json_file(path)?;
+    let models = doc.get("models").and_then(|m| m.as_array());
+    Ok(models.is_some_and(|arr| {
+        arr.iter().any(|m| {
+            m.get("vendor")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| v == MODELS_JSON_VENDOR)
+                && m.get("url")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("/chat/completions") && !s.trim().is_empty())
+        })
+    }))
+}
+
 fn claude_code_deployed() -> Result<bool, String> {
     let settings = claude_code_settings_path()?;
     if settings.is_file() && claude_code_has_token_router(&settings)? {
@@ -1067,6 +1260,7 @@ fn agent_deploy_state(agent: &str) -> Result<AgentDeployStatus, String> {
         "claude-code" => claude_code_deployed()?,
         "codex" => codex_has_token_router(&path)?,
         "opencode" => opencode_has_token_router(&path)?,
+        "codebuddy" | "workbuddy" => models_json_has_token_router(&path)?,
         _ => return Err(format!("unknown agent: {agent}")),
     };
 
@@ -1121,6 +1315,22 @@ pub fn configure_codex_agent(
 #[tauri::command]
 pub fn configure_opencode_agent(api_key: Option<String>) -> Result<AgentSetupResult, String> {
     configure_opencode(api_key)
+}
+
+#[tauri::command]
+pub fn configure_codebuddy_agent(
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
+    configure_codebuddy(api_key, context_window)
+}
+
+#[tauri::command]
+pub fn configure_workbuddy_agent(
+    api_key: Option<String>,
+    context_window: Option<u64>,
+) -> Result<AgentSetupResult, String> {
+    configure_workbuddy(api_key, context_window)
 }
 
 #[tauri::command]
@@ -1242,6 +1452,14 @@ mod tests {
             doc["model_providers"]["token_router"]["wire_api"],
             toml::Value::String("responses".into())
         );
+        assert_eq!(
+            doc["model_providers"]["token_router"]["requires_openai_auth"],
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            doc["disable_response_storage"],
+            toml::Value::Boolean(true)
+        );
     }
 
     #[test]
@@ -1254,5 +1472,78 @@ mod tests {
             token_router::gateway::api::models::DEFAULT_CLOUD_MAX_CONTEXT_LENGTH as u64
         );
         assert_eq!(resolve_agent_context_window(&config, Some(262_144)), 262_144);
+    }
+
+    #[test]
+    fn merge_models_json_config_preserves_other_models() {
+        let mut doc = json!({
+            "models": [
+                { "id": "deepseek-chat", "name": "DeepSeek", "vendor": "DeepSeek" }
+            ],
+            "availableModels": ["deepseek-chat"]
+        });
+        merge_models_json_config(
+            &mut doc,
+            "http://127.0.0.1:11080/v1/chat/completions",
+            "auto",
+            "test-key",
+            262_144,
+        );
+        assert_eq!(doc["models"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["models"][0]["id"], "deepseek-chat");
+        assert_eq!(doc["models"][1]["id"], "auto");
+        assert_eq!(doc["models"][1]["vendor"], MODELS_JSON_VENDOR);
+        assert_eq!(
+            doc["models"][1]["url"],
+            "http://127.0.0.1:11080/v1/chat/completions"
+        );
+        assert_eq!(doc["availableModels"][0], "auto");
+        assert_eq!(doc["availableModels"][1], "deepseek-chat");
+    }
+
+    #[test]
+    fn merge_models_json_config_overwrites_same_id() {
+        let mut doc = json!({
+            "models": [
+                { "id": "auto", "name": "Old", "vendor": "Other", "url": "https://old.example.com/v1/chat/completions" }
+            ]
+        });
+        merge_models_json_config(
+            &mut doc,
+            "http://127.0.0.1:11080/v1/chat/completions",
+            "auto",
+            "new-key",
+            131_072,
+        );
+        assert_eq!(doc["models"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["models"][0]["vendor"], MODELS_JSON_VENDOR);
+        assert_eq!(doc["models"][0]["apiKey"], "new-key");
+        let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        write_json_file(&path, &doc).unwrap();
+        assert!(models_json_has_token_router(&path).unwrap());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn models_json_chat_completions_url_appends_path() {
+        assert_eq!(
+            models_json_chat_completions_url("http://127.0.0.1:11080/v1"),
+            "http://127.0.0.1:11080/v1/chat/completions"
+        );
+        assert_eq!(
+            models_json_chat_completions_url("http://127.0.0.1:11080/v1/"),
+            "http://127.0.0.1:11080/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn codebuddy_and_workbuddy_config_paths_differ() {
+        let codebuddy = codebuddy_config_path().unwrap();
+        let workbuddy = workbuddy_config_path().unwrap();
+        assert!(codebuddy.to_string_lossy().contains(".codebuddy"));
+        assert!(workbuddy.to_string_lossy().contains(".workbuddy"));
+        assert_ne!(codebuddy, workbuddy);
     }
 }
