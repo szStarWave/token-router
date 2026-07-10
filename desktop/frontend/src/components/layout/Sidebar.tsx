@@ -54,6 +54,7 @@ export function Sidebar() {
   const globalSavedPoints = useAppStore((s) => s.globalSavedPoints)
   const liveUptime = useLiveUptime()
   const userInfo = useAuthStore((s) => s.userInfo)
+  const logout = useAuthStore((s) => s.logout)
   const setup = useSetupStore((s) => s.setup)
   const herdsmanConnected = useEdgeStore((s) => s.herdsmanConnected)
   const edgeSelectedKey = useEdgeStore((s) => s.selectedKey)
@@ -72,8 +73,10 @@ export function Sidebar() {
 
   const { data: credits = 0 } = useCreditsQuery()
   const [popoverVisible, setPopoverVisible] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [cooldownUntil, setCooldownUntil] = useState(0)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const userMenuRef = useRef<HTMLDivElement>(null)
 
   const usageQuery = useCreditsUsageQuery()
   const usageRows = useMemo(() => {
@@ -152,6 +155,20 @@ export function Sidebar() {
   useEffect(() => {
     setAvatarFailed(false)
   }, [avatar])
+
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (!userMenuRef.current?.contains(e.target as Node)) setUserMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [])
+
+  const handleLogout = () => {
+    setUserMenuOpen(false)
+    logout()
+    location.reload()
+  }
 
   const showPopover = () => {
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -296,16 +313,33 @@ export function Sidebar() {
             </svg>
           </button>
         </div>
-        <div className="sider-user-row" id="sider-user-row">
-          <div className="sider-user-avatar" id="sider-user-avatar">
-            {avatar && !avatarFailed ? (
-              <img id="sider-user-avatar-img" alt={nickname || 'User'} src={avatar} onError={() => setAvatarFailed(true)} />
-            ) : (
-              <span id="sider-user-avatar-fallback">{(nickname || '?').trim().slice(0, 1).toUpperCase() || '?'}</span>
-            )}
-          </div>
-          <div className="sider-user-meta">
-            <span className="sider-user-name" id="sider-user-name">{nickname}</span>
+        <div className="sider-user-main" id="sider-user-main" ref={userMenuRef}>
+          <button
+            type="button"
+            className="sider-user-row"
+            id="sider-user-row"
+            aria-haspopup="menu"
+            aria-expanded={userMenuOpen}
+            onClick={(e) => {
+              e.stopPropagation()
+              setUserMenuOpen(!userMenuOpen)
+            }}
+          >
+            <div className="sider-user-avatar" id="sider-user-avatar">
+              {avatar && !avatarFailed ? (
+                <img id="sider-user-avatar-img" alt={nickname || 'User'} src={avatar} onError={() => setAvatarFailed(true)} />
+              ) : (
+                <span id="sider-user-avatar-fallback">{(nickname || '?').trim().slice(0, 1).toUpperCase() || '?'}</span>
+              )}
+            </div>
+            <div className="sider-user-meta">
+              <span className="sider-user-name" id="sider-user-name">{nickname}</span>
+            </div>
+          </button>
+          <div className="sider-user-menu" id="sider-user-menu" role="menu" hidden={!userMenuOpen}>
+            <button type="button" className="sider-user-menu-item" id="sider-user-logout" role="menuitem" onClick={handleLogout}>
+              {t('action.logout')}
+            </button>
           </div>
         </div>
       </footer>

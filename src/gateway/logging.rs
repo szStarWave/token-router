@@ -117,9 +117,25 @@ pub fn init(
     Ok(log_path)
 }
 
-/// Append one line to `{data_dir}/logs/gateway.log` in the same format as tracing output.
-/// Also mirrors to tracing when the subscriber is initialized.
-pub fn append_message(
+/// Whether a tracing subscriber is active (e.g. embedded gateway running).
+pub fn is_tracing_initialized() -> bool {
+    tracing::dispatcher::has_been_set()
+}
+
+/// Emit one traced line without writing to the log file directly.
+pub fn emit_traced_message(level: &str, target: &str, message: &str) {
+    if !is_tracing_initialized() {
+        return;
+    }
+    match level {
+        "ERROR" => tracing::error!(target = target, "{message}"),
+        "WARN" => tracing::warn!(target = target, "{message}"),
+        _ => tracing::info!(target = target, "{message}"),
+    }
+}
+
+/// Append one line to `{data_dir}/logs/gateway.log` without mirroring to tracing.
+pub fn append_message_file_only(
     data_dir: &Path,
     level: &str,
     target: &str,
@@ -147,13 +163,20 @@ pub fn append_message(
     file.write_all(line.as_bytes())
         .with_context(|| format!("append log file {}", log_path.display()))?;
 
-    if tracing::dispatcher::has_been_set() {
-        match level {
-            "ERROR" => tracing::error!(target = target, "{message}"),
-            "WARN" => tracing::warn!(target = target, "{message}"),
-            _ => tracing::info!(target = target, "{message}"),
-        }
-    }
+    Ok(())
+}
+
+/// Append one line to `{data_dir}/logs/gateway.log` in the same format as tracing output.
+/// Also mirrors to tracing when the subscriber is initialized.
+pub fn append_message(
+    data_dir: &Path,
+    level: &str,
+    target: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    append_message_file_only(data_dir, level, target, message)?;
+
+    emit_traced_message(level, target, message);
 
     Ok(())
 }

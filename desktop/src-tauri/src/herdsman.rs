@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -10,15 +11,16 @@ use token_router::gateway::AppConfig;
 
 const PIPE_NAME: &str = r"\\.\pipe\Herdsman-status";
 const LOG_TARGET: &str = "token_router::herdsman";
-const RECONNECT_DELAY: Duration = Duration::from_secs(5);
-const MODEL_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const DISCOVER_INTERVAL: Duration = Duration::from_secs(30);
+const RECONNECT_DELAY: Duration = Duration::from_secs(10);
+const MODEL_POLL_INTERVAL: Duration = Duration::from_secs(15);
+const DISCOVER_INTERVAL: Duration = Duration::from_secs(120);
 const DEFAULT_INSTALL_URL: &str = "https://flowyaipc.cn/#ai-engine";
 const DEFAULT_HTTP_PORTS: &[u16] = &[8080, 11434, 8081, 8000];
 
 static SERVICE_RUNNING: AtomicBool = AtomicBool::new(false);
 static PROBE_NOW: AtomicBool = AtomicBool::new(false);
 static RUNTIME_STATE: OnceLock<Arc<Mutex<HerdsmanRuntimeState>>> = OnceLock::new();
+static FETCH_LOG_STATE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Default)]
 struct HerdsmanRuntimeState {
@@ -104,8 +106,51 @@ pub struct HerdsmanOpenResult {
 }
 
 fn herdsman_log(level: &str, message: impl AsRef<str>) {
-    if let Ok(config) = AppConfig::load() {
-        let _ = logging::append_message(&config.data_dir, level, LOG_TARGET, message.as_ref());
+    let message = message.as_ref();
+    if logging::is_tracing_initialized() {
+        logging::emit_traced_message(level, LOG_TARGET, message);
+    } else if let Ok(config) = AppConfig::load() {
+        let _ = logging::append_message_file_only(&config.data_dir, level, LOG_TARGET, message);
+    }
+}
+
+fn fetch_log_state() -> &'static Mutex<HashMap<String, String>> {
+    FETCH_LOG_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns true when the fetch outcome should be logged.
+fn fetch_outcome_changed(url: &str, outcome_key: &str, quiet: bool) -> bool {
+    if quiet {
+        fetch_log_state()
+            .lock()
+            .ok()
+            .map(|mut guard| {
+                let prev = guard.get(url).cloned();
+                if prev.as_deref() == Some(outcome_key) {
+                    false
+                } else {
+                    guard.insert(url.to_string(), outcome_key.to_string());
+                    true
+                }
+            })
+            .unwrap_or(false)
+    } else {
+        if let Ok(mut guard) = fetch_log_state().lock() {
+            guard.insert(url.to_string(), outcome_key.to_string());
+        }
+        true
+    }
+}
+
+/// Log a fetch-related message when `quiet` is false, or when the per-URL outcome changes.
+fn log_fetch_outcome(url: &str, outcome_key: &str, quiet: bool, level: &str, message: &str) {
+    if !fetch_outcome_changed(url, outcome_key, quiet) {
+        return;
+    }
+    match level {
+        "WARN" => herdsman_warn(message),
+        "ERROR" => herdsman_log("ERROR", message),
+        _ => herdsman_info(message),
     }
 }
 
@@ -414,15 +459,15 @@ fn push_api_base_candidate(candidates: &mut Vec<String>, raw: &str) {
     }
 }
 
-fn fetch_models(endpoint: &str, openai_endpoint: &str) -> Vec<HerdsmanModelInfo> {
+fn fetch_models(endpoint: &str, openai_endpoint: &str, quiet: bool) -> Vec<HerdsmanModelInfo> {
     let client_openai_endpoint = normalize_client_http_url(openai_endpoint);
     let mut candidates = Vec::new();
     push_api_base_candidate(&mut candidates, endpoint);
     push_api_base_candidate(&mut candidates, openai_endpoint);
-    fetch_models_from_candidates(&candidates, &client_openai_endpoint)
+    fetch_models_from_candidates(&candidates, &client_openai_endpoint, quiet)
 }
 
-fn fetch_models_from_status(status: &HerdsmanStatus) -> Vec<HerdsmanModelInfo> {
+fn fetch_models_from_status(status: &HerdsmanStatus, quiet: bool) -> Vec<HerdsmanModelInfo> {
     let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
     let mut candidates = Vec::new();
     push_api_base_candidate(&mut candidates, &status.endpoint);
@@ -433,16 +478,17 @@ fn fetch_models_from_status(status: &HerdsmanStatus) -> Vec<HerdsmanModelInfo> {
             push_api_base_candidate(&mut candidates, &format!("http://{host}:{port}"));
         }
     }
-    fetch_models_from_candidates(&candidates, &client_openai_endpoint)
+    fetch_models_from_candidates(&candidates, &client_openai_endpoint, quiet)
 }
 
 fn fetch_models_from_candidates(
     candidates: &[String],
     openai_endpoint: &str,
+    quiet: bool,
 ) -> Vec<HerdsmanModelInfo> {
     let mut last_empty = Vec::new();
     for (idx, base) in candidates.iter().enumerate() {
-        match try_fetch_models(base, openai_endpoint) {
+        match try_fetch_models(base, openai_endpoint, quiet) {
             Some(models) if !models.is_empty() => return models,
             Some(models) => {
                 last_empty = models;
@@ -478,7 +524,7 @@ fn parse_models_response(body: &str) -> Option<Vec<RawHerdsmanModel>> {
     None
 }
 
-fn try_fetch_models(base: &str, openai_endpoint: &str) -> Option<Vec<HerdsmanModelInfo>> {
+fn try_fetch_models(base: &str, openai_endpoint: &str, quiet: bool) -> Option<Vec<HerdsmanModelInfo>> {
     let url = format!("{}/api/v1/models", base.trim_end_matches('/'));
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -486,7 +532,13 @@ fn try_fetch_models(base: &str, openai_endpoint: &str) -> Option<Vec<HerdsmanMod
     {
         Ok(c) => c,
         Err(e) => {
-            herdsman_warn(format!("models fetch client build failed: {e}"));
+            log_fetch_outcome(
+                &url,
+                "client_build_error",
+                quiet,
+                "WARN",
+                &format!("models fetch client build failed: {e}"),
+            );
             return None;
         }
     };
@@ -494,14 +546,24 @@ fn try_fetch_models(base: &str, openai_endpoint: &str) -> Option<Vec<HerdsmanMod
     let response = match client.get(&url).send() {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            herdsman_warn(format!(
-                "models fetch failed: url={url} status={}",
-                r.status()
-            ));
+            let status = r.status().as_u16();
+            log_fetch_outcome(
+                &url,
+                &format!("http_error:{status}"),
+                quiet,
+                "WARN",
+                &format!("models fetch failed: url={url} status={status}"),
+            );
             return None;
         }
         Err(e) => {
-            herdsman_warn(format!("models fetch error: url={url} err={e}"));
+            log_fetch_outcome(
+                &url,
+                "network_error",
+                quiet,
+                "WARN",
+                &format!("models fetch error: url={url} err={e}"),
+            );
             return None;
         }
     };
@@ -509,22 +571,58 @@ fn try_fetch_models(base: &str, openai_endpoint: &str) -> Option<Vec<HerdsmanMod
     let body = match response.text() {
         Ok(text) => text,
         Err(e) => {
-            herdsman_warn(format!("models fetch read failed: url={url} err={e}"));
+            log_fetch_outcome(
+                &url,
+                "read_error",
+                quiet,
+                "WARN",
+                &format!("models fetch read failed: url={url} err={e}"),
+            );
             return None;
         }
     };
 
-    let raw = parse_models_response(&body)?;
+    let raw = match parse_models_response(&body) {
+        Some(models) => models,
+        None => {
+            log_fetch_outcome(
+                &url,
+                "parse_error",
+                quiet,
+                "WARN",
+                &format!("models fetch parse failed: url={url}"),
+            );
+            return None;
+        }
+    };
     let models = map_models(raw.clone(), openai_endpoint);
     if raw.is_empty() {
-        herdsman_info(format!("models fetch parsed empty list from {url}"));
+        log_fetch_outcome(
+            &url,
+            "empty_list",
+            quiet,
+            "INFO",
+            &format!("models fetch parsed empty list from {url}"),
+        );
     } else if models.is_empty() {
-        herdsman_warn(format!(
-            "models fetch: {} raw models from {url} but none marked running",
-            raw.len()
-        ));
+        log_fetch_outcome(
+            &url,
+            &format!("empty_raw:{}", raw.len()),
+            quiet,
+            "WARN",
+            &format!(
+                "models fetch: {} raw models from {url} but none marked running",
+                raw.len()
+            ),
+        );
     } else {
-        herdsman_info(format!("models fetch ok: url={url} count={}", models.len()));
+        log_fetch_outcome(
+            &url,
+            &format!("ok:{}", models.len()),
+            quiet,
+            "INFO",
+            &format!("models fetch ok: url={url} count={}", models.len()),
+        );
     }
     Some(models)
 }
@@ -665,14 +763,16 @@ struct HttpProbeResult {
     models: Vec<HerdsmanModelInfo>,
 }
 
-fn probe_http_status() -> Option<HttpProbeResult> {
+fn probe_http_status(quiet: bool) -> Option<HttpProbeResult> {
     let candidates = collect_http_probe_candidates();
     for base in candidates {
         let openai_endpoint = derive_openai_endpoint(&base);
-        if let Some(models) = try_fetch_models(&base, &openai_endpoint) {
-            herdsman_info(format!(
-                "http probe ok: base={base} openai_endpoint={openai_endpoint}"
-            ));
+        if let Some(models) = try_fetch_models(&base, &openai_endpoint, quiet) {
+            if !quiet {
+                herdsman_info(format!(
+                    "http probe ok: base={base} openai_endpoint={openai_endpoint}"
+                ));
+            }
             return Some(HttpProbeResult {
                 base,
                 openai_endpoint,
@@ -684,7 +784,21 @@ fn probe_http_status() -> Option<HttpProbeResult> {
 }
 
 fn http_still_reachable(base: &str, openai_endpoint: &str) -> bool {
-    try_fetch_models(base, openai_endpoint).is_some()
+    try_fetch_models(base, openai_endpoint, true).is_some()
+}
+
+fn connected_state_changed(
+    prev: &HerdsmanRuntimeState,
+    endpoint: &str,
+    openai_endpoint: &str,
+    models: &[HerdsmanModelInfo],
+) -> (bool, bool, bool) {
+    let models_changed = models_signature(&prev.models) != models_signature(models);
+    let endpoint_changed = prev.endpoint.as_deref() != Some(endpoint);
+    let openai_changed = prev.openai_endpoint.as_deref() != Some(openai_endpoint);
+    let any = !prev.connected || endpoint_changed || openai_changed || models_changed;
+    let link_changed = !prev.connected || endpoint_changed || openai_changed;
+    (any, link_changed, models_changed)
 }
 
 fn apply_connected_state(
@@ -694,8 +808,23 @@ fn apply_connected_state(
     models: Vec<HerdsmanModelInfo>,
     via: &str,
 ) {
-    herdsman_info(format!("connected via {via}"));
-    log_running_models(&models);
+    let prev = runtime_state()
+        .lock()
+        .ok()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    let (any_changed, link_changed, models_changed) =
+        connected_state_changed(&prev, &endpoint, &openai_endpoint, &models);
+    if !any_changed {
+        return;
+    }
+
+    if link_changed {
+        herdsman_info(format!("connected via {via}"));
+    }
+    if models_changed || !prev.connected {
+        log_running_models(&models);
+    }
     emit_connected(app, true);
     emit_models(app, &models);
     update_runtime_state(|state| {
@@ -730,7 +859,7 @@ fn probe_and_update(app: &AppHandle) -> HerdsmanStatusSnapshot {
     if let Some(status) = read_status_from_pipe() {
         let client_endpoint = normalize_client_http_url(&status.endpoint);
         let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
-        let models = fetch_models_from_status(&status);
+        let models = fetch_models_from_status(&status, false);
         apply_connected_state(
             app,
             client_endpoint,
@@ -741,7 +870,7 @@ fn probe_and_update(app: &AppHandle) -> HerdsmanStatusSnapshot {
         return herdsman_get_status();
     }
 
-    if let Some(result) = probe_http_status() {
+    if let Some(result) = probe_http_status(false) {
         apply_connected_state(
             app,
             normalize_client_http_url(&result.base),
@@ -781,18 +910,20 @@ fn apply_launcher_discovery(app: &AppHandle, launcher: Option<String>) {
     }
 }
 
-fn run_discovery(app: &AppHandle) {
-    herdsman_info("running installation discovery");
-    let launcher = resolve_herdsman_launcher();
+fn run_discovery(app: &AppHandle, verbose: bool) {
+    if verbose {
+        herdsman_info("running installation discovery");
+    }
+    let launcher = resolve_herdsman_launcher(verbose);
     apply_launcher_discovery(app, launcher);
 }
 
 fn discovery_loop(app: AppHandle) {
-    run_discovery(&app);
+    run_discovery(&app, true);
     while SERVICE_RUNNING.load(Ordering::SeqCst) {
         sleep_interruptible(DISCOVER_INTERVAL);
         if SERVICE_RUNNING.load(Ordering::SeqCst) {
-            run_discovery(&app);
+            run_discovery(&app, false);
         }
     }
 }
@@ -808,7 +939,7 @@ fn poll_models_during_session(
         if !SERVICE_RUNNING.load(Ordering::SeqCst) || !pipe_alive.load(Ordering::SeqCst) {
             break;
         }
-        let models = fetch_models(endpoint, openai_endpoint);
+        let models = fetch_models(endpoint, openai_endpoint, true);
         let previous = runtime_state()
             .lock()
             .map(|state| models_signature(&state.models))
@@ -840,7 +971,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
             let client_openai_endpoint = normalize_client_http_url(&status.openai_endpoint);
             endpoint = Some(client_endpoint.clone());
             openai_endpoint = Some(client_openai_endpoint.clone());
-            models = fetch_models_from_status(&status);
+            models = fetch_models_from_status(&status, true);
             herdsman_info(format!(
                 "status received: endpoint={}, openai_endpoint={} (client: {}, {})",
                 status.endpoint,
@@ -885,7 +1016,7 @@ fn run_connection_session(app: &AppHandle) -> bool {
 }
 
 fn run_http_session(app: &AppHandle) {
-    let Some(result) = probe_http_status() else {
+    let Some(result) = probe_http_status(true) else {
         clear_connected_state(app);
         return;
     };
@@ -907,7 +1038,7 @@ fn run_http_session(app: &AppHandle) {
             herdsman_info("http session unreachable");
             break;
         }
-        let models = fetch_models(&endpoint, &openai_endpoint);
+        let models = fetch_models(&endpoint, &openai_endpoint, true);
         let previous = runtime_state()
             .lock()
             .map(|state| models_signature(&state.models))
@@ -978,7 +1109,7 @@ pub fn herdsman_get_status() -> HerdsmanStatusSnapshot {
 
 #[tauri::command]
 pub fn herdsman_refresh_status(app: tauri::AppHandle) -> HerdsmanStatusSnapshot {
-    run_discovery(&app);
+    run_discovery(&app, true);
     request_immediate_probe();
     probe_and_update(&app)
 }
@@ -1419,7 +1550,7 @@ fn resolve_portable_exe_scan() -> Option<String> {
 }
 
 #[cfg(windows)]
-fn resolve_herdsman_launcher() -> Option<String> {
+fn resolve_herdsman_launcher(verbose: bool) -> Option<String> {
     let strategies: [(&str, fn() -> Option<String>); 6] = [
         ("callme file", resolve_from_callme_file),
         ("known install paths", resolve_known_install_paths),
@@ -1432,14 +1563,22 @@ fn resolve_herdsman_launcher() -> Option<String> {
     for (name, resolver) in strategies {
         match resolver() {
             Some(path) => {
-                herdsman_info(format!("detected via {name}: {path}"));
+                if verbose {
+                    herdsman_info(format!("detected via {name}: {path}"));
+                }
                 return Some(path);
             }
-            None => herdsman_info(format!("{name}: not found")),
+            None => {
+                if verbose {
+                    herdsman_info(format!("{name}: not found"));
+                }
+            }
         }
     }
 
-    herdsman_info("installation not detected by any strategy");
+    if verbose {
+        herdsman_info("installation not detected by any strategy");
+    }
     None
 }
 
@@ -1515,7 +1654,7 @@ fn is_valid_herdsman_launcher(path: &std::path::Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn resolve_herdsman_launcher() -> Option<String> {
+fn resolve_herdsman_launcher(verbose: bool) -> Option<String> {
     let strategies: [(&str, fn() -> Option<String>); 2] = [
         ("callme file", resolve_from_callme_file),
         ("known install paths", resolve_known_install_paths),
@@ -1524,18 +1663,26 @@ fn resolve_herdsman_launcher() -> Option<String> {
     for (name, resolver) in strategies {
         match resolver() {
             Some(path) => {
-                herdsman_info(format!("detected via {name}: {path}"));
+                if verbose {
+                    herdsman_info(format!("detected via {name}: {path}"));
+                }
                 return Some(path);
             }
-            None => herdsman_info(format!("{name}: not found")),
+            None => {
+                if verbose {
+                    herdsman_info(format!("{name}: not found"));
+                }
+            }
         }
     }
 
-    herdsman_info("installation not detected by any strategy");
+    if verbose {
+        herdsman_info("installation not detected by any strategy");
+    }
     None
 }
 
-fn cached_launcher_or_discover() -> Option<String> {
+fn cached_launcher_or_discover(verbose: bool) -> Option<String> {
     if let Ok(guard) = runtime_state().lock() {
         if let Some(ref path) = guard.launcher_path {
             if is_launcher_present(std::path::Path::new(path)) {
@@ -1544,7 +1691,7 @@ fn cached_launcher_or_discover() -> Option<String> {
         }
     }
 
-    let discovered = resolve_herdsman_launcher();
+    let discovered = resolve_herdsman_launcher(verbose);
     if discovered.is_some() {
         update_runtime_state(|state| {
             state.launcher_path = discovered.clone();
@@ -1602,7 +1749,7 @@ fn is_launcher_present(path: &std::path::Path) -> bool {
 
 #[tauri::command]
 pub fn herdsman_start() -> Result<HerdsmanOpenResult, String> {
-    let launcher = cached_launcher_or_discover()
+    let launcher = cached_launcher_or_discover(true)
         .ok_or_else(|| "Herdsman is not installed".to_string())?;
     spawn_herdsman(&launcher)?;
     request_immediate_probe();
@@ -1619,7 +1766,7 @@ pub async fn herdsman_open_or_install(app: tauri::AppHandle) -> Result<HerdsmanO
         .map(|state| state.connected)
         .unwrap_or(false);
 
-    if let Some(launcher) = cached_launcher_or_discover() {
+    if let Some(launcher) = cached_launcher_or_discover(false) {
         if connected {
             tauri_plugin_opener::open_path(launcher.clone(), None::<&str>)
                 .map_err(|e| e.to_string())?;
@@ -1688,6 +1835,97 @@ mod map_tests {
         let models = map_models(raw, "http://127.0.0.1:8080/v1");
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].context_window, Some(131_072));
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn models_signature_detects_context_change() {
+        let base = HerdsmanModelInfo {
+            id: "m1".into(),
+            name: "m1".into(),
+            endpoint: "http://127.0.0.1:8080/v1".into(),
+            context_window: Some(8192),
+            icon: None,
+            source: "herdsman",
+        };
+        let mut other = base.clone();
+        other.context_window = Some(16_384);
+        assert_ne!(models_signature(&[base]), models_signature(&[other]));
+    }
+
+    #[test]
+    fn connected_state_unchanged_when_identical() {
+        let prev = HerdsmanRuntimeState {
+            connected: true,
+            endpoint: Some("http://127.0.0.1:8080".into()),
+            openai_endpoint: Some("http://127.0.0.1:8080/v1".into()),
+            models: vec![HerdsmanModelInfo {
+                id: "demo".into(),
+                name: "demo".into(),
+                endpoint: "http://127.0.0.1:8080/v1".into(),
+                context_window: None,
+                icon: None,
+                source: "herdsman",
+            }],
+            installed: true,
+            launcher_path: None,
+        };
+        let (any, link, models) = connected_state_changed(
+            &prev,
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/v1",
+            &prev.models,
+        );
+        assert!(!any);
+        assert!(!link);
+        assert!(!models);
+    }
+
+    #[test]
+    fn connected_state_detects_model_change() {
+        let prev = HerdsmanRuntimeState {
+            connected: true,
+            endpoint: Some("http://127.0.0.1:8080".into()),
+            openai_endpoint: Some("http://127.0.0.1:8080/v1".into()),
+            models: vec![],
+            installed: false,
+            launcher_path: None,
+        };
+        let next = vec![HerdsmanModelInfo {
+            id: "demo".into(),
+            name: "demo".into(),
+            endpoint: "http://127.0.0.1:8080/v1".into(),
+            context_window: None,
+            icon: None,
+            source: "herdsman",
+        }];
+        let (any, _link, models) = connected_state_changed(
+            &prev,
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/v1",
+            &next,
+        );
+        assert!(any);
+        assert!(models);
+    }
+
+    #[test]
+    fn fetch_outcome_changed_only_once_in_quiet_mode() {
+        let url = format!("http://test-quiet-{}", std::process::id());
+        assert!(fetch_outcome_changed(&url, "empty_raw:88", true));
+        assert!(!fetch_outcome_changed(&url, "empty_raw:88", true));
+        assert!(fetch_outcome_changed(&url, "ok:1", true));
+    }
+
+    #[test]
+    fn fetch_outcome_always_changes_when_not_quiet() {
+        let url = format!("http://test-loud-{}", std::process::id());
+        assert!(fetch_outcome_changed(&url, "network_error", false));
+        assert!(fetch_outcome_changed(&url, "network_error", false));
     }
 }
 

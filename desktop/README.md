@@ -170,13 +170,13 @@ printf '/status' | nc -U ~/.token-router-desktop/Token-Router-status.sock
   "app_name": "Token Router",
   "running": true,
   "host": "127.0.0.1",
-  "port": 11080,
-  "endpoint": "http://127.0.0.1:11080",
-  "webui_url": "http://127.0.0.1:11080/setup",
-  "openai_endpoint": "http://127.0.0.1:11080/v1",
-  "chat_endpoint": "http://127.0.0.1:11080/v1",
-  "responses_endpoint": "http://127.0.0.1:11080/v1/responses",
-  "anthropic_endpoint": "http://127.0.0.1:11080/anthropic",
+  "port": 11088,
+  "endpoint": "http://127.0.0.1:11088",
+  "webui_url": "http://127.0.0.1:11088/setup",
+  "openai_endpoint": "http://127.0.0.1:11088/v1",
+  "chat_endpoint": "http://127.0.0.1:11088/v1",
+  "responses_endpoint": "http://127.0.0.1:11088/v1/responses",
+  "anthropic_endpoint": "http://127.0.0.1:11088/anthropic",
   "timestamp": "..."
 }
 ```
@@ -221,9 +221,9 @@ Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`（Win
 export MODELSCOPE_TOKEN=<token>
 uv run --with modelscope python scripts/publish_ota/publish.py \
   --platform macos \
-  --channel flowy --region-scope CN --version v0.17.2 \
+  --channel flowy --region-scope CN --version v0.17.3 \
   --enable-account-system true \
-  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.17.2_aarch64.dmg"
+  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.17.3_aarch64.dmg"
 ```
 
 Manifest：`{region}/{channel}/{with_account|without_account}/macos/latest.json`

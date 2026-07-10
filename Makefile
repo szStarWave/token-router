@@ -58,6 +58,7 @@ ELECTRON_WIN_RES     := $(ELECTRON_WIN_PKG)/resources/win32/x64
 ELECTRON_WIN_ZIP_PATH := $(ELECTRON_WIN_ZIP)
 endif
 ELECTRON_WIN_DLL     := token_router.dll
+
 ifeq ($(UNAME_S),Windows)
 VERSION              := $(shell for /f "tokens=2 delims=@" %%A in ('$(CARGO) pkgid 2^>nul') do @echo %%A)
 else
@@ -77,7 +78,7 @@ help:
 	@echo "  build            Build debug CLI + library"
 	@echo "  release          Build release CLI (native)"
 	@echo "  release-dylib    Build release dynamic library for Electron"
-	@echo "  package-electron-win  Build + pack Windows x64 Electron bundle (DLL, header, docs, examples)"
+	@echo "  package-electron-win  Build + pack Windows x64 Electron integration bundle"
 	@echo "  release-arm      Alias for release-arm64-musl (most portable)"
 	@echo "  release-arm64    Build release for ARM64 Linux (glibc)"
 	@echo "  release-arm64-musl  Build release for ARM64 Linux (musl, fully static)"
@@ -123,10 +124,9 @@ else
 endif
 	@echo "Built $(DYLIB)"
 	@echo "C header: ffi/token_router.h"
-	@echo "Electron example: example/electron/"
-	@echo "Windows Electron bundle: make package-electron-win"
+	@echo "Electron integration: make package-electron-win"
 
-# Windows x64 Electron integration: DLL + C header + docs + npm/electron-builder snippets + smoke test.
+# Windows x64 Electron integration: DLL + C header + docs + npm/electron-builder snippets + examples.
 package-electron-win: release-dylib
 ifeq ($(UNAME_S),Windows)
 	@if not exist "packaging\electron-win32\README.md" (echo ERROR: missing packaging/electron-win32 templates && exit /b 1)
@@ -135,17 +135,27 @@ ifeq ($(UNAME_S),Windows)
 	@if not exist "$(TARGET)\dist" mkdir "$(TARGET)\dist"
 	@if not exist "$(ELECTRON_WIN_RES)" mkdir "$(ELECTRON_WIN_RES)"
 	@if not exist "$(ELECTRON_WIN_PKG_DIR)\ffi" mkdir "$(ELECTRON_WIN_PKG_DIR)\ffi"
+	@if not exist "$(ELECTRON_WIN_PKG_DIR)\bin" mkdir "$(ELECTRON_WIN_PKG_DIR)\bin"
 	@if not exist "$(ELECTRON_WIN_PKG_DIR)\config" mkdir "$(ELECTRON_WIN_PKG_DIR)\config"
 	@if not exist "$(ELECTRON_WIN_PKG_DIR)\docs" mkdir "$(ELECTRON_WIN_PKG_DIR)\docs"
+	@if not exist "$(ELECTRON_WIN_PKG_DIR)\example\electron" mkdir "$(ELECTRON_WIN_PKG_DIR)\example\electron"
 	@if not exist "$(ELECTRON_WIN_PKG_DIR)\example\smoke" mkdir "$(ELECTRON_WIN_PKG_DIR)\example\smoke"
 	@copy /Y "$(DYLIB)" "$(ELECTRON_WIN_RES)\$(ELECTRON_WIN_DLL)" >nul
+	@if exist "$(RELEASE_BIN)" copy /Y "$(RELEASE_BIN)" "$(ELECTRON_WIN_PKG_DIR)\bin\$(BIN).exe" >nul
 	@copy /Y "ffi\token_router.h" "$(ELECTRON_WIN_PKG_DIR)\ffi\" >nul
+	@copy /Y "packaging\electron-win32\incept.md" "$(ELECTRON_WIN_PKG_DIR)\incept.md" >nul
+	@copy /Y "packaging\electron-win32\incept.html" "$(ELECTRON_WIN_PKG_DIR)\incept.html" >nul
+	@copy /Y "packaging\electron-win32\incept.md" "$(ELECTRON_WIN_PKG_DIR)\docs\incept.md" >nul
+	@copy /Y "packaging\electron-win32\incept.html" "$(ELECTRON_WIN_PKG_DIR)\docs\incept.html" >nul
 	@copy /Y "example\config.toml" "$(ELECTRON_WIN_PKG_DIR)\config\config.toml" >nul
-	@copy /Y "incept.md" "$(ELECTRON_WIN_PKG_DIR)\docs\incept.md" >nul
-	@copy /Y "incept.html" "$(ELECTRON_WIN_PKG_DIR)\docs\incept.html" >nul
+	@copy /Y "example\config.edge-only.toml" "$(ELECTRON_WIN_PKG_DIR)\config\config.edge-only.toml" >nul
+	@copy /Y "example\config.minimal.toml" "$(ELECTRON_WIN_PKG_DIR)\config\config.minimal.toml" >nul
+	@copy /Y "example\README.md" "$(ELECTRON_WIN_PKG_DIR)\example\README.md" >nul
 	@copy /Y "packaging\electron-win32\README.md" "$(ELECTRON_WIN_PKG_DIR)\README.md" >nul
 	@copy /Y "packaging\electron-win32\electron-builder.example.yml" "$(ELECTRON_WIN_PKG_DIR)\" >nul
 	@copy /Y "packaging\electron-win32\package.ffi-rs.json" "$(ELECTRON_WIN_PKG_DIR)\example\package.ffi-rs.json" >nul
+	@copy /Y "packaging\electron-win32\electron-main.mjs" "$(ELECTRON_WIN_PKG_DIR)\example\electron\main.mjs" >nul
+	@copy /Y "example\electron\package.json" "$(ELECTRON_WIN_PKG_DIR)\example\electron\package.json" >nul
 	@copy /Y "packaging\electron-win32\smoke-main.mjs" "$(ELECTRON_WIN_PKG_DIR)\example\smoke\main.mjs" >nul
 	@copy /Y "packaging\electron-win32\smoke-package.json" "$(ELECTRON_WIN_PKG_DIR)\example\smoke\package.json" >nul
 	@powershell -NoProfile -Command "Set-Content -Path '$(ELECTRON_WIN_PKG_DIR)\VERSION' -Value '$(VERSION)' -NoNewline"
@@ -153,19 +163,26 @@ ifeq ($(UNAME_S),Windows)
 	@echo "Packaged $(ELECTRON_WIN_PKG_DIR)"
 	@echo "Archive  $(ELECTRON_WIN_ZIP_PATH)"
 else
+	@test -f "packaging/electron-win32/README.md" || (echo "ERROR: missing packaging/electron-win32 templates" && exit 1)
 	@rm -rf "$(ELECTRON_WIN_PKG)" "$(ELECTRON_WIN_ZIP)"
 	@mkdir -p "$(TARGET)/dist"
 	@mkdir -p "$(ELECTRON_WIN_RES)"
-	@mkdir -p "$(ELECTRON_WIN_PKG)/ffi" "$(ELECTRON_WIN_PKG)/config" "$(ELECTRON_WIN_PKG)/docs"
-	@mkdir -p "$(ELECTRON_WIN_PKG)/example/smoke"
+	@mkdir -p "$(ELECTRON_WIN_PKG)/ffi" "$(ELECTRON_WIN_PKG)/bin" "$(ELECTRON_WIN_PKG)/config" "$(ELECTRON_WIN_PKG)/docs"
+	@mkdir -p "$(ELECTRON_WIN_PKG)/example/electron" "$(ELECTRON_WIN_PKG)/example/smoke"
 	@cp "$(DYLIB)" "$(ELECTRON_WIN_RES)/$(ELECTRON_WIN_DLL)"
+	@test -f "$(RELEASE_BIN)" && cp "$(RELEASE_BIN)" "$(ELECTRON_WIN_PKG)/bin/token-router.exe" || true
 	@cp ffi/token_router.h "$(ELECTRON_WIN_PKG)/ffi/"
+	@cp packaging/electron-win32/incept.md packaging/electron-win32/incept.html "$(ELECTRON_WIN_PKG)/"
+	@cp packaging/electron-win32/incept.md packaging/electron-win32/incept.html "$(ELECTRON_WIN_PKG)/docs/"
 	@cp example/config.toml "$(ELECTRON_WIN_PKG)/config/config.toml"
-	@cp incept.md "$(ELECTRON_WIN_PKG)/docs/incept.md"
-	@cp incept.html "$(ELECTRON_WIN_PKG)/docs/incept.html"
+	@cp example/config.edge-only.toml "$(ELECTRON_WIN_PKG)/config/config.edge-only.toml"
+	@cp example/config.minimal.toml "$(ELECTRON_WIN_PKG)/config/config.minimal.toml"
+	@cp example/README.md "$(ELECTRON_WIN_PKG)/example/README.md"
 	@cp packaging/electron-win32/README.md "$(ELECTRON_WIN_PKG)/README.md"
 	@cp packaging/electron-win32/electron-builder.example.yml "$(ELECTRON_WIN_PKG)/"
 	@cp packaging/electron-win32/package.ffi-rs.json "$(ELECTRON_WIN_PKG)/example/package.ffi-rs.json"
+	@cp packaging/electron-win32/electron-main.mjs "$(ELECTRON_WIN_PKG)/example/electron/main.mjs"
+	@cp example/electron/package.json "$(ELECTRON_WIN_PKG)/example/electron/package.json"
 	@cp packaging/electron-win32/smoke-main.mjs "$(ELECTRON_WIN_PKG)/example/smoke/main.mjs"
 	@cp packaging/electron-win32/smoke-package.json "$(ELECTRON_WIN_PKG)/example/smoke/package.json"
 	@echo "$(VERSION)" > "$(ELECTRON_WIN_PKG)/VERSION"

@@ -531,10 +531,10 @@ mod tests {
 
     #[test]
     fn gateway_urls_from_host_builds_expected_paths() {
-        let (base, v1, anthropic) = gateway_urls_from_host("127.0.0.1", 11080);
-        assert_eq!(base, "http://127.0.0.1:11080");
-        assert_eq!(v1, "http://127.0.0.1:11080/v1");
-        assert_eq!(anthropic, "http://127.0.0.1:11080/anthropic");
+        let (base, v1, anthropic) = gateway_urls_from_host("127.0.0.1", 11088);
+        assert_eq!(base, "http://127.0.0.1:11088");
+        assert_eq!(v1, "http://127.0.0.1:11088/v1");
+        assert_eq!(anthropic, "http://127.0.0.1:11088/anthropic");
     }
 
     #[test]

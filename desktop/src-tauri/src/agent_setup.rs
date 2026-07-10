@@ -1356,10 +1356,10 @@ mod tests {
                 }
             }
         });
-        merge_openclaw_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        merge_openclaw_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
         let providers = &doc["models"]["providers"];
         assert!(providers.get("anthropic").is_some());
-        assert_eq!(providers["token-router"]["baseUrl"], "http://127.0.0.1:11080/v1");
+        assert_eq!(providers["token-router"]["baseUrl"], "http://127.0.0.1:11088/v1");
         assert_eq!(
             providers["token-router"]["models"][0]["contextWindow"],
             1_000_000
@@ -1379,7 +1379,7 @@ mod tests {
         let mut doc = json!({
             "tools": { "web_search": true }
         });
-        merge_hermes_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        merge_hermes_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
         assert_eq!(doc["tools"]["web_search"], true);
         assert_eq!(doc["model"]["provider"], "custom");
         assert_eq!(doc["model"]["default"], "auto");
@@ -1397,14 +1397,14 @@ mod tests {
         let mut doc = json!({ "permissions": { "allow": [] } });
         merge_claude_code_settings(
             &mut doc,
-            "http://127.0.0.1:11080/anthropic",
+            "http://127.0.0.1:11088/anthropic",
             "test-key",
             262_144,
         );
         assert_eq!(doc["permissions"]["allow"], json!([]));
         assert_eq!(
             doc["env"]["ANTHROPIC_BASE_URL"],
-            "http://127.0.0.1:11080/anthropic"
+            "http://127.0.0.1:11088/anthropic"
         );
         assert_eq!(doc["env"]["ANTHROPIC_AUTH_TOKEN"], "test-key");
         assert_eq!(doc["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "262144");
@@ -1416,11 +1416,11 @@ mod tests {
         let mut doc = json!({
             "theme": "dark"
         });
-        merge_opencode_config(&mut doc, "http://127.0.0.1:11080/v1", "auto", "test-key");
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
         assert_eq!(doc["theme"], "dark");
         assert_eq!(
             doc["provider"]["token-router"]["options"]["baseURL"],
-            "http://127.0.0.1:11080/v1"
+            "http://127.0.0.1:11088/v1"
         );
         assert_eq!(doc["model"], "token-router/auto");
         let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
@@ -1436,7 +1436,7 @@ mod tests {
         let mut doc = toml::Value::Table(toml::map::Map::new());
         merge_codex_config(
             &mut doc,
-            "http://127.0.0.1:11080/v1",
+            "http://127.0.0.1:11088/v1",
             "token-router",
             "test-key",
             1_000_000,
@@ -1484,7 +1484,7 @@ mod tests {
         });
         merge_models_json_config(
             &mut doc,
-            "http://127.0.0.1:11080/v1/chat/completions",
+            "http://127.0.0.1:11088/v1/chat/completions",
             "auto",
             "test-key",
             262_144,
@@ -1495,7 +1495,7 @@ mod tests {
         assert_eq!(doc["models"][1]["vendor"], MODELS_JSON_VENDOR);
         assert_eq!(
             doc["models"][1]["url"],
-            "http://127.0.0.1:11080/v1/chat/completions"
+            "http://127.0.0.1:11088/v1/chat/completions"
         );
         assert_eq!(doc["availableModels"][0], "auto");
         assert_eq!(doc["availableModels"][1], "deepseek-chat");
@@ -1510,7 +1510,7 @@ mod tests {
         });
         merge_models_json_config(
             &mut doc,
-            "http://127.0.0.1:11080/v1/chat/completions",
+            "http://127.0.0.1:11088/v1/chat/completions",
             "auto",
             "new-key",
             131_072,
@@ -1529,12 +1529,12 @@ mod tests {
     #[test]
     fn models_json_chat_completions_url_appends_path() {
         assert_eq!(
-            models_json_chat_completions_url("http://127.0.0.1:11080/v1"),
-            "http://127.0.0.1:11080/v1/chat/completions"
+            models_json_chat_completions_url("http://127.0.0.1:11088/v1"),
+            "http://127.0.0.1:11088/v1/chat/completions"
         );
         assert_eq!(
-            models_json_chat_completions_url("http://127.0.0.1:11080/v1/"),
-            "http://127.0.0.1:11080/v1/chat/completions"
+            models_json_chat_completions_url("http://127.0.0.1:11088/v1/"),
+            "http://127.0.0.1:11088/v1/chat/completions"
         );
     }
 

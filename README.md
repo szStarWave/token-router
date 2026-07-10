@@ -676,7 +676,7 @@ make release-dylib
 # Linux:   target/release/libtoken_router.so
 ```
 
-C 头文件：`ffi/token_router.h`。Node/Electron 可通过 [koffi](https://github.com/Koromix/koffi) 等加载 DLL 并调用：
+C 头文件：`ffi/token_router.h`。完整 Electron 接入指南见 [`packaging/electron-win32/incept.md`](packaging/electron-win32/incept.md)。一键打包：`make package-electron-win`（输出 `target/dist/token-router-electron-win32-x64/`）。Node/Electron 可通过 [koffi](https://github.com/Koromix/koffi) 等加载 DLL 并调用：
 
 | 函数 | 说明 |
 |------|------|

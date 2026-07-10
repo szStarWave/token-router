@@ -583,20 +583,20 @@ mod tests {
         let state = PipeState {
             gateway_running: true,
             host: "127.0.0.1".to_string(),
-            port: 11080,
-            gateway_base: "http://127.0.0.1:11080".to_string(),
+            port: 11088,
+            gateway_base: "http://127.0.0.1:11088".to_string(),
         };
         let json = build_status_response(&state);
-        assert!(json.contains(r#""endpoint": "http://127.0.0.1:11080""#));
-        assert!(json.contains(r#""openai_endpoint": "http://127.0.0.1:11080/v1""#));
-        assert!(json.contains(r#""chat_endpoint": "http://127.0.0.1:11080/v1""#));
+        assert!(json.contains(r#""endpoint": "http://127.0.0.1:11088""#));
+        assert!(json.contains(r#""openai_endpoint": "http://127.0.0.1:11088/v1""#));
+        assert!(json.contains(r#""chat_endpoint": "http://127.0.0.1:11088/v1""#));
         assert!(json.contains(
-            r#""responses_endpoint": "http://127.0.0.1:11080/v1/responses""#
+            r#""responses_endpoint": "http://127.0.0.1:11088/v1/responses""#
         ));
         assert!(json.contains(
-            r#""anthropic_endpoint": "http://127.0.0.1:11080/anthropic""#
+            r#""anthropic_endpoint": "http://127.0.0.1:11088/anthropic""#
         ));
-        assert!(json.contains(r#""webui_url": "http://127.0.0.1:11080/setup""#));
+        assert!(json.contains(r#""webui_url": "http://127.0.0.1:11088/setup""#));
         assert!(json.contains(r#""token""#));
         assert!(json.contains(r#""running": true"#));
     }
@@ -615,17 +615,17 @@ mod tests {
 
     #[test]
     fn parse_http_base_extracts_host_and_port() {
-        let (host, port) = parse_http_base("http://127.0.0.1:11080").unwrap();
+        let (host, port) = parse_http_base("http://127.0.0.1:11088").unwrap();
         assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 11080);
+        assert_eq!(port, 11088);
     }
 
     #[test]
     fn build_endpoint_urls_from_wildcard_mapped_base() {
-        let urls = build_endpoint_urls("http://127.0.0.1:11080");
-        assert_eq!(urls.chat_endpoint, "http://127.0.0.1:11080/v1");
+        let urls = build_endpoint_urls("http://127.0.0.1:11088");
+        assert_eq!(urls.chat_endpoint, "http://127.0.0.1:11088/v1");
         assert_eq!(urls.openai_endpoint, urls.chat_endpoint);
-        assert_eq!(urls.responses_endpoint, "http://127.0.0.1:11080/v1/responses");
-        assert_eq!(urls.anthropic_endpoint, "http://127.0.0.1:11080/anthropic");
+        assert_eq!(urls.responses_endpoint, "http://127.0.0.1:11088/v1/responses");
+        assert_eq!(urls.anthropic_endpoint, "http://127.0.0.1:11088/anthropic");
     }
 }

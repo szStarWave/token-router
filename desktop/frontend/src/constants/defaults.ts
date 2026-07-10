@@ -1,5 +1,5 @@
-export const DEFAULT_GATEWAY_PORT = 11_080
-export const DEFAULT_GATEWAY_BASE = 'http://127.0.0.1:11080'
+export const DEFAULT_GATEWAY_PORT = 11_088
+export const DEFAULT_GATEWAY_BASE = 'http://127.0.0.1:11088'
 export const DEFAULT_CLOUD_TOKEN_BUDGET = 1_000_000
 export const CLOUD_BUDGET_MIN = 10_000
 export const CLOUD_BUDGET_MAX = 1_000_000_000_000
