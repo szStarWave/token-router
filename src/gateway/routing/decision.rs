@@ -324,7 +324,9 @@ pub fn decide(
             signals.consecutive_tool_error_streak
         ));
     }
-    if signals.tool_invocations_since_last_user >= 5 {
+    if signals.tool_invocations_since_last_user >= 15
+        && super::difficulty::tool_loop_bias_value(&signals, config.ctx_edge_max_tokens) > 0.0
+    {
         reason_codes.push(format!(
             "TOOL_LOOP_{}",
             signals.tool_invocations_since_last_user
@@ -445,6 +447,16 @@ pub fn decide(
         config,
         req,
         multimodal,
+        &mut reason_codes,
+    );
+
+    let (route, work_strategy, multimodal_strategy) = apply_edge_busy_fallback(
+        route,
+        work_strategy,
+        multimodal_strategy,
+        step_kind,
+        config,
+        edge_load,
         &mut reason_codes,
     );
 

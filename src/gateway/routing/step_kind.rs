@@ -27,8 +27,8 @@ impl StepKind {
             StepKind::HeartbeatAck => -0.60,
             StepKind::DirectChat => -0.55,
             StepKind::ToolResultDigest => -0.45,
-            StepKind::ToolArgFill => -0.25,
-            StepKind::ToolSelect => -0.10,
+            StepKind::ToolArgFill => -0.35,
+            StepKind::ToolSelect => -0.20,
             StepKind::FinalReply => 0.05,
             StepKind::InitialPlan => 0.55,
             StepKind::MemoryCompact => 0.20,
@@ -88,15 +88,10 @@ pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals)
         return StepKind::CronBackground;
     }
 
-    // Planning turn (explicit 规划/计划/plan or first non-casual agent/cognitive task).
+    // Planning turn — explicit plan intent or cognitive analysis/decision/research only.
     if !signals.pending_tool_calls
         && !signals.last_role_tool
-        && (signals.intent_plan
-            || cognitive_initial_plan(signals)
-            || (signals.tools_enabled
-                && signals.loop_steps == 0
-                && !signals.had_tool_roundtrip
-                && !is_casual_chat(signals)))
+        && (signals.intent_plan || cognitive_initial_plan(signals))
     {
         return StepKind::InitialPlan;
     }

@@ -15,7 +15,7 @@ listen = "127.0.0.1:11080"
 route = "edge"
 routing_mode = "single"       # route=edge 时此项无实际影响
 default_profile = "privacy"
-ctx_edge_max_tokens = 65536
+ctx_edge_max_tokens = 200000
 
 # experience_enabled = true   # 可选：仍收集步态统计
 

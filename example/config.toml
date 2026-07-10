@@ -28,10 +28,10 @@ route = "auto"
 routing_mode = "cascade"
 
 # 难度阈值策略: economy | balanced | premium | privacy
-default_profile = "balanced"
+default_profile = "economy"
 
 # 端侧上下文 token 上限；超过约 80% 触发 GATE_CTX_OVERFLOW → 走云
-ctx_edge_max_tokens = 65536
+ctx_edge_max_tokens = 200000
 
 # 可选：入站鉴权（Authorization: Bearer 或 x-api-key）
 # api_key = "token-local"

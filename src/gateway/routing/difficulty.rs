@@ -108,7 +108,7 @@ impl DifficultyScore {
 
         breakdown.push("CTX_RATIO", 0.20 * ctx_ratio.min(1.0));
         breakdown.push("USER_CTX_RATIO", 0.25 * user_ctx_ratio.min(1.0));
-        breakdown.push("TOOL_RATIO", 0.10 * tool_ratio.min(1.0));
+        breakdown.push("TOOL_RATIO", 0.05 * tool_ratio.min(1.0));
         if signals.intent_hard {
             breakdown.push("INTENT_HARD", 0.30);
         }
@@ -147,7 +147,7 @@ impl DifficultyScore {
             );
         }
 
-        let tool_loop = tool_loop_bias(signals.tool_invocations_since_last_user);
+        let tool_loop = tool_loop_bias(signals, ctx_edge_max, signals.tool_invocations_since_last_user);
         if tool_loop > 0.0 {
             breakdown.push(
                 format!("TOOL_LOOP_{}", signals.tool_invocations_since_last_user),
@@ -250,13 +250,30 @@ fn tool_error_streak_bias(streak: u32) -> f32 {
     }
 }
 
-fn tool_loop_bias(invocations: u32) -> f32 {
-    match invocations {
-        0..=4 => 0.0,
-        5..=6 => 0.10,
-        7 => 0.18,
-        _ => 0.25,
+fn tool_loop_bias(signals: &RequestSignals, ctx_edge_max: u32, invocations: u32) -> f32 {
+    let budget_half = (ctx_edge_max as f32) * 0.5;
+    if (signals.tok_total_in as f32) <= budget_half {
+        return 0.0;
     }
+    tool_loop_depth_bias(invocations)
+}
+
+fn tool_loop_depth_bias(invocations: u32) -> f32 {
+    match invocations {
+        0..=14 => 0.0,
+        15..=17 => 0.08,
+        18..=22 => 0.12,
+        _ => 0.15,
+    }
+}
+
+/// Context-aware tool-loop linear bias for observability and reason codes.
+pub fn tool_loop_bias_value(signals: &RequestSignals, ctx_edge_max: u32) -> f32 {
+    tool_loop_bias(
+        signals,
+        ctx_edge_max,
+        signals.tool_invocations_since_last_user,
+    )
 }
 
 pub fn lexical_rarity_bias(rare: bool, special: bool) -> f32 {
@@ -270,7 +287,7 @@ pub fn lexical_rarity_bias(rare: bool, special: bool) -> f32 {
 
 pub fn risky_tool_soft_bias(signals: &RequestSignals, _step_kind: StepKind) -> f32 {
     if signals.risky_tool_soft {
-        0.22
+        0.10
     } else {
         0.0
     }
@@ -387,27 +404,54 @@ mod tests {
 
     #[test]
     fn tool_loop_bias_values() {
-        assert_eq!(tool_loop_bias(4), 0.0);
-        assert_eq!(tool_loop_bias(5), 0.10);
-        assert_eq!(tool_loop_bias(6), 0.10);
-        assert_eq!(tool_loop_bias(7), 0.18);
-        assert_eq!(tool_loop_bias(8), 0.25);
-        assert_eq!(tool_loop_bias(12), 0.25);
+        let under_budget = base_signals(0);
+        assert_eq!(tool_loop_bias(&under_budget, 200_000, 30), 0.0);
+        let mut over_budget = base_signals(0);
+        over_budget.tok_total_in = 120_000;
+        assert_eq!(tool_loop_bias(&over_budget, 200_000, 14), 0.0);
+        assert_eq!(tool_loop_bias(&over_budget, 200_000, 15), 0.08);
+        assert_eq!(tool_loop_bias(&over_budget, 200_000, 17), 0.08);
+        assert_eq!(tool_loop_bias(&over_budget, 200_000, 18), 0.12);
+        assert_eq!(tool_loop_bias(&over_budget, 200_000, 23), 0.15);
     }
 
     #[test]
-    fn tool_loop_increases_difficulty_from_fifth_invocation() {
-        let ctx_max = 65536;
+    fn tool_loop_depth_bias_tiers_increase_over_budget() {
+        let mut over = base_signals(0);
+        over.tok_total_in = 120_000;
+        let ctx_max = 200_000;
         let step = StepKind::ToolResultDigest;
-        let d4 = DifficultyScore::compute(&base_signals_with_tool_loop(4), step, ctx_max, 0.0);
-        let d5 = DifficultyScore::compute(&base_signals_with_tool_loop(5), step, ctx_max, 0.0);
-        let d6 = DifficultyScore::compute(&base_signals_with_tool_loop(6), step, ctx_max, 0.0);
-        let d7 = DifficultyScore::compute(&base_signals_with_tool_loop(7), step, ctx_max, 0.0);
-        let d8 = DifficultyScore::compute(&base_signals_with_tool_loop(8), step, ctx_max, 0.0);
-        assert!(d4.0 < d5.0);
-        assert_eq!(d5.0, d6.0);
-        assert!(d6.0 < d7.0);
-        assert!(d7.0 < d8.0);
+        let mut s17 = over.clone();
+        s17.tool_invocations_since_last_user = 17;
+        let mut s18 = over.clone();
+        s18.tool_invocations_since_last_user = 18;
+        let mut s22 = over.clone();
+        s22.tool_invocations_since_last_user = 22;
+        let mut s23 = over.clone();
+        s23.tool_invocations_since_last_user = 23;
+        let d17 = DifficultyScore::compute(&s17, step, ctx_max, 0.0);
+        let d18 = DifficultyScore::compute(&s18, step, ctx_max, 0.0);
+        let d22 = DifficultyScore::compute(&s22, step, ctx_max, 0.0);
+        let d23 = DifficultyScore::compute(&s23, step, ctx_max, 0.0);
+        assert!(d18.0 > d17.0);
+        assert!(d23.0 > d22.0);
+    }
+
+    #[test]
+    fn tool_loop_increases_difficulty_only_past_budget_and_depth() {
+        let ctx_max = 200_000;
+        let step = StepKind::ToolResultDigest;
+        let mut under = base_signals_with_tool_loop(20);
+        under.tok_total_in = 80_000;
+        let d_under = DifficultyScore::compute(&under, step, ctx_max, 0.0);
+        let mut shallow = base_signals_with_tool_loop(10);
+        shallow.tok_total_in = 120_000;
+        let d_shallow = DifficultyScore::compute(&shallow, step, ctx_max, 0.0);
+        assert_eq!(d_under.0, d_shallow.0);
+        let mut deep = base_signals_with_tool_loop(16);
+        deep.tok_total_in = 120_000;
+        let d_deep = DifficultyScore::compute(&deep, step, ctx_max, 0.0);
+        assert!(d_deep.0 > d_shallow.0);
     }
 
     #[test]
@@ -437,8 +481,8 @@ mod tests {
     fn risky_tool_soft_bias_values() {
         let mut soft = base_signals(0);
         soft.risky_tool_soft = true;
-        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolArgFill), 0.22);
-        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolResultDigest), 0.22);
+        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolArgFill), 0.10);
+        assert_eq!(risky_tool_soft_bias(&soft, StepKind::ToolResultDigest), 0.10);
     }
 
     #[test]

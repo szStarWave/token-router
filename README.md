@@ -228,10 +228,10 @@ src/
 |------|---------|---------|---------|
 | `HeartbeatAck` | `is_heartbeat_poll` 匹配 | -0.60 | casual |
 | `DirectChat` | `is_casual_chat()` 通过（关键实现见下文） | -0.55 | casual |
-| `ToolSelect` | `pending_tool_calls == false && intent_hard == false` 且 `tools` 存在 | -0.10 | Work |
-| `ToolArgFill` | `pending_tool_calls == true && tool_arg_ready == true` | -0.25 | Work |
+| `ToolSelect` | `pending_tool_calls == false && intent_hard == false` 且 `tools` 存在 | -0.20 | Work |
+| `ToolArgFill` | `pending_tool_calls == true && tool_arg_ready == true` | -0.35 | Work |
 | `ToolResultDigest` | `last_role_tool == true` | -0.45 | Work |
-| `InitialPlan` | 非 casual 首轮 agent / 认知 intent / `intent_plan` | +0.35 | 难度软路由（**不**强制 Cloud） |
+| `InitialPlan` | 明确 `intent_plan` 或认知 analysis/decision/research | +0.55 | 难度软路由（**不**强制 Cloud） |
 | `FinalReply` | `had_tool_roundtrip == true && n_tool_calls == 0` | +0.05 | Work |
 | `RecoveryAfterFailure` | `assistant_failed_recent == true` 或 `consecutive_tool_error_streak >= 3` | +0.55 | **云端 / cascade** |
 | `SubagentSpawn` | `subagent_spawn_hint == true` | +0.50 | **云端** |
@@ -258,7 +258,7 @@ src/
 | `GATE_CTX_OVERFLOW` | `tok_total_in > 80% × ctx_edge_max_tokens`；**casual 仅按 `tok_rest`（transcript）计算** | **cloud** |
 | `GATE_ASSISTANT_FAILURE` | 最近 assistant 含失败标记（`RecoveryAfterFailure`） | **cloud** |
 | `GATE_TOOL_ERROR_STREAK` | 自最后 user 起连续 3+ 条 `role=tool` 含错误关键词 → 当次升云并 `force_cloud_sticky` | **cloud** + 粘性 |
-| `GATE_RISKY_TOOL` | 删除/移动文件（`Delete` 工具或 `exec` 中 `rm`/`mv`/`git mv` 等）且步态为 `ToolSelect`/`ToolArgFill`、尚无 tool result；reason 附带 `GATE_RISKY_TOOL:exec,delete` | **cloud** |
+| `GATE_RISKY_TOOL` | 删除/移动文件（`Delete` 工具或 `exec` 中 `rm`/`mv`/`git mv` 等）且步态为 `ToolSelect`/`ToolArgFill`、尚无 tool result；reason 附带 `GATE_RISKY_TOOL:exec,delete` | **难度偏置 +0.30**（非强制云） |
 | `GATE_OPENCLAW_COMPACT` | `MemoryCompact` 且 `tok_total_in > 80% × ctx_edge_max_tokens` | **cloud** |
 | `GATE_EDGE_BUSY` | 端侧已有推理进行中 + 云端可用 + **非 casual** 步态 | **cloud**（临时） |
 | `MULTIMODAL_COMPLEX_CLOUD` | 非 `DirectChat` 的多模态（含图片 + 内容或 tools） | **cloud** |
@@ -287,7 +287,8 @@ d = 1.0 / (1.0 + e^(-raw))
 - `assistant_failed_recent_bonus`：assistant turn 失败时 +0.15
 - `tool_error_streak_bias`：自上次 user 以来**尾部连续** tool 失败渐进加成 — 1 → +0.10，2 → +0.18，3 → +0.30，4+ → +0.40（封顶）；连续 3 次才进入 Recovery / 硬门控升云
 - `cognitive_task_bias`：计划/分析/决策/研究四类认知 intent（**仅最新 user 消息、且首轮路由** `tool_invocations_since_last_user == 0 && !pending_tool_calls`）— plan +0.15，analysis +0.18，decision +0.15，research +0.15（可叠加）；**不**强制 Cloud，经 `map_policy` 软路由
-- `tool_loop_bias`：自上次 user 以来 tool result 条数渐进加成 — 0–4 → 0，5–6 → +0.10，7 → +0.18，8+ → +0.25（封顶）
+- `tool_loop_bias`：仅当 `tok_total_in > 50% × ctx_edge_max_tokens` 时按深度加成 — 0–14 → 0，15–17 → +0.08，18–22 → +0.12，23+ → +0.15（封顶）
+- `risky_tool_soft_bias`：`browser` / `sessions_spawn` 等软风险工具 +0.10
 - `risky_tool_soft_bias`：Soft 工具（`browser`/`message`/`sessions_spawn`）→ +0.22；reason code：`RISKY_TOOL_SOFT:browser,...`
 - `lexical_rarity_bias`：词汇稀有度渐进加成（非硬门控）— 仅 rare → +0.08，仅 special → +0.12，两者皆有 → +0.18（封顶）；reason code：`LEXICAL_RARE` / `LEXICAL_SPECIAL` / `LEXICAL_BOTH`；分类器特征 bucket：`lexical:none|rare|special|both`
 
@@ -1051,8 +1052,8 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 | `listen` | `127.0.0.1:11080` | 监听地址；Agent `baseUrl` = `http://{listen}/v1` |
 | `route` | `auto` | `auto` / `edge` / `cloud` / `cascade` |
 | `routing_mode` | `cascade` | 仅 `route=auto`：`single` / `cascade` / `split` |
-| `default_profile` | `balanced` | `economy` / `balanced` / `premium` / `privacy` |
-| `ctx_edge_max_tokens` | `65536` | 端侧上下文上限；超过约 80% 触发 `GATE_CTX_OVERFLOW`；**可热更新** |
+| `default_profile` | `economy` | `economy` / `balanced` / `premium` / `privacy` |
+| `ctx_edge_max_tokens` | `200000` | 端侧上下文上限；超过约 80% 触发 `GATE_CTX_OVERFLOW`；**可热更新** |
 | `cloud_sticky_ttl_secs` | `600` | 见 §7.3；**可热更新** |
 | `route` / `routing_mode` / `default_profile` | 见上 | **可热更新** |
 | `experience_*` / `work_verify_sample_rate` / `adaptive_*` | 见示例 | **可热更新**（`POST /v1/admin/setup` 的 `gateway` 对象） |
@@ -1149,7 +1150,7 @@ model = "claude-sonnet"
 # 智能路由 + 级联（OpenClaw 推荐）
 route = "auto"
 routing_mode = "cascade"
-default_profile = "balanced"
+default_profile = "economy"
 
 # 全部本地
 route = "edge"
@@ -1253,9 +1254,9 @@ ASSISTANT_FAILED  = /\[assistant turn failed/
 
 | 层级 | 示例工具 | 策略 |
 |------|----------|------|
-| Tier-1 | `exec`、`write`、`browser`、`sessions_spawn` | 强制云 |
-| Tier-2 | `read`、`process`、`web_fetch` | Cascade |
-| Tier-3 | `memory_get`、`session_status` | 端侧优先 |
+| Hard | `Delete`/`delete`；`exec` 中 `rm`/`mv`/`git mv` 等 | `GATE_RISKY_TOOL` 难度偏置 +0.30（非强制云） |
+| Soft | `browser`、`sessions_spawn` | `RISKY_TOOL_SOFT` 难度偏置 +0.10 |
+| None | `read`、`write`、`edit`、常规 `exec`（如 `git status`） | 无工具名惩罚 |
 
 ### 指定其它配置文件
 

@@ -8,7 +8,8 @@ import type { GatewayConfigView } from '../types/gateway'
 const DEFAULTS: Partial<GatewayConfigView> = {
   route: 'auto',
   routing_mode: 'cascade',
-  default_profile: 'balanced',
+  default_profile: 'economy',
+  ctx_edge_max_tokens: 200000,
   experience_enabled: false,
   adaptive_routing_enabled: false,
   classifier_enabled: false,
@@ -88,7 +89,7 @@ export function RoutingPage() {
             </div>
             <div>
               <label>{t('field.ctxEdgeMaxTokens')}</label>
-              <input id="ctx_edge_max" type="number" min={4096} max={2000000} step={1024} placeholder="100000" value={form.ctx_edge_max_tokens ?? ''} onChange={(e) => set('ctx_edge_max_tokens', e.target.value ? Number(e.target.value) : undefined)} />
+              <input id="ctx_edge_max" type="number" min={4096} max={2000000} step={1024} placeholder="200000" value={form.ctx_edge_max_tokens ?? ''} onChange={(e) => set('ctx_edge_max_tokens', e.target.value ? Number(e.target.value) : undefined)} />
             </div>
           </div>
         </div>

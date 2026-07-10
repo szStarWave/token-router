@@ -86,7 +86,6 @@ fn soft_canonical_name(name: &str) -> Option<&'static str> {
     match name {
         "browser" => Some("browser"),
         "sessions_spawn" => Some("sessions_spawn"),
-        "message" => Some("message"),
         _ => None,
     }
 }

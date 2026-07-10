@@ -250,7 +250,7 @@ export interface LogLine {
 
 export function emptySetup(): UpstreamSetupView {
   return {
-    gateway: { route: 'auto', routing_mode: 'cascade', default_profile: 'balanced' },
+    gateway: { route: 'auto', routing_mode: 'cascade', default_profile: 'economy', ctx_edge_max_tokens: 200000 },
     cloud: { configured: false, base_url: '' },
     edge: { configured: false, base_url: '' },
   }

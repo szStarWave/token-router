@@ -180,7 +180,7 @@ fn default_profile() -> String {
 }
 
 fn default_ctx_edge_max() -> u32 {
-    100_000
+    200_000
 }
 
 fn default_experience_enabled() -> bool {
@@ -379,7 +379,7 @@ listen = "{listen}"
 route = "auto"                 # auto | edge | cloud | cascade
 routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
-ctx_edge_max_tokens = 100000
+ctx_edge_max_tokens = 200000
 # api_key = "token-local"        # optional: inbound auth when set
 # admin_token = "change-me"      # optional: protects POST /v1/admin/shutdown|restart
 # experience_enabled = true

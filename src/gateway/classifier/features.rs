@@ -141,9 +141,9 @@ fn tool_error_streak_bucket(streak: u32) -> &'static str {
 
 fn tool_loop_bucket(n: u32) -> &'static str {
     match n {
-        0..=4 => "none",
-        5..=6 => "short",
-        7 => "mid",
+        0..=14 => "none",
+        15..=17 => "short",
+        18..=22 => "mid",
         _ => "long",
     }
 }
@@ -234,13 +234,16 @@ mod tests {
     #[test]
     fn feature_vector_includes_tool_loop_bucket() {
         let (mut signals, max) = signals_with_delta(0, 65536);
-        signals.tool_invocations_since_last_user = 5;
+        signals.tool_invocations_since_last_user = 10;
+        let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
+        assert!(fv.keys.iter().any(|k| k == "tool_loop:none"));
+        signals.tool_invocations_since_last_user = 16;
         let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
         assert!(fv.keys.iter().any(|k| k == "tool_loop:short"));
-        signals.tool_invocations_since_last_user = 7;
+        signals.tool_invocations_since_last_user = 20;
         let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
         assert!(fv.keys.iter().any(|k| k == "tool_loop:mid"));
-        signals.tool_invocations_since_last_user = 8;
+        signals.tool_invocations_since_last_user = 25;
         let fv = FeatureVector::from_signals(&signals, StepKind::ToolResultDigest, max);
         assert!(fv.keys.iter().any(|k| k == "tool_loop:long"));
     }

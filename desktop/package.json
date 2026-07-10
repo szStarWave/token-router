@@ -1,7 +1,7 @@
 {
   "name": "token-router-desktop",
   "private": true,
-  "version": "0.17.3",
+  "version": "0.17.4",
   "type": "module",
   "scripts": {
     "icons:generate": "node scripts/generate-icons.mjs",

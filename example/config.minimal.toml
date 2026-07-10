@@ -11,7 +11,7 @@ listen = "127.0.0.1:11080"
 route = "auto"
 routing_mode = "cascade"
 default_profile = "balanced"
-ctx_edge_max_tokens = 65536
+ctx_edge_max_tokens = 200000
 
 # 以下为常用可选项（默认与 config.toml 注释块相同）:
 # experience_enabled = true

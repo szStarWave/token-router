@@ -14,7 +14,7 @@ listen = "127.0.0.1:11080"
 route = "auto"
 routing_mode = "cascade"
 default_profile = "economy"
-ctx_edge_max_tokens = 65536
+ctx_edge_max_tokens = 200000
 
 experience_enabled = true
 experience_target_fallback = 0.15

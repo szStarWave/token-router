@@ -815,7 +815,7 @@ mod tests {
                 },
                 Message {
                     role: Role::User,
-                    content: Some("Refactor the auth module step by step.".into()),
+                    content: Some("Fix the failing tests in the auth module.".into()),
                     content_parts: None,
                     tool_calls: None,
                     tool_call_id: None,
@@ -890,12 +890,34 @@ mod tests {
     }
 
     #[test]
-    fn initial_plan_raises_difficulty_without_forcing_cloud() {
+    fn first_agent_turn_with_tools_is_tool_select_not_initial_plan() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
             &initial_plan_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolSelect, "{:?}", decision);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "INITIAL_PLAN" || c == "PLAN_INTENT"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn initial_plan_raises_difficulty_without_forcing_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &plan_intent_request(),
             &sessions,
             None,
             Some(test_multimodal_store().as_ref()),
@@ -929,7 +951,7 @@ mod tests {
                     tool_call_id: None,
             reasoning_content: None,
                 }],
-                tools: initial_plan_request().tools.clone(),
+                tools: plan_intent_request().tools.clone(),
                 stream: false,
                 tool_choice: None,
                 max_tokens: None,
@@ -1142,6 +1164,15 @@ mod tests {
     }
 
     fn tool_loop_request(tool_count: u32) -> ChatCompletionRequest {
+        tool_loop_request_with_tool_chars(tool_count, 0)
+    }
+
+    fn tool_loop_request_with_tool_chars(tool_count: u32, tool_content_chars: usize) -> ChatCompletionRequest {
+        let pad = if tool_content_chars > 0 {
+            "x".repeat(tool_content_chars)
+        } else {
+            String::new()
+        };
         let mut messages = vec![Message {
             role: Role::User,
             content: Some("fix the project".into()),
@@ -1166,9 +1197,14 @@ mod tests {
                 tool_call_id: None,
             reasoning_content: None,
             });
+            let body = if pad.is_empty() {
+                format!("output {i}")
+            } else {
+                format!("{pad}\noutput {i}")
+            };
             messages.push(Message {
                 role: Role::Tool,
-                content: Some(format!("output {i}")),
+                content: Some(body),
                 content_parts: None,
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{i}")),
@@ -1194,12 +1230,12 @@ mod tests {
     }
 
     #[test]
-    fn four_tool_loop_no_difficulty_bump() {
+    fn fourteen_tool_loop_no_difficulty_bump_under_budget() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
-            &tool_loop_request(4),
+            &tool_loop_request(14),
             &sessions,
             None,
             Some(test_multimodal_store().as_ref()),
@@ -1215,121 +1251,95 @@ mod tests {
     }
 
     #[test]
-    fn five_tool_loop_first_tier() {
-        let cfg = test_config(true, true);
+    fn thirty_tool_loop_no_overflow_at_200k_budget() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 200_000);
         let sessions = SessionStore::new_in_memory();
-        let baseline = decide_test(
-            &cfg,
-            &tool_loop_request(4),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
         let decision = decide_test(
             &cfg,
-            &tool_loop_request(5),
+            &tool_loop_request(30),
             &sessions,
             None,
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            decision.reason_codes.iter().any(|c| c == "TOOL_LOOP_5"),
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_CTX_OVERFLOW"),
             "{:?}",
             decision.reason_codes
         );
         assert!(
-            decision.difficulty > baseline.difficulty,
-            "5 tools should bump difficulty: {} vs {}",
-            decision.difficulty,
-            baseline.difficulty
-        );
-    }
-
-    #[test]
-    fn six_tool_loop_stays_first_tier() {
-        let cfg = test_config(true, true);
-        let sessions = SessionStore::new_in_memory();
-        let five = decide_test(
-            &cfg,
-            &tool_loop_request(5),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
-        let six = decide_test(
-            &cfg,
-            &tool_loop_request(6),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
-        assert!(
-            six.reason_codes.iter().any(|c| c == "TOOL_LOOP_6"),
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("TOOL_LOOP_")),
             "{:?}",
-            six.reason_codes
+            decision.reason_codes
         );
         assert!(
-            (five.difficulty - six.difficulty).abs() < 0.01,
-            "5 and 6 tool loops share first tier: {} vs {}",
-            five.difficulty,
-            six.difficulty
+            matches!(decision.route, RouteTier::Edge | RouteTier::Cascade),
+            "deep loop under 200K budget should prefer edge: {:?}",
+            decision
         );
     }
 
     #[test]
-    fn seven_tool_loop_second_tier() {
-        let cfg = test_config(true, true);
+    fn fifteen_tool_loop_emits_reason_when_over_half_budget() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 10_000);
         let sessions = SessionStore::new_in_memory();
-        let six = decide_test(
+        let decision = decide_test(
             &cfg,
-            &tool_loop_request(6),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
-        let seven = decide_test(
-            &cfg,
-            &tool_loop_request(7),
+            &tool_loop_request_with_tool_chars(15, 2500),
             &sessions,
             None,
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            seven.reason_codes.iter().any(|c| c == "TOOL_LOOP_7"),
+            decision.reason_codes.iter().any(|c| c == "TOOL_LOOP_15"),
             "{:?}",
-            seven.reason_codes
+            decision.reason_codes
         );
-        assert!(seven.difficulty > six.difficulty);
     }
 
     #[test]
-    fn eight_tool_loop_cap_tier() {
-        let cfg = test_config(true, true);
+    fn seventeen_tool_loop_emits_reason_when_over_half_budget() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 10_000);
         let sessions = SessionStore::new_in_memory();
-        let seven = decide_test(
+        let decision = decide_test(
             &cfg,
-            &tool_loop_request(7),
-            &sessions,
-            None,
-            Some(test_multimodal_store().as_ref()),
-        );
-        let eight = decide_test(
-            &cfg,
-            &tool_loop_request(8),
+            &tool_loop_request_with_tool_chars(17, 2500),
             &sessions,
             None,
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            eight.reason_codes.iter().any(|c| c == "TOOL_LOOP_8"),
+            decision.reason_codes.iter().any(|c| c == "TOOL_LOOP_17"),
             "{:?}",
-            eight.reason_codes
+            decision.reason_codes
         );
-        assert!(eight.difficulty > seven.difficulty);
     }
 
     #[test]
-    fn multi_tool_loop_routes_cascade_or_cloud() {
+    fn twenty_three_tool_loop_emits_cap_tier_reason_when_over_half_budget() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 10_000);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &tool_loop_request_with_tool_chars(23, 2500),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "TOOL_LOOP_23"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn eight_tool_loop_under_budget_may_route_edge() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -1340,8 +1350,16 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert!(
-            matches!(decision.route, RouteTier::Cascade | RouteTier::Cloud),
-            "deep tool loop should not route to edge: {:?}",
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("TOOL_LOOP_")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            matches!(decision.route, RouteTier::Edge | RouteTier::Cascade),
+            "shallow tool loop under budget may route edge: {:?}",
             decision
         );
     }
@@ -2369,7 +2387,7 @@ mod tests {
     fn cloud_cache_does_not_force_initial_plan_cascade() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
-        let req = initial_plan_request();
+        let req = plan_intent_request();
         let key = conversation_key(&req);
         seed_cloud_cache(&sessions, &key);
         let decision = decide_test(&cfg, &req, &sessions, None, None);
@@ -2948,7 +2966,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_delete_on_tool_arg_fill_routes_cloud() {
+    fn exec_delete_on_tool_arg_fill_not_forced_cloud() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -2959,7 +2977,11 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert_eq!(decision.step_kind, StepKind::ToolArgFill);
-        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(
+            matches!(decision.route, RouteTier::Edge | RouteTier::Cascade),
+            "delete exec should not be forced to cloud: {:?}",
+            decision
+        );
         assert!(
             decision.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"),
             "{:?}",
@@ -2970,6 +2992,42 @@ mod tests {
                 .reason_codes
                 .iter()
                 .any(|c| c == "GATE_RISKY_TOOL:exec"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn tool_arg_fill_ctx_overflow_routes_cloud() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 50_000);
+        let sessions = SessionStore::new_in_memory();
+        let mut req = pending_tool_request("read", r#"{"path":"a.txt"}"#);
+        let pad = "x".repeat(165_000);
+        req.messages.insert(
+            1,
+            Message {
+                role: Role::User,
+                content: Some(pad),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+        );
+        let decision = decide_test(
+            &cfg,
+            &req,
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "GATE_CTX_OVERFLOW"),
             "{:?}",
             decision.reason_codes
         );

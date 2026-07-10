@@ -64,8 +64,8 @@ pub fn collect_gate_biases(
         && !signals.last_role_tool
     {
         reason_codes.push("GATE_RISKY_TOOL".to_string());
-        linear_delta += 0.60;
-        parts.push(("GATE_RISKY_TOOL".to_string(), 0.60));
+        linear_delta += 0.30;
+        parts.push(("GATE_RISKY_TOOL".to_string(), 0.30));
     }
 
     GateBiasResult {
@@ -214,7 +214,7 @@ mod tests {
         signals.risky_tool_hard_names = vec!["exec".into()];
         let result = collect_gate_biases(&signals, StepKind::ToolArgFill, 65536, true);
         assert!(result.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"));
-        assert!(result.linear_delta >= 0.40);
+        assert!(result.linear_delta >= 0.30);
     }
 
     #[test]

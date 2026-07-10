@@ -54,7 +54,9 @@ pub fn apply_edge_busy_fallback(
         return (route, work, multimodal);
     }
 
-    reason_codes.push("GATE_EDGE_BUSY".to_string());
+    if !reason_codes.iter().any(|c| c == "GATE_EDGE_BUSY") {
+        reason_codes.push("GATE_EDGE_BUSY".to_string());
+    }
 
     let route = match route {
         RouteTier::Edge | RouteTier::Cascade => RouteTier::Cloud,
