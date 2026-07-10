@@ -285,6 +285,20 @@ export function resolveCloudModelLabel(setupCloud: SetupCloud | null | undefined
   return matched?.name || matched?.model || setupCloud?.model?.trim() || ''
 }
 
+export function resolveCloudModelSourceType(
+  setupCloud: SetupCloud | null | undefined,
+): 'flowy' | 'manual' | null {
+  if (!isCloudModelUiConfigured(setupCloud)) return null
+  const item = getSelectedCloudItem()
+  if (item) return item.type
+  const matched = buildCloudDisplayItems().find((entry) => cloudSelectionMatchesSetup(entry, setupCloud))
+  if (matched) return matched.type
+  if (setupCloud?.model?.trim() && isFlowyCloudUrl(setupCloud?.base_url)) {
+    return 'flowy'
+  }
+  return setupCloud?.model?.trim() ? 'manual' : null
+}
+
 export function selectCloudModel(key: string | null): void {
   if (!CLOUD_CUSTOM_MODELS_ENABLED && isManualCloudKey(key)) {
     fallbackToAutoFlowyModel()

@@ -9,7 +9,7 @@ use token_router::gateway::AppConfig;
 
 use crate::codex_catalog::{
     codex_catalog_specs_for_agent, write_token_router_codex_catalog,
-    CODEX_CATALOG_TIER_ID, TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME,
+    CODEX_CATALOG_MODEL_ID, TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME,
 };
 
 const OPENCLAW_PROVIDER: &str = "token-router";
@@ -344,14 +344,14 @@ pub fn configure_codex_at(
 
     let mut doc = read_toml_file(&path)?;
     let context_window = resolve_agent_context_window(&config, None);
-    merge_codex_config(&mut doc, openai_v1_base, CODEX_CATALOG_TIER_ID, &key, context_window);
+    merge_codex_config(&mut doc, openai_v1_base, CODEX_CATALOG_MODEL_ID, &key, context_window);
     write_toml_file(&path, &doc)?;
     let specs = codex_catalog_specs_for_agent(&config, context_window);
     write_token_router_codex_catalog(home, &specs)?;
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
-        model: CODEX_CATALOG_TIER_ID.to_string(),
+        model: CODEX_CATALOG_MODEL_ID.to_string(),
         base_url: openai_v1_base.to_string(),
         agent: "codex".to_string(),
     })
@@ -1054,7 +1054,7 @@ fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Resu
 
     let mut doc = read_toml_file(&path)?;
     let context_window = resolve_agent_context_window(&config, context_window);
-    merge_codex_config(&mut doc, &base_url, CODEX_CATALOG_TIER_ID, &key, context_window);
+    merge_codex_config(&mut doc, &base_url, CODEX_CATALOG_MODEL_ID, &key, context_window);
     write_toml_file(&path, &doc)?;
     let home = home_dir()?;
     let specs = codex_catalog_specs_for_agent(&config, context_window);
@@ -1062,7 +1062,7 @@ fn configure_codex(api_key: Option<String>, context_window: Option<u64>) -> Resu
 
     Ok(AgentSetupResult {
         path: path.display().to_string(),
-        model: CODEX_CATALOG_TIER_ID.to_string(),
+        model: CODEX_CATALOG_MODEL_ID.to_string(),
         base_url,
         agent: "codex".to_string(),
     })
@@ -1437,11 +1437,11 @@ mod tests {
         merge_codex_config(
             &mut doc,
             "http://127.0.0.1:11080/v1",
-            "auto",
+            "token-router",
             "test-key",
             1_000_000,
         );
-        assert_eq!(doc["model"], toml::Value::String("auto".into()));
+        assert_eq!(doc["model"], toml::Value::String("token-router".into()));
         assert_eq!(doc["model_provider"], toml::Value::String("token_router".into()));
         assert_eq!(doc["model_context_window"], toml::Value::Integer(1_000_000));
         assert_eq!(

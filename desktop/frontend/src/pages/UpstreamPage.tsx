@@ -18,6 +18,7 @@ import {
   isCloudModelUiConfigured,
   persistCloudSelection,
   reconcileCloudModelSelection,
+  resolveCloudModelSourceType,
   selectCloudModel,
   sliderFromCloudBudget,
   withAutoModelOption,
@@ -27,6 +28,7 @@ import {
   deleteManualEntry,
   getEdgeModelDisplayName,
   isEdgeUpstreamConfigured,
+  resolveEdgeModelSourceType,
   persistEdgeSelection,
   selectEdgeModel,
   upsertManualEntry,
@@ -179,10 +181,20 @@ export function UpstreamPage() {
     () => getEdgeModelDisplayName(setup?.edge),
     [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
+  const edgeModelTypeLabel = useMemo(() => {
+    const sourceType = resolveEdgeModelSourceType(setup?.edge)
+    if (!sourceType) return ''
+    return sourceType === 'herdsman' ? t('edgeModel.herdsman') : t('edgeModel.custom')
+  }, [setup?.edge, herdsmanConnected, selectedKey, cachedModels, t])
   const cloudModelLabel = useMemo(
     () => getCloudModelDisplayName(setup?.cloud?.model),
     [setup?.cloud?.model, cloudSelectedKey, cloudFlowyModels],
   )
+  const cloudModelTypeLabel = useMemo(() => {
+    const sourceType = resolveCloudModelSourceType(setup?.cloud)
+    if (!sourceType) return ''
+    return sourceType === 'flowy' ? t('cloudModel.flowy') : t('cloudModel.custom')
+  }, [setup?.cloud, cloudSelectedKey, cloudFlowyModels, t])
 
   return (
     <section className="page active" id="page-upstream">
@@ -209,8 +221,8 @@ export function UpstreamPage() {
 
         <div className="upstream-selected-model edge">
           <span className="upstream-selected-model-label">{t('upstream.currentModel')}</span>
-          {edgeModelLabel && (
-            <span className="tag bordered upstream-selected-model-tag" id="upstream-edge-selected-model-tag">{edgeModelLabel}</span>
+          {edgeModelTypeLabel && (
+            <span className="tag bordered upstream-selected-model-tag" id="upstream-edge-selected-model-tag">{edgeModelTypeLabel}</span>
           )}
           <span className="upstream-selected-model-value" id="upstream-edge-selected-model">{edgeModelLabel || '—'}</span>
         </div>
@@ -298,6 +310,9 @@ export function UpstreamPage() {
 
         <div className="upstream-selected-model cloud">
           <span className="upstream-selected-model-label">{t('upstream.currentModel')}</span>
+          {cloudModelTypeLabel && (
+            <span className="tag bordered upstream-selected-model-tag" id="upstream-cloud-selected-model-tag">{cloudModelTypeLabel}</span>
+          )}
           <span className="upstream-selected-model-value" id="upstream-cloud-selected-model">
             {cloudModelLabel || '—'}
           </span>

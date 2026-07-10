@@ -222,23 +222,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_only_lists_auto_model() {
+    fn codex_catalog_only_lists_token_router_model() {
         use crate::gateway::api::codex_catalog::{
             build_codex_model_catalog_from_config, CODEX_CATALOG_PROVIDER_DISPLAY_NAME,
-            CODEX_CATALOG_MODEL_ID, CODEX_CATALOG_TIER_DISPLAY_NAME, CODEX_CATALOG_TIER_ID,
+            CODEX_CATALOG_MODEL_ID,
         };
 
         let cfg = test_config(true, true, Some("deepseek-v4-flash"), None);
         let catalog = build_codex_model_catalog_from_config(&cfg, None);
         let entries = catalog["models"].as_array().unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["slug"], CODEX_CATALOG_MODEL_ID);
         assert_eq!(entries[0]["display_name"], CODEX_CATALOG_PROVIDER_DISPLAY_NAME);
-        assert_eq!(entries[0]["visibility"], "hide");
-        assert_eq!(entries[1]["slug"], CODEX_CATALOG_TIER_ID);
-        assert_eq!(entries[1]["display_name"], CODEX_CATALOG_TIER_DISPLAY_NAME);
-        assert_eq!(entries[1]["visibility"], "list");
+        assert_eq!(entries[0]["visibility"], "list");
         assert_eq!(entries[0]["service_tiers"], serde_json::json!([]));
-        assert_eq!(entries[1]["service_tiers"], serde_json::json!([]));
     }
 }

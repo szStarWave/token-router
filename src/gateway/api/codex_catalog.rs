@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -9,8 +11,6 @@ pub const TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME: &str = "token-router-model-
 pub const CODEX_MODELS_CACHE_FILENAME: &str = "models_cache.json";
 pub const CODEX_CATALOG_MODEL_ID: &str = "token-router";
 pub const CODEX_CATALOG_PROVIDER_DISPLAY_NAME: &str = "TokenRouter";
-pub const CODEX_CATALOG_TIER_ID: &str = "auto";
-pub const CODEX_CATALOG_TIER_DISPLAY_NAME: &str = "Auto";
 const ROUTER_AUTO_MODEL_ID: &str = "auto";
 
 pub fn is_router_auto_model(model: &str) -> bool {
@@ -49,20 +49,12 @@ pub fn codex_catalog_specs_from_config(config: &AppConfig, agent_id: Option<&str
     }
 
     let context_window = auto_model_context_window(&models);
-    vec![
-        CodexCatalogModelSpec {
-            model: CODEX_CATALOG_MODEL_ID.to_string(),
-            display_name: CODEX_CATALOG_PROVIDER_DISPLAY_NAME.to_string(),
-            context_window,
-            visibility: CodexCatalogVisibility::Hide,
-        },
-        CodexCatalogModelSpec {
-            model: ROUTER_AUTO_MODEL_ID.to_string(),
-            display_name: CODEX_CATALOG_TIER_DISPLAY_NAME.to_string(),
-            context_window,
-            visibility: CodexCatalogVisibility::List,
-        },
-    ]
+    vec![CodexCatalogModelSpec {
+        model: CODEX_CATALOG_MODEL_ID.to_string(),
+        display_name: CODEX_CATALOG_PROVIDER_DISPLAY_NAME.to_string(),
+        context_window,
+        visibility: CodexCatalogVisibility::List,
+    }]
 }
 
 fn load_codex_native_responses_template() -> Value {
@@ -131,6 +123,130 @@ pub fn models_cache_path_in_codex_dir(home: &Path) -> std::path::PathBuf {
     home.join(".codex").join(CODEX_MODELS_CACHE_FILENAME)
 }
 
+fn strip_utf8_bom(text: &str) -> &str {
+    text.strip_prefix('\u{FEFF}').unwrap_or(text)
+}
+
+fn is_router_model_slug(slug: &str) -> bool {
+    slug.eq_ignore_ascii_case(CODEX_CATALOG_MODEL_ID)
+        || slug.eq_ignore_ascii_case(ROUTER_AUTO_MODEL_ID)
+}
+
+fn is_native_codex_model_slug(slug: &str) -> bool {
+    slug.starts_with("gpt-")
+        || slug.starts_with("codex-")
+        || slug.starts_with("o1")
+        || slug.starts_with("o3")
+        || slug.starts_with("o4")
+}
+
+fn cache_has_native_codex_models(cache: &Value) -> bool {
+    cache
+        .get("models")
+        .and_then(|value| value.as_array())
+        .map(|models| {
+            models.iter().any(|entry| {
+                entry
+                    .get("slug")
+                    .and_then(|slug| slug.as_str())
+                    .is_some_and(is_native_codex_model_slug)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn cache_only_has_router_models(cache: &Value) -> bool {
+    let Some(models) = cache.get("models").and_then(|value| value.as_array()) else {
+        return false;
+    };
+    !models.is_empty()
+        && models.iter().all(|entry| {
+            entry
+                .get("slug")
+                .and_then(|slug| slug.as_str())
+                .is_some_and(is_router_model_slug)
+        })
+}
+
+fn read_json_value(path: &Path) -> Result<Value, String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let text = strip_utf8_bom(text.trim_start());
+    if text.is_empty() {
+        return Err(format!("empty JSON file: {}", path.display()));
+    }
+    serde_json::from_str(text).map_err(|e| e.to_string())
+}
+
+/// Upsert TokenRouter catalog entries into Codex's `models_cache.json` without
+/// removing built-in GPT models. Codex Desktop reads the picker list from this
+/// cache; `model_catalog_json` alone is not enough for the UI.
+///
+/// If Codex has not populated native models yet, this is a no-op so we do not
+/// create a router-only cache that blocks GPT refetch. A router-only cache is
+/// removed when detected.
+pub fn merge_router_models_into_models_cache(home: &Path, router_catalog: &Value) -> Result<(), String> {
+    let router_models = router_catalog
+        .get("models")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "router catalog missing models array".to_string())?;
+    if router_models.is_empty() {
+        return Ok(());
+    }
+
+    let router_slugs: HashSet<String> = router_models
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("slug")
+                .and_then(|slug| slug.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+
+    let cache_path = models_cache_path_in_codex_dir(home);
+    if !cache_path.is_file() {
+        return Ok(());
+    }
+
+    let cache = match read_json_value(&cache_path) {
+        Ok(cache) => cache,
+        Err(_) => {
+            let _ = fs::remove_file(&cache_path);
+            return Ok(());
+        }
+    };
+
+    if cache_only_has_router_models(&cache) {
+        let _ = fs::remove_file(&cache_path);
+        return Ok(());
+    }
+
+    if !cache_has_native_codex_models(&cache) {
+        return Ok(());
+    }
+
+    let mut cache = cache;
+    if cache.get("models").and_then(|value| value.as_array()).is_none() {
+        cache["models"] = json!([]);
+    }
+
+    let cache_models = cache["models"].as_array_mut().unwrap();
+    cache_models.retain(|entry| {
+        entry
+            .get("slug")
+            .and_then(|slug| slug.as_str())
+            .is_none_or(|slug| !router_slugs.contains(slug))
+    });
+    cache_models.extend(router_models.iter().cloned());
+
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&cache).map_err(|e| e.to_string())?;
+    fs::write(&cache_path, text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,16 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_specs_expose_hidden_parent_and_visible_auto() {
+    fn codex_catalog_specs_expose_token_router_model() {
         let config = test_config(true, true, Some("edge-model"), Some("cloud-model"));
         let specs = codex_catalog_specs_from_config(&config, None);
-        assert_eq!(specs.len(), 2);
+        assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].model, CODEX_CATALOG_MODEL_ID);
         assert_eq!(specs[0].display_name, CODEX_CATALOG_PROVIDER_DISPLAY_NAME);
-        assert_eq!(specs[0].visibility, CodexCatalogVisibility::Hide);
-        assert_eq!(specs[1].model, ROUTER_AUTO_MODEL_ID);
-        assert_eq!(specs[1].display_name, CODEX_CATALOG_TIER_DISPLAY_NAME);
-        assert_eq!(specs[1].visibility, CodexCatalogVisibility::List);
+        assert_eq!(specs[0].visibility, CodexCatalogVisibility::List);
     }
 
     #[test]
@@ -180,21 +293,135 @@ mod tests {
     #[test]
     fn codex_catalog_entry_has_required_fields() {
         let spec = CodexCatalogModelSpec {
-            model: ROUTER_AUTO_MODEL_ID.into(),
-            display_name: CODEX_CATALOG_TIER_DISPLAY_NAME.into(),
+            model: CODEX_CATALOG_MODEL_ID.into(),
+            display_name: CODEX_CATALOG_PROVIDER_DISPLAY_NAME.into(),
             context_window: 1_000_000,
             visibility: CodexCatalogVisibility::List,
         };
         let catalog = build_codex_model_catalog(&[spec]);
         let entry = &catalog["models"][0];
-        assert_eq!(entry["slug"], ROUTER_AUTO_MODEL_ID);
-        assert_eq!(entry["model"], ROUTER_AUTO_MODEL_ID);
-        assert_eq!(entry["display_name"], CODEX_CATALOG_TIER_DISPLAY_NAME);
+        assert_eq!(entry["slug"], CODEX_CATALOG_MODEL_ID);
+        assert_eq!(entry["model"], CODEX_CATALOG_MODEL_ID);
+        assert_eq!(entry["display_name"], CODEX_CATALOG_PROVIDER_DISPLAY_NAME);
         assert_eq!(entry["visibility"], "list");
         assert_eq!(entry["additional_speed_tiers"], json!([]));
         assert_eq!(entry["service_tiers"], json!([]));
         assert_eq!(entry["context_window"], 1_000_000);
         assert!(entry.get("base_instructions").is_some());
         assert_eq!(entry["shell_type"], "shell_command");
+    }
+
+    #[test]
+    fn merge_router_models_into_models_cache_preserves_native_models() {
+        let dir = std::env::temp_dir().join(format!("codex-cache-merge-{}", uuid::Uuid::new_v4()));
+        let codex_dir = dir.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join(CODEX_MODELS_CACHE_FILENAME),
+            r#"{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"}]}"#,
+        )
+        .unwrap();
+
+        let specs = codex_catalog_specs_from_config(
+            &test_config(true, true, Some("edge-model"), Some("cloud-model")),
+            None,
+        );
+        let router_catalog = build_codex_model_catalog(&specs);
+        merge_router_models_into_models_cache(&dir, &router_catalog).unwrap();
+
+        let cache: Value =
+            serde_json::from_str(&fs::read_to_string(codex_dir.join(CODEX_MODELS_CACHE_FILENAME)).unwrap())
+                .unwrap();
+        let slugs: Vec<_> = cache["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("slug").and_then(|slug| slug.as_str()))
+            .collect();
+        assert!(slugs.contains(&"gpt-5.5"));
+        assert!(slugs.contains(&CODEX_CATALOG_MODEL_ID));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_router_models_into_models_cache_tolerates_utf8_bom() {
+        let dir = std::env::temp_dir().join(format!("codex-cache-bom-{}", uuid::Uuid::new_v4()));
+        let codex_dir = dir.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join(CODEX_MODELS_CACHE_FILENAME),
+            "\u{FEFF}{\"models\":[{\"slug\":\"gpt-5.5\",\"display_name\":\"GPT-5.5\"}]}",
+        )
+        .unwrap();
+
+        let specs = codex_catalog_specs_from_config(
+            &test_config(true, true, Some("edge-model"), Some("cloud-model")),
+            None,
+        );
+        let router_catalog = build_codex_model_catalog(&specs);
+        merge_router_models_into_models_cache(&dir, &router_catalog).unwrap();
+
+        let cache = read_json_value(&codex_dir.join(CODEX_MODELS_CACHE_FILENAME)).unwrap();
+        let slugs: Vec<_> = cache["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("slug").and_then(|slug| slug.as_str()))
+            .collect();
+        assert!(slugs.contains(&"gpt-5.5"));
+        assert!(slugs.contains(&CODEX_CATALOG_MODEL_ID));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_router_models_into_models_cache_skips_when_cache_missing() {
+        let dir = std::env::temp_dir().join(format!("codex-cache-missing-{}", uuid::Uuid::new_v4()));
+        let specs = codex_catalog_specs_from_config(
+            &test_config(true, true, Some("edge-model"), Some("cloud-model")),
+            None,
+        );
+        let router_catalog = build_codex_model_catalog(&specs);
+        merge_router_models_into_models_cache(&dir, &router_catalog).unwrap();
+        assert!(!models_cache_path_in_codex_dir(&dir).is_file());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_router_models_into_models_cache_removes_router_only_cache() {
+        let dir = std::env::temp_dir().join(format!("codex-cache-router-only-{}", uuid::Uuid::new_v4()));
+        let codex_dir = dir.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(
+            codex_dir.join(CODEX_MODELS_CACHE_FILENAME),
+            r#"{"models":[{"slug":"token-router"},{"slug":"auto"}]}"#,
+        )
+        .unwrap();
+
+        let specs = codex_catalog_specs_from_config(
+            &test_config(true, true, Some("edge-model"), Some("cloud-model")),
+            None,
+        );
+        let router_catalog = build_codex_model_catalog(&specs);
+        merge_router_models_into_models_cache(&dir, &router_catalog).unwrap();
+        assert!(!codex_dir.join(CODEX_MODELS_CACHE_FILENAME).is_file());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_router_models_into_models_cache_recovers_from_corrupt_cache() {
+        let dir = std::env::temp_dir().join(format!("codex-cache-corrupt-{}", uuid::Uuid::new_v4()));
+        let codex_dir = dir.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(codex_dir.join(CODEX_MODELS_CACHE_FILENAME), "not json").unwrap();
+
+        let specs = codex_catalog_specs_from_config(
+            &test_config(true, true, Some("edge-model"), Some("cloud-model")),
+            None,
+        );
+        let router_catalog = build_codex_model_catalog(&specs);
+        merge_router_models_into_models_cache(&dir, &router_catalog).unwrap();
+
+        assert!(!codex_dir.join(CODEX_MODELS_CACHE_FILENAME).is_file());
+        let _ = fs::remove_dir_all(dir);
     }
 }

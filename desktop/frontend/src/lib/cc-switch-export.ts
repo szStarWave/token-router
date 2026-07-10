@@ -16,7 +16,7 @@ const CODEX_PROVIDER_NAME = 'TokenRouter'
 const OPENCODE_PROVIDER = 'token-router'
 const OPENCODE_PROVIDER_NAME = 'Token Router'
 const OPENCODE_MODEL_DISPLAY = 'Token Router Auto Route'
-const CODEX_MODEL = 'auto'
+const CODEX_MODEL = 'token-router'
 const DEFAULT_MODEL = 'auto'
 
 const CC_SWITCH_AGENT_MAP: Record<CcSwitchApp, AgentKind> = {
