@@ -303,6 +303,66 @@ mod tests {
     }
 
     #[test]
+    fn fixed_edge_disables_casual_quality_fallback() {
+        let mut cfg = test_config(true, true);
+        cfg.fixed_route = Some(RouteTier::Edge);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.route, RouteTier::Edge, "{:?}", decision);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CONFIG_ROUTE_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision.casual_quality_fallback,
+            "fixed edge must not escalate to cloud: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CASUAL_EDGE_FALLBACK"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn fixed_cloud_never_routes_edge() {
+        let mut cfg = test_config(true, true);
+        cfg.fixed_route = Some(RouteTier::Cloud);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.route, RouteTier::Cloud, "{:?}", decision);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CONFIG_ROUTE_CLOUD"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(!decision.casual_quality_fallback);
+    }
+
+    #[test]
     fn simple_greeting_prefers_edge() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();

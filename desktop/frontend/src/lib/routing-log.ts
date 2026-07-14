@@ -1,4 +1,6 @@
-﻿export type RouteTier = 'edge' | 'cloud' | 'cascade'
+﻿import type { RoutingLogApiEntry } from '../types/gateway'
+
+export type RouteTier = 'edge' | 'cloud' | 'cascade'
 
 export interface RoutingLogEntry {
   id: number
@@ -12,6 +14,7 @@ export interface RoutingLogEntry {
   hasUserPreview: boolean
   reasonCodes: string[]
   difficulty?: number | null
+  errorReason?: string | null
   raw: string
 }
 
@@ -84,18 +87,7 @@ export function effectiveRouteTier(entry: {
   return 'edge'
 }
 
-export function mapApiRoutingEntry(entry: {
-  id: number
-  timestamp: string
-  route: string
-  served_route?: string | null
-    served_model?: string | null
-  step_kind: string
-  model: string
-  user_preview: string
-  reason_codes: string[]
-  difficulty?: number | null
-}): RoutingLogEntry {
+export function mapApiRoutingEntry(entry: RoutingLogApiEntry): RoutingLogEntry {
   return {
     id: entry.id,
     timestamp: entry.timestamp,
@@ -108,6 +100,7 @@ export function mapApiRoutingEntry(entry: {
     hasUserPreview: entry.user_preview.length > 0,
     reasonCodes: entry.reason_codes,
     difficulty: entry.difficulty ?? null,
+    errorReason: entry.error_reason ?? null,
     raw: '',
   }
 }
@@ -234,6 +227,24 @@ export function isRouteOverrideCode(code: string): boolean {
   return isHardRouteOverrideCode(code)
 }
 
+/**
+ * Whether a hard override code actually explains the *served* route.
+ * CONFIG_ROUTE_edge + quality fallback can still serve cloud — that mismatch
+ * must not become "because fixed edge, go cloud".
+ */
+export function hardOverrideExplainsRoute(code: string, route: RouteTier): boolean {
+  if (code === 'UPSTREAM_EDGE_ONLY') return route === 'edge'
+  if (code === 'UPSTREAM_CLOUD_ONLY') return route === 'cloud'
+  if (code.startsWith('CONFIG_ROUTE_')) {
+    const tier = code.slice('CONFIG_ROUTE_'.length).toLowerCase()
+    if (tier === 'edge') return route === 'edge'
+    if (tier === 'cloud') return route === 'cloud'
+    // Cascade may serve edge or cloud after escalation.
+    if (tier === 'cascade') return true
+  }
+  return true
+}
+
 function pickDominantDifficultyFactor(codes: string[], route: RouteTier): string | null {
   const breakdown = parseDifficultyBreakdown(codes)
   if (!breakdown || breakdown.parts.length === 0) return null
@@ -266,7 +277,8 @@ export function extractDifficultyScore(
 }
 
 /**
- * Primary factor for the routing conclusion: hard override, then the largest
+ * Primary factor for the routing conclusion: hard override (when it matches
+ * the served route), then quality-fallback escalation, then the largest
  * difficulty contributor aligned with the chosen route, then DIFFICULTY_*.
  */
 export function pickFinalRouteFactorCode(
@@ -274,7 +286,17 @@ export function pickFinalRouteFactorCode(
   route: RouteTier = 'edge',
 ): string | null {
   for (let i = codes.length - 1; i >= 0; i--) {
-    if (isHardRouteOverrideCode(codes[i])) return codes[i]
+    const code = codes[i]
+    if (isHardRouteOverrideCode(code) && hardOverrideExplainsRoute(code, route)) {
+      return code
+    }
+  }
+
+  // Decision was edge (e.g. CONFIG_ROUTE_edge) but quality gate escalated to cloud.
+  if (route === 'cloud') {
+    for (let i = codes.length - 1; i >= 0; i--) {
+      if (codes[i] === 'CASUAL_EDGE_FALLBACK') return codes[i]
+    }
   }
 
   const dominant = pickDominantDifficultyFactor(codes, route)

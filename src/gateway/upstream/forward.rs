@@ -124,9 +124,15 @@ impl UpstreamClient {
                 self.complete_edge_with_quality_fallback(req, decision, agent_id, auth_key)
                     .await
             }
+            RouteTier::Edge if !self.allow_cross_tier_fallback() => {
+                self.complete_edge_only(req, decision, agent_id, auth_key).await
+            }
             RouteTier::Edge => {
                 self.complete_edge_with_context_fallback(req, decision, agent_id, auth_key)
                     .await
+            }
+            RouteTier::Cloud if !self.allow_cross_tier_fallback() => {
+                self.complete_cloud_only(req, decision, agent_id, auth_key).await
             }
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
@@ -209,9 +215,15 @@ impl UpstreamClient {
             RouteTier::Edge if decision.casual_quality_fallback => {
                 self.stream_cascade(req, decision, agent_id, auth_key).await
             }
+            RouteTier::Edge if !self.allow_cross_tier_fallback() => {
+                self.stream_edge_only(req, decision, agent_id, auth_key).await
+            }
             RouteTier::Edge => self
                 .stream_edge_with_context_fallback(req, decision, agent_id, auth_key)
                 .await,
+            RouteTier::Cloud if !self.allow_cross_tier_fallback() => {
+                self.stream_cloud_only(req, decision, agent_id, auth_key).await
+            }
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
                     self.stream_target(req, self.target_cloud(agent_id), decision, agent_id, auth_key)
@@ -795,6 +807,90 @@ impl UpstreamClient {
         self.cfg().cloud_base_url.is_some()
     }
 
+    /// Fixed `edge` / `cloud` must never cross tiers; errors propagate as-is.
+    fn allow_cross_tier_fallback(&self) -> bool {
+        !matches!(
+            self.cfg().fixed_route,
+            Some(RouteTier::Edge) | Some(RouteTier::Cloud)
+        )
+    }
+
+    async fn complete_edge_only(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<ChatCompletionResponse> {
+        let edge = self.target_edge(agent_id);
+        if edge.base_url.is_none() {
+            return Err(missing_upstream("edge"));
+        }
+        let resp = self
+            .call_target(req, edge, decision.tokens_in_estimate, auth_key)
+            .await?;
+        Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key))
+    }
+
+    async fn stream_edge_only(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<(SseStream, bool)> {
+        let edge = self.target_edge(agent_id);
+        if edge.base_url.is_none() {
+            return Err(missing_upstream("edge"));
+        }
+        self.stream_target(req, edge, decision, agent_id, auth_key)
+            .await
+            .map(|s| (s, false))
+    }
+
+    async fn complete_cloud_only(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<ChatCompletionResponse> {
+        if !self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
+            return Err(AppError::Unavailable(
+                "cloud token budget exceeded; fixed route=cloud does not fall back to edge".into(),
+            ));
+        }
+        let cloud = self.target_cloud(agent_id);
+        if cloud.base_url.is_none() {
+            return Err(missing_upstream("cloud"));
+        }
+        let resp = self
+            .call_target(req, cloud, decision.tokens_in_estimate, auth_key)
+            .await?;
+        Ok(self.finish_non_stream(req, resp, decision, "cloud", false, agent_id, auth_key))
+    }
+
+    async fn stream_cloud_only(
+        &self,
+        req: &ChatCompletionRequest,
+        decision: &RouteDecision,
+        agent_id: Option<&str>,
+        auth_key: Option<&AuthKeyContext>,
+    ) -> AppResult<(SseStream, bool)> {
+        if !self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
+            return Err(AppError::Unavailable(
+                "cloud token budget exceeded; fixed route=cloud does not fall back to edge".into(),
+            ));
+        }
+        let cloud = self.target_cloud(agent_id);
+        if cloud.base_url.is_none() {
+            return Err(missing_upstream("cloud"));
+        }
+        self.stream_target(req, cloud, decision, agent_id, auth_key)
+            .await
+            .map(|s| (s, false))
+    }
+
     async fn complete_edge_with_context_fallback(
         &self,
         req: &ChatCompletionRequest,
@@ -812,7 +908,9 @@ impl UpstreamClient {
                 Ok(resp) => {
                     return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
                 }
-                Err(err) if is_context_overflow_upstream_error(&err) && self.cloud_configured() => {
+                Err(err) if is_context_overflow_upstream_error(&err)
+                    && self.allow_cross_tier_fallback()
+                    && self.cloud_configured() => {
                     self.stats.record_cascade_fallback();
                 }
                 Err(err) => return Err(err),
@@ -843,7 +941,9 @@ impl UpstreamClient {
                 .await
             {
                 Ok(stream) => return Ok((stream, false)),
-                Err(err) if is_context_overflow_upstream_error(&err) && self.cloud_configured() => {
+                Err(err) if is_context_overflow_upstream_error(&err)
+                    && self.allow_cross_tier_fallback()
+                    && self.cloud_configured() => {
                     self.stats.record_cascade_fallback();
                 }
                 Err(err) => return Err(err),

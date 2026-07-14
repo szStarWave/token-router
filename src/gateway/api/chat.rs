@@ -6,7 +6,7 @@ use axum::{
 };
 use crate::gateway::api::anthropic::{chat_json_to_anthropic, AnthropicSseTransform};
 use crate::gateway::api::auth::require_gateway_api_key;
-use crate::gateway::api::meta::{build_token_router_meta, log_route_decision, token_router_meta_headers};
+use crate::gateway::api::meta::{build_token_router_meta, log_request_error, log_route_decision, token_router_meta_headers};
 use crate::gateway::routing::last_message_text;
 use crate::gateway::api::openai::ChatCompletionRequest;
 use crate::gateway::api::responses::{chat_response_to_responses, ResponsesSseTransform};
@@ -143,6 +143,11 @@ pub async fn chat_completions_core(
                 if let Some(ctx) = auth_key_ref {
                     state.stats.record_error_for_auth_key(ctx, &e);
                 }
+                log_request_error(
+                    Some(state.routing_logs.as_ref()),
+                    decision.routing_log_id,
+                    &e,
+                );
                 record_learning(
                     &state,
                     &decision,
@@ -206,6 +211,11 @@ pub async fn chat_completions_core(
                 if let Some(ctx) = auth_key_ref {
                     state.stats.record_error_for_auth_key(ctx, &e);
                 }
+                log_request_error(
+                    Some(state.routing_logs.as_ref()),
+                    decision.routing_log_id,
+                    &e,
+                );
                 record_learning(
                     &state,
                     &decision,

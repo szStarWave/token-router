@@ -11,11 +11,12 @@ use crate::gateway::api::meta::{
 };
 use crate::gateway::routing::RouteDecision;
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 /// Keep the newest N routing decisions on disk.
 const MAX_ROWS: i64 = 50_000;
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 500;
+const MAX_ERROR_REASON_CHARS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutingLogEntryJson {
@@ -31,6 +32,8 @@ pub struct RoutingLogEntryJson {
     pub user_preview: String,
     pub difficulty: f64,
     pub reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +158,19 @@ impl RoutingLogStore {
             }
             conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
         }
+        if version < 5 {
+            let has_error_reason: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('routing_logs') WHERE name = 'error_reason'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_error_reason == 0 {
+                conn.execute("ALTER TABLE routing_logs ADD COLUMN error_reason TEXT", [])?;
+            }
+            conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
+        }
         Ok(())
     }
 
@@ -239,6 +255,16 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
         Ok(())
     }
 
+    pub fn mark_error(&self, id: i64, error_reason: &str) -> anyhow::Result<()> {
+        let reason = truncate_error_reason(error_reason);
+        let conn = self.conn.lock().expect("routing log db mutex");
+        conn.execute(
+            "UPDATE routing_logs SET error_reason = ?1 WHERE id = ?2",
+            params![reason, id],
+        )?;
+        Ok(())
+    }
+
     pub fn query(&self, query: RoutingLogsQuery) -> anyhow::Result<RoutingLogsResponse> {
         let limit = query
             .limit
@@ -249,7 +275,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
 
         if let Some(before_id) = query.before_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
                  FROM routing_logs
                  WHERE id < ?1
                  ORDER BY id DESC
@@ -272,7 +298,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
 
         if let Some(after_id) = query.after_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
                  FROM routing_logs
                  WHERE id > ?1
                  ORDER BY id ASC
@@ -288,7 +314,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
         }
 
         let mut stmt = conn.prepare(
-            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model
+            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
              FROM routing_logs
              ORDER BY id DESC
              LIMIT ?1",
@@ -310,8 +336,20 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
     }
 }
 
+fn truncate_error_reason(reason: &str) -> String {
+    let trimmed = reason.trim();
+    let char_count = trimmed.chars().count();
+    if char_count <= MAX_ERROR_REASON_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(MAX_ERROR_REASON_CHARS).collect();
+    out.push_str("\u{2026}");
+    out
+}
+
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson> {
     let reason_codes_raw: String = row.get(8)?;
+    let error_reason: Option<String> = row.get(10)?;
     Ok(RoutingLogEntryJson {
         id: row.get(0)?,
         timestamp: row.get(1)?,
@@ -327,6 +365,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect(),
+        error_reason: error_reason.filter(|s| !s.trim().is_empty()),
     })
 }
 
@@ -392,6 +431,15 @@ mod tests {
         store.mark_served(initial.entries[0].id, "edge", None).unwrap();
         let served = store.query(RoutingLogsQuery::default()).unwrap();
         assert_eq!(served.entries[0].served_route.as_deref(), Some("edge"));
+
+        store
+            .mark_error(initial.entries[0].id, "Upstream request failed: timeout")
+            .unwrap();
+        let failed = store.query(RoutingLogsQuery::default()).unwrap();
+        assert_eq!(
+            failed.entries[0].error_reason.as_deref(),
+            Some("Upstream request failed: timeout")
+        );
 
         let after = store
             .query(RoutingLogsQuery {

@@ -1,6 +1,7 @@
 ﻿use axum::http::{HeaderMap, HeaderValue};
 
 use crate::gateway::api::openai::{ChatCompletionResponse, TokenRouterMeta};
+use crate::gateway::error::AppError;
 use crate::gateway::stats::metrics::tokens_from_response;
 use crate::gateway::multimodal::MultimodalStrategy;
 use crate::gateway::routing::{Profile, RouteDecision, RouteTier, RoutingMode, StepKind, WorkStrategy};
@@ -242,6 +243,35 @@ pub fn log_upstream_served(
             tracing::warn!(error = %e, routing_log_id = id, "routing log served update failed");
         }
     }
+}
+
+pub fn error_reason_from_app_error(err: &AppError) -> String {
+    match err {
+        AppError::BadRequest(msg) => msg.clone(),
+        AppError::Unauthorized(msg) => msg.clone(),
+        AppError::Upstream(msg) => msg.clone(),
+        AppError::Unavailable(msg) => msg.clone(),
+        AppError::NotFound(msg) => msg.clone(),
+        AppError::Internal(e) => e.to_string(),
+    }
+}
+
+pub fn log_request_error(
+    store: Option<&crate::gateway::routing_log::RoutingLogStore>,
+    routing_log_id: Option<i64>,
+    err: &AppError,
+) {
+    let reason = error_reason_from_app_error(err);
+    if let (Some(store), Some(id)) = (store, routing_log_id) {
+        if let Err(e) = store.mark_error(id, &reason) {
+            tracing::warn!(error = %e, routing_log_id = id, "routing log error update failed");
+        }
+    }
+    tracing::info!(
+        routing_log_id = ?routing_log_id,
+        error_reason = %reason,
+        "routing request failed"
+    );
 }
 
 pub fn step_kind_name(k: StepKind) -> &'static str {

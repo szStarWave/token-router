@@ -25,9 +25,34 @@ function routeTagClass(route: RoutingLogEntry['route']): string {
   }
 }
 
+function ToggleButton({
+  expanded,
+  onClick,
+  label,
+}: {
+  expanded: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      className={`routing-log-card__toggle${expanded ? ' expanded' : ''}`}
+      aria-expanded={expanded}
+      onClick={onClick}
+    >
+      {label}
+      <svg className="routing-log-card__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" />
+      </svg>
+    </button>
+  )
+}
+
 export function RoutingLogCard({ entry }: Props) {
   const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
+  const [difficultyExpanded, setDifficultyExpanded] = useState(false)
+  const [errorExpanded, setErrorExpanded] = useState(false)
   const previewText = entry.hasUserPreview
     ? truncatePreview(entry.userPreview)
     : t('logs.noMessagePreview')
@@ -39,6 +64,9 @@ export function RoutingLogCard({ entry }: Props) {
     ? explainFinalRouteFactor(finalFactorCode, entry.route, t)
     : null
   const difficultyBreakdown = parseDifficultyBreakdown(entry.reasonCodes)
+  const hasErrorReason = Boolean(entry.errorReason?.trim())
+  const showDifficultyToggle = entry.reasonCodes.length > 0
+  const showExpandSection = showDifficultyToggle || hasErrorReason
 
   function formatSigned(n: number | null, digits = 3): string {
     if (n == null || !Number.isFinite(n)) return '—'
@@ -72,21 +100,29 @@ export function RoutingLogCard({ entry }: Props) {
         {overflow > 0 && (
           <span className="tag bordered neutral routing-log-card__reason-tag">+{overflow}</span>
         )}
+        {hasErrorReason && (
+          <span className="tag bordered danger routing-log-card__reason-tag">{t('logs.requestErrorReason')}</span>
+        )}
       </div>
-      {entry.reasonCodes.length > 0 && (
+      {showExpandSection && (
         <div className="routing-log-card__expand">
-          <button
-            type="button"
-            className={`routing-log-card__toggle${expanded ? ' expanded' : ''}`}
-            aria-expanded={expanded}
-            onClick={() => setExpanded((v) => !v)}
-          >
-            {expanded ? t('logs.hideReasons') : t('logs.showReasons')}
-            <svg className="routing-log-card__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" />
-            </svg>
-          </button>
-          {expanded && (
+          <div className="routing-log-card__toggle-row">
+            {showDifficultyToggle && (
+              <ToggleButton
+                expanded={difficultyExpanded}
+                onClick={() => setDifficultyExpanded((v) => !v)}
+                label={difficultyExpanded ? t('logs.hideReasons') : t('logs.showReasons')}
+              />
+            )}
+            {hasErrorReason && (
+              <ToggleButton
+                expanded={errorExpanded}
+                onClick={() => setErrorExpanded((v) => !v)}
+                label={errorExpanded ? t('logs.hideErrorReason') : t('logs.showErrorReason')}
+              />
+            )}
+          </div>
+          {difficultyExpanded && (
             <>
               {difficultyBreakdown && (
                 <div className="routing-log-card__breakdown">
@@ -171,6 +207,12 @@ export function RoutingLogCard({ entry }: Props) {
                 </div>
               )}
             </>
+          )}
+          {errorExpanded && hasErrorReason && (
+            <div className="routing-log-card__error-reason">
+              <p className="routing-log-card__breakdown-title">{t('logs.requestErrorReason')}</p>
+              <pre className="routing-log-card__error-text">{entry.errorReason}</pre>
+            </div>
           )}
         </div>
       )}

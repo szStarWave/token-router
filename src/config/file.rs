@@ -377,6 +377,7 @@ pub fn default_config_template() -> String {
 [gateway]
 listen = "{listen}"
 route = "auto"                 # auto | edge | cloud | cascade
+# edge/cloud = 固定单端，失败不跨端回退；cascade = 先 edge 再升云；auto = 智能选择
 routing_mode = "cascade"       # single | cascade | split (when route = auto)
 default_profile = "balanced"   # economy | balanced | premium | privacy
 ctx_edge_max_tokens = 200000

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { RoutingLogsResponse } from '../types/gateway'
 
 export interface GatewayStatusPayload {
   running: boolean
@@ -59,20 +60,8 @@ export async function gatewayReadRoutingLogs(
   afterId?: number | null,
   beforeId?: number | null,
   limit?: number,
-) {
-  return tauriInvoke<{
-    entries: Array<{
-      id: number
-      timestamp: string
-      route: string
-      served_route?: string | null
-      step_kind: string
-      model: string
-      user_preview: string
-      reason_codes: string[]
-    }>
-    has_older: boolean
-  }>('gateway_read_routing_logs', {
+): Promise<RoutingLogsResponse> {
+  return tauriInvoke<RoutingLogsResponse>('gateway_read_routing_logs', {
     after_id: afterId ?? null,
     before_id: beforeId ?? null,
     limit: limit ?? null,
@@ -103,8 +92,18 @@ export async function feedbackAppVersion() {
   return tauriInvoke<string>('feedback_app_version')
 }
 
-export async function feedbackSubmit(content: string, category?: string) {
-  return tauriInvoke<void>('feedback_submit', { content, category: category ?? null })
+export async function feedbackSubmit(
+  content: string,
+  category?: string,
+  userId?: string | null,
+  userNickname?: string | null,
+) {
+  return tauriInvoke<void>('feedback_submit', {
+    content,
+    category: category ?? null,
+    userId: userId ?? null,
+    userNickname: userNickname ?? null,
+  })
 }
 
 export interface AgentSetupResultPayload {

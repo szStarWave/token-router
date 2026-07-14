@@ -236,6 +236,7 @@ export interface RoutingLogApiEntry {
   user_preview: string
   difficulty?: number
   reason_codes: string[]
+  error_reason?: string | null
 }
 
 export interface RoutingLogsResponse {
@@ -250,7 +251,16 @@ export interface LogLine {
 
 export function emptySetup(): UpstreamSetupView {
   return {
-    gateway: { route: 'auto', routing_mode: 'cascade', default_profile: 'economy', ctx_edge_max_tokens: 200000 },
+    gateway: {
+      route: 'auto',
+      routing_mode: 'cascade',
+      default_profile: 'balanced',
+      ctx_edge_max_tokens: 200_000,
+      experience_enabled: true,
+      adaptive_routing_enabled: true,
+      classifier_enabled: true,
+      classifier_prior_from_heuristic: true,
+    },
     cloud: { configured: false, base_url: '' },
     edge: { configured: false, base_url: '' },
   }

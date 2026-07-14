@@ -1,20 +1,10 @@
 import { useEffect, useState } from 'react'
+import { GATEWAY_ROUTING_DEFAULTS, pickStrategyGatewayPatch } from '../constants/defaults'
 import { useSaveSetupMutation } from '../queries/gateway'
 import { useSetupStore } from '../stores/setupStore'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
 import type { GatewayConfigView } from '../types/gateway'
-
-const DEFAULTS: Partial<GatewayConfigView> = {
-  route: 'auto',
-  routing_mode: 'cascade',
-  default_profile: 'economy',
-  ctx_edge_max_tokens: 200000,
-  experience_enabled: false,
-  adaptive_routing_enabled: false,
-  classifier_enabled: false,
-  classifier_prior_from_heuristic: true,
-}
 
 export function RoutingPage() {
   const { t } = useI18n()
@@ -39,15 +29,15 @@ export function RoutingPage() {
       showToast('conn.offline', false)
       return
     }
-    saveSetup.mutate({ gateway: form }, {
+    saveSetup.mutate({ gateway: pickStrategyGatewayPatch(form) }, {
       onSuccess: () => showToast('toast.routingSaved'),
     })
   }
 
   const resetDefaults = () => {
-    setForm({ ...DEFAULTS })
+    setForm((f) => ({ ...f, ...GATEWAY_ROUTING_DEFAULTS }))
     if (connected) {
-      saveSetup.mutate({ gateway: DEFAULTS }, {
+      saveSetup.mutate({ gateway: pickStrategyGatewayPatch(GATEWAY_ROUTING_DEFAULTS) }, {
         onSuccess: () => showToast('toast.resetOk'),
       })
     }

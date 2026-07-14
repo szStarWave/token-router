@@ -68,6 +68,24 @@ test('picks hard config override as final factor', () => {
   assert.equal(pickFinalRouteFactorCode(codes, 'cloud'), 'CONFIG_ROUTE_cloud')
 })
 
+test('does not cite CONFIG_ROUTE_edge when quality fallback served cloud', () => {
+  const codes = [
+    'STEP_DIRECT_CHAT',
+    'CONFIG_ROUTE_EDGE',
+    'CASUAL_EDGE_FALLBACK',
+  ]
+  assert.equal(pickFinalRouteFactorCode(codes, 'cloud'), 'CASUAL_EDGE_FALLBACK')
+})
+
+test('still cites CONFIG_ROUTE_edge when served edge', () => {
+  const codes = [
+    'STEP_DIRECT_CHAT',
+    'CONFIG_ROUTE_EDGE',
+    'CASUAL_EDGE_FALLBACK',
+  ]
+  assert.equal(pickFinalRouteFactorCode(codes, 'edge'), 'CONFIG_ROUTE_EDGE')
+})
+
 test('picks dominant cloud-aligned difficulty factor', () => {
   const codes = [
     'STEP_INITIAL_PLAN',

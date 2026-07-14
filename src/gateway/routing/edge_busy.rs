@@ -78,11 +78,13 @@ pub fn apply_edge_busy_fallback(
 
 /// `route=edge` / `route=cloud`, or only one upstream configured — no cross-tier redirects.
 fn strict_single_tier(config: &AppConfig) -> bool {
-    config.fixed_route.is_some()
-        || matches!(
-            (edge_configured(config), cloud_configured(config)),
-            (true, false) | (false, true)
-        )
+    matches!(
+        config.fixed_route,
+        Some(RouteTier::Edge) | Some(RouteTier::Cloud)
+    ) || matches!(
+        (edge_configured(config), cloud_configured(config)),
+        (true, false) | (false, true)
+    )
 }
 
 #[cfg(test)]

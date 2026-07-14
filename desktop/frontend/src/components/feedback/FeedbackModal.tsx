@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { feedbackAppVersion, feedbackSubmit, invokeErrorMessage } from '../../lib/tauri'
+import { pickNickname, pickUserId } from '../../lib/user-info'
 import { useAppStore } from '../../stores/appStore'
+import { useAuthStore } from '../../stores/authStore'
 import { useI18n } from '../../hooks/useI18n'
 
 interface FeedbackModalProps {
@@ -11,6 +13,7 @@ interface FeedbackModalProps {
 export function FeedbackModal({ open, onClose }: FeedbackModalProps) {
   const { t } = useI18n()
   const showToast = useAppStore((s) => s.showToast)
+  const userInfo = useAuthStore((s) => s.userInfo)
   const [text, setText] = useState('')
   const [version, setVersion] = useState('—')
   const [submitting, setSubmitting] = useState(false)
@@ -31,7 +34,9 @@ export function FeedbackModal({ open, onClose }: FeedbackModalProps) {
     }
     setSubmitting(true)
     try {
-      await feedbackSubmit(body)
+      const userId = pickUserId(userInfo) || null
+      const userNickname = pickNickname(userInfo) || null
+      await feedbackSubmit(body, undefined, userId, userNickname)
       showToast('titlebar.feedbackSuccess', true)
       onClose()
     } catch (err) {
@@ -39,7 +44,7 @@ export function FeedbackModal({ open, onClose }: FeedbackModalProps) {
     } finally {
       setSubmitting(false)
     }
-  }, [text, showToast, t, onClose])
+  }, [text, showToast, onClose, userInfo])
 
   if (!open) return null
 

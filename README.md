@@ -1191,7 +1191,7 @@ adaptive_routing_enabled = true
 
 1. **`step_kind` 不是 casual** → 未进日常步态，常直接云或走 Work。查：`tool_select` / `initial_plan`（tool 循环中且最新 user 无 easy 关键词）、`tok_rest` ≥ 8192、`n_turns` > 8、含规划意图、assistant 失败恢复。
 2. **`step_kind` 对，但 `route` = `cloud`** → 查 `reason_codes` 里 `GATE_*`（含 `GATE_USER_REJECT` 用户否定纠错）、`CONFIG_ROUTE_*`，或 `premium` + 高难度分。
-3. **`route` = `edge` 且 `fallback` = true** → 决策走端侧，**质量门未过**升云重答（`CASUAL_EDGE_FALLBACK`）；下一轮仍会重新路由判断，DirectChat 不受 sticky 钉云。
+3. **`route` = `edge`（auto 决策）且 `fallback` = true** → 决策走端侧，**质量门未过**升云重答（`CASUAL_EDGE_FALLBACK`）；下一轮仍会重新路由判断，DirectChat 不受 sticky 钉云。固定 `gateway.route = "edge"` 时**不会**升云，端侧失败直接返回错误。
 
 用户用中/英/日/韩/粤说「不对/错了/wrong/違う/틀렸어」等纠正上一轮 assistant 时，当轮 `GATE_USER_REJECT` 升云；下一轮正常跟帖仍按 DirectChat 规则重判。
 
@@ -1199,7 +1199,7 @@ Work 步态出现 `GATE_CTX_OVERFLOW` 时可调大 `ctx_edge_max_tokens`（casua
 
 **OpenClaw 短问候误标 `memory_compact` / 误走云** — system 里的 `# Dynamic Project Context` 是 OpenClaw 正常缓存边界，**不代表**记忆压缩步。若日志出现 `STEP_MEMORY_COMPACT` + `GATE_OPENCLAW_COMPACT` 而 user 只是「你好」，说明 Gateway 版本过旧；升级后应变为 `STEP_DIRECT_CHAT` + edge（在 Auto 路由且端侧可用时）。首次工作区若 system 含 `Bootstrap Pending`，assistant 会按 `BOOTSTRAP.md` 做自我介绍，与路由无关。
 
-**日常 meta 显示 edge 但答案来自云** — 见上第 3 点：`route=edge` + `fallback=true` 表示端侧质量门失败后升云，非决策错误。
+**日常 meta 显示 edge 但答案来自云** — 见上第 3 点：仅 **auto** 模式下 `route=edge` + `fallback=true` 表示端侧质量门失败后升云；固定 `gateway.route = "edge"` 不会升云。
 
 **粘性期内全是云** — 已移除 `GATE_STICKY_CLOUD`；**日常/心跳** 不受粘性改路；**Work 执行** 在粘性期走 `STICKY_CASCADE_RETRY`（先端后云）。端侧成功会清除 sticky。
 

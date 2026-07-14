@@ -12,6 +12,7 @@ import { useI18n } from '../../hooks/useI18n'
 import { fmtNum, formatSavedCredits, formatUptime, sidebarTokenShares, tierTokenTotal } from '../../lib/stats-utils'
 import { getEdition } from '../../lib/flowy/server'
 import { getAuthToken } from '../../stores/authStore'
+import { pickAvatar, pickNickname } from '../../lib/user-info'
 import { resolveEdgeModelLabel, isEdgeUpstreamConfigured } from '../../lib/edge-upstream'
 import { resolveCloudModelLabel } from '../../lib/cloud-upstream'
 import type { RouteMode } from '../../types/gateway'
@@ -32,16 +33,6 @@ const NAV_CARDS = [
 function navTo(page: string, navId: string): { to: '/upstream/$navId'; params: { navId: string } } | { to: '/overview' | '/stats' | '/routing' | '/agents' | '/logs' | '/settings' } {
   if (page === 'upstream') return { to: '/upstream/$navId', params: { navId } }
   return { to: `/${page}` as '/overview' | '/stats' | '/routing' | '/agents' | '/logs' | '/settings' }
-}
-
-function pickNickname(user: Record<string, unknown> | null | undefined) {
-  if (!user) return ''
-  return String(user.nickName || user.nickname || user.name || user.username || user.email || '')
-}
-
-function pickAvatar(user: Record<string, unknown> | null | undefined) {
-  if (!user) return ''
-  return String(user.avatar || user.headImg || user.head_img || user.avatarUrl || '')
 }
 
 export function Sidebar() {

@@ -221,9 +221,9 @@ Manifest：`{region}/{channel}/{with_account|without_account}/latest.json`（Win
 export MODELSCOPE_TOKEN=<token>
 uv run --with modelscope python scripts/publish_ota/publish.py \
   --platform macos \
-  --channel flowy --region-scope CN --version v0.17.4 \
+  --channel flowy --region-scope CN --version v0.17.8 \
   --enable-account-system true \
-  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.17.4_aarch64.dmg"
+  --setup-path "desktop/src-tauri/target/release/bundle/dmg/Token Router_0.17.8_aarch64.dmg"
 ```
 
 Manifest：`{region}/{channel}/{with_account|without_account}/macos/latest.json`

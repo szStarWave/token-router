@@ -718,6 +718,7 @@
     .tag.bordered.warn { background: var(--warning); border-color: transparent; color: #fff; }
     .tag.bordered.info { background: var(--primary); border-color: transparent; color: #fff; }
     .tag.bordered.neutral { background: var(--default-500); border-color: transparent; color: #fff; }
+    .tag.bordered.danger { background: var(--danger); border-color: transparent; color: #fff; }
     .nav-card.active .tag.bordered:not(.ok):not(.off):not(.warn):not(.info):not(.neutral) {
       background: rgba(255, 255, 255, 0.28);
       border-color: transparent;
@@ -1613,6 +1614,12 @@
       text-overflow: ellipsis;
     }
     .routing-log-card__expand { margin-top: 8px; }
+    .routing-log-card__toggle-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      align-items: center;
+    }
     .routing-log-card__toggle {
       height: 28px;
       padding: 0 8px;
@@ -1751,6 +1758,24 @@
     .routing-log-card__breakdown-adjustments li {
       margin: 2px 0;
       font-family: var(--mono);
+    }
+    .routing-log-card__error-reason {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--divider);
+    }
+    .routing-log-card__error-text {
+      margin: 6px 0 0;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--content2);
+      color: var(--foreground);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: auto;
     }
 
     /* ── Login (Flowy account) ── */

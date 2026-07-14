@@ -77,15 +77,36 @@ fn total_ram_gb() -> Option<f64> {
     None
 }
 
-fn build_feedback_markdown(content: &str, category: &str) -> String {
+fn format_feedback_user(user_id: Option<&str>, user_nickname: Option<&str>) -> String {
+    let id = user_id.map(str::trim).filter(|s| !s.is_empty());
+    let nickname = user_nickname.map(str::trim).filter(|s| !s.is_empty());
+    match (id, nickname) {
+        (Some(id), Some(name)) => format!("{id} {name}"),
+        (Some(id), None) => id.to_string(),
+        (None, Some(name)) => name.to_string(),
+        (None, None) => "未登录".to_string(),
+    }
+}
+
+fn build_feedback_markdown(
+    content: &str,
+    category: &str,
+    user_id: Option<&str>,
+    user_nickname: Option<&str>,
+) -> String {
     let (hw, ram_gb) = system_info();
     let version = env!("CARGO_PKG_VERSION");
+    let user_label = format_feedback_user(user_id, user_nickname);
     let mut lines = vec![
         "Token Router 用户反馈".to_string(),
         ">类型:<font color=\"comment\">用户反馈</font>".to_string(),
         format!(
             ">分类:<font color=\"comment\">{}</font>",
             sanitize_feedback_text(category_label(category))
+        ),
+        format!(
+            ">用户:<font color=\"comment\">{}</font>",
+            sanitize_feedback_text(&user_label)
         ),
         format!(
             ">版本:<font color=\"comment\">{}</font>",
@@ -263,7 +284,12 @@ pub fn feedback_app_version() -> String {
 }
 
 #[tauri::command]
-pub fn feedback_submit(content: String, category: Option<String>) -> Result<(), String> {
+pub fn feedback_submit(
+    content: String,
+    category: Option<String>,
+    user_id: Option<String>,
+    user_nickname: Option<String>,
+) -> Result<(), String> {
     let body = content.trim();
     if body.is_empty() {
         return Err("feedback content is empty".into());
@@ -275,7 +301,12 @@ pub fn feedback_submit(content: String, category: Option<String>) -> Result<(), 
     }
 
     let cat = category.as_deref().unwrap_or("other");
-    let markdown = build_feedback_markdown(body, cat);
+    let markdown = build_feedback_markdown(
+        body,
+        cat,
+        user_id.as_deref(),
+        user_nickname.as_deref(),
+    );
     let client = http_client();
 
     post_markdown(&client, &markdown)?;
@@ -287,4 +318,23 @@ pub fn feedback_submit(content: String, category: Option<String>) -> Result<(), 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_feedback_user;
+
+    #[test]
+    fn format_feedback_user_joins_id_and_nickname() {
+        assert_eq!(
+            format_feedback_user(Some("1001"), Some("Alice")),
+            "1001 Alice"
+        );
+    }
+
+    #[test]
+    fn format_feedback_user_falls_back_to_not_logged_in() {
+        assert_eq!(format_feedback_user(None, None), "未登录");
+        assert_eq!(format_feedback_user(Some(""), Some("  ")), "未登录");
+    }
 }

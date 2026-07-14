@@ -82,7 +82,8 @@ pub struct RouteDecision {
     /// Features captured at decision time for classifier learning.
     #[serde(skip)]
     pub classifier_features: Option<FeatureVector>,
-    /// DirectChat/HeartbeatAck: try edge first, cloud on quality gate failure.
+    /// DirectChat/HeartbeatAck in auto mode: try edge first, cloud on quality gate failure.
+    /// Never set when `gateway.route` is fixed to `edge` / `cloud`.
     #[serde(skip)]
     pub casual_quality_fallback: bool,
     /// Context for wordfreq runtime learning after the request completes.
@@ -675,8 +676,11 @@ fn finish(
     last_user_text: &str,
     config: &AppConfig,
 ) -> RouteDecision {
+    // Fixed `route=edge` is strict: never escalate to cloud (even on quality fail).
+    // Quality fallback only applies in auto mode when the decision landed on edge.
     let casual_quality_fallback = matches!(step_kind, StepKind::DirectChat | StepKind::HeartbeatAck)
         && route == RouteTier::Edge
+        && config.fixed_route.is_none()
         && edge_configured(config)
         && cloud_configured(config);
     if casual_quality_fallback {
