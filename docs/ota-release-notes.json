@@ -643,6 +643,22 @@
       "en-US": [
         "Version update"
       ]
+    },
+    "0.17.9": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
+    },
+    "v0.17.9": {
+      "zh-CN": [
+        "版本更新"
+      ],
+      "en-US": [
+        "Version update"
+      ]
     }
   }
 }
