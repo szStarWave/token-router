@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/gateway'
 import { normalizeClientGatewayBase } from '../lib/gateway'
+import { loadUiState } from '../lib/ui-state'
 import {
   bootstrapHerdsmanStatus,
   ensureEdgeUpstreamConfigured,
@@ -9,7 +10,7 @@ import {
   reconcileEdgeOnBoot,
 } from '../lib/edge-upstream'
 import { ensureCloudUpstreamConfigured, initCloudUpstream } from '../lib/cloud-upstream'
-import { isTauri, gatewayStatus, gatewayStart } from '../lib/tauri'
+import { isTauri, gatewayStart } from '../lib/tauri'
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
 import type { GatewayStatus, StatsSnapshot } from '../types/gateway'
@@ -116,19 +117,21 @@ export function useBootstrap(enabled: boolean) {
     if (tauri) document.body.classList.add('tauri-app')
 
     applyTheme()
-    void initEdgeUpstream()
-    initCloudUpstream()
 
     const run = async () => {
       if (tauri) {
         try {
-          const status = await gatewayStatus()
-          if (!status.running) {
-            const url = await gatewayStart()
-            if (url) setGatewayBase(normalizeClientGatewayBase(url))
-          } else if (status.url) {
-            setGatewayBase(normalizeClientGatewayBase(status.url))
-          }
+          await loadUiState()
+        } catch (e) {
+          console.warn('loadUiState failed', e)
+        }
+      }
+      void initEdgeUpstream()
+      initCloudUpstream()
+      if (tauri) {
+        try {
+          const url = await gatewayStart()
+          if (url) setGatewayBase(normalizeClientGatewayBase(url))
         } catch (e) {
           console.error('Tauri bootstrap failed', e)
         }

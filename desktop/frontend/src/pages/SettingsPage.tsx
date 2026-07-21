@@ -141,15 +141,15 @@ export function SettingsPage() {
         <div className="panel-title">{t('settings.gatewayListen')}</div>
         <div className="form-switches form-switches-stacked">
           <div className="switch-row">
-            <label htmlFor="gateway_lan_enabled">{t('field.gatewayLanEnabled')}</label>
-            <label className="switch" aria-hidden="true">
+            <span className="switch-row-label">{t('field.gatewayLanEnabled')}</span>
+            <label className="switch">
               <input type="checkbox" id="gateway_lan_enabled" checked={lan} onChange={(e) => setLan(e.target.checked)} />
               <span className="switch-slider" />
             </label>
           </div>
           <div className="switch-row">
-            <label htmlFor="gateway_auth_enabled">{t('field.gatewayAuthEnabled')}</label>
-            <label className="switch" aria-hidden="true">
+            <span className="switch-row-label">{t('field.gatewayAuthEnabled')}</span>
+            <label className="switch">
               <input type="checkbox" id="gateway_auth_enabled" checked={authEnabled} onChange={(e) => setAuthEnabled(e.target.checked)} />
               <span className="switch-slider" />
             </label>

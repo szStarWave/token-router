@@ -12,20 +12,33 @@ import {
   ONBOARDING_STEP_TARGETS,
   waitForTourTarget,
 } from '../lib/onboarding'
+import { useOnboardingDemo } from '../lib/onboarding-demo'
 
 async function syncTourStep(index: number, navigate: ReturnType<typeof useNavigate>) {
   switch (index) {
     case 0:
-      await navigate({ to: '/upstream/$navId', params: { navId: 'edge' } })
-      break
     case 1:
-      await navigate({ to: '/upstream/$navId', params: { navId: 'cloud' } })
-      break
     case 2:
       await navigate({ to: '/overview' })
       break
     case 3:
+      await navigate({ to: '/upstream/$navId', params: { navId: 'edge' } })
+      break
     case 4:
+    case 5:
+      await navigate({ to: '/upstream/$navId', params: { navId: 'cloud' } })
+      break
+    case 6:
+      await navigate({ to: '/overview' })
+      break
+    case 7:
+      await navigate({ to: '/routing' })
+      break
+    case 8:
+      await navigate({ to: '/logs' })
+      break
+    case 9:
+    case 10:
       await navigate({ to: '/stats' })
       break
     default:
@@ -57,6 +70,7 @@ export function useOnboardingTour() {
     destroyDriver()
     markOnboardingSeen()
     setShowIntro(false)
+    useOnboardingDemo.getState().clear()
   }, [destroyDriver])
 
   const createDriverInstance = useCallback(() => {
@@ -79,6 +93,7 @@ export function useOnboardingTour() {
       onDestroyed: () => {
         driverRef.current = null
         setTourActive(false)
+        useOnboardingDemo.getState().clear()
       },
       onNextClick: (_element, _step, { driver: d, state }) => {
         const nextIndex = (state.activeIndex ?? 0) + 1
@@ -103,6 +118,7 @@ export function useOnboardingTour() {
   const startTour = useCallback(async () => {
     setShowIntro(false)
     setTourActive(true)
+    useOnboardingDemo.getState().enable()
     await syncTourStep(0, navigate)
     const driverObj = createDriverInstance()
     driverObj.drive(0)
@@ -112,6 +128,7 @@ export function useOnboardingTour() {
     destroyDriver()
     markOnboardingSeen()
     setShowIntro(false)
+    useOnboardingDemo.getState().clear()
   }, [destroyDriver])
 
   const restartTour = useCallback(() => {

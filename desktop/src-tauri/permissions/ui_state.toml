@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-ui-state-load"
+description = "Enables the ui_state_load command."
+commands.allow = ["ui_state_load"]
+
+[[permission]]
+identifier = "allow-ui-state-save"
+description = "Enables the ui_state_save command."
+commands.allow = ["ui_state_save"]

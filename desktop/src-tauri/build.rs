@@ -103,6 +103,8 @@ fn main() {
                 "ota_download_update",
                 "ota_do_update",
                 "ota_get_post_restart_notice",
+                "ui_state_load",
+                "ui_state_save",
             ]),
         ),
     )

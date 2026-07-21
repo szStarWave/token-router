@@ -18,6 +18,7 @@ mod flowy_test_server;
 mod herdsman;
 pub mod ota;
 mod status_pipe;
+mod ui_state;
 mod wechat_interceptor;
 mod wsl_setup;
 
@@ -305,6 +306,8 @@ pub fn run() {
             herdsman::herdsman_start,
             feedback::feedback_app_version,
             feedback::feedback_submit,
+            ui_state::ui_state_load,
+            ui_state::ui_state_save,
             ota::service::ota_app_version,
             ota::service::ota_check_now,
             ota::service::ota_download_update,

@@ -1,6 +1,7 @@
 ﻿import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../hooks/useI18n'
+import { useOnboardingDemo } from '../lib/onboarding-demo'
 import { type ChartRange } from '../components/stats/StatsChart'
 import { ModelTokenPanel } from '../components/stats/ModelTokenPanel'
 import { AuthKeyStatsPanel } from '../components/stats/AuthKeyStatsPanel'
@@ -11,9 +12,13 @@ export function StatsPage() {
   const { t, locale } = useI18n()
   const scope = useAppStore((s) => s.scope)
   const setScope = useAppStore((s) => s.setScope)
-  const stats = useAppStore((s) => s.stats)
-  const sessionSavedPoints = useAppStore((s) => s.sessionSavedPoints)
-  const globalSavedPoints = useAppStore((s) => s.globalSavedPoints)
+  const demo = useOnboardingDemo()
+  const rawStats = useAppStore((s) => s.stats)
+  const rawSessionSavedPoints = useAppStore((s) => s.sessionSavedPoints)
+  const rawGlobalSavedPoints = useAppStore((s) => s.globalSavedPoints)
+  const stats = demo.active ? demo.stats : rawStats
+  const sessionSavedPoints = demo.active ? demo.sessionSavedPoints : rawSessionSavedPoints
+  const globalSavedPoints = demo.active ? demo.globalSavedPoints : rawGlobalSavedPoints
   const savedPoints = scope === 'session' ? sessionSavedPoints : globalSavedPoints
   const [chartRange, setChartRange] = useState<ChartRange>('h24')
 
@@ -77,12 +82,20 @@ export function StatsPage() {
         </div>
         <div className="stat-box">
           <div className="label">{t('stat.totalReq')}</div>
-          <div className="value" id="stat-req">{fmtNum(stats?.requests_total, locale)}</div>
+          <div className="value" id="stat-req">
+            {fmtNum(
+              routing
+                ? routing.edge + routing.cloud + routing.cascade
+                : stats?.requests_total,
+              locale,
+            )}
+          </div>
           <div className="sub" id="stat-rpm">
             {routing
               ? t('stat.reqEdgeCloud', {
                   edge: fmtNum(routing.edge, locale),
                   cloud: fmtNum(routing.cloud, locale),
+                  cascade: fmtNum(routing.cascade, locale),
                 })
               : '—'}
           </div>
@@ -211,6 +224,7 @@ export function StatsPage() {
       <div className="panel">
         <div className="panel-title">{t('stats.cascadeLatency')}</div>
         <div className="stat-grid" id="stats-detail">
+          <div className="stat-box"><div className="label">{t('stat.cascadeRoute')}</div><div className="value">{routing?.cascade ?? '—'}</div></div>
           <div className="stat-box"><div className="label">{t('stat.cascadeEdgeOk')}</div><div className="value">{cascade?.edge_ok ?? '—'}</div></div>
           <div className="stat-box"><div className="label">{t('stat.cascadeFallback')}</div><div className="value">{cascade?.fallback_to_cloud ?? '—'}</div></div>
           <div className="stat-box"><div className="label">{t('stat.avgReqMs')}</div><div className="value">{fmtMs(latency?.avg_request_ms, t)}</div></div>

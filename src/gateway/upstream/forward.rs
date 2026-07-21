@@ -188,6 +188,8 @@ impl UpstreamClient {
                 }
             }
             self.stats.record_cascade_fallback();
+        } else {
+            self.stats.record_cascade_fallback();
         }
         let cloud = self.target_cloud(agent_id);
         let resp = self
@@ -416,16 +418,29 @@ impl UpstreamClient {
         agent_id: Option<&str>,
         auth_key: Option<&AuthKeyContext>,
     ) -> AppResult<(SseStream, bool)> {
+        // Align cascade_edge_ok / cascade_fallback with route_cascade (stream path
+        // previously skipped edge_ok, so totals looked broken for streaming clients).
+        let count_cascade = matches!(decision.route, RouteTier::Cascade);
         let edge = self.target_edge(agent_id);
         let edge_tried = edge.base_url.is_some();
+        let cloud_ok = self.target_cloud(agent_id).base_url.is_some();
         if edge_tried {
             match self.stream_target(req, edge, decision, agent_id, auth_key).await {
-                Ok(stream) => return Ok((stream, false)),
-                Err(_) if self.target_cloud(agent_id).base_url.is_some() => {
-                    self.stats.record_cascade_fallback();
+                Ok(stream) => {
+                    if count_cascade {
+                        self.stats.record_cascade_edge_ok();
+                    }
+                    return Ok((stream, false));
+                }
+                Err(_) if cloud_ok => {
+                    if count_cascade {
+                        self.stats.record_cascade_fallback();
+                    }
                 }
                 Err(e) => return Err(e),
             }
+        } else if count_cascade && cloud_ok {
+            self.stats.record_cascade_fallback();
         }
 
         self.stream_target(req, self.target_cloud(agent_id), decision, agent_id, auth_key)

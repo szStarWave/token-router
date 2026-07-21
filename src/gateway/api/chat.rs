@@ -40,7 +40,6 @@ pub async fn chat_completions_core(
     output: ChatOutputFormat,
 ) -> AppResult<impl IntoResponse> {
     let stream = req.stream;
-    state.stats.record_request(stream);
 
     let auth_ctx = match require_gateway_api_key(&headers, &state.config().inbound_api_keys) {
         Ok(matched) => matched.and_then(|key_value| {
@@ -58,7 +57,6 @@ pub async fn chat_completions_core(
 
     if let Some(ref ctx) = auth_ctx {
         state.stats.touch_auth_key_last_used(ctx);
-        state.stats.record_request_for_auth_key(ctx, stream);
     }
 
     if let Err(e) = crate::gateway::routing::require_any_upstream(&state.config()) {
@@ -84,9 +82,12 @@ pub async fn chat_completions_core(
         Some(state.routing_logs.as_ref()),
         state.wordfreq.as_ref(),
     );
+    // Count only after a route decision so requests_total == edge+cloud+cascade.
+    state.stats.record_request(stream);
     state.stats.record_decision(&decision);
     let auth_key_ref = auth_ctx.as_ref();
     if let Some(ctx) = auth_key_ref {
+        state.stats.record_request_for_auth_key(ctx, stream);
         state.stats.record_decision_for_auth_key(ctx, &decision);
     }
 

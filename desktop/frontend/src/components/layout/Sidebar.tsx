@@ -8,6 +8,7 @@ import { useAuthStore } from '../../stores/authStore'
 import { useSetupStore } from '../../stores/setupStore'
 import { useEdgeStore } from '../../stores/edgeStore'
 import { useCloudStore } from '../../stores/cloudStore'
+import { useOnboardingDemo } from '../../lib/onboarding-demo'
 import { useI18n } from '../../hooks/useI18n'
 import { fmtNum, formatSavedCredits, formatUptime, sidebarTokenShares, tierTokenTotal } from '../../lib/stats-utils'
 import { getEdition } from '../../lib/flowy/server'
@@ -43,6 +44,10 @@ export function Sidebar() {
   const stats = useAppStore((s) => s.stats)
   const globalStats = useAppStore((s) => s.globalStats)
   const globalSavedPoints = useAppStore((s) => s.globalSavedPoints)
+  const demo = useOnboardingDemo()
+  const sidebarGlobalStats = demo.active ? demo.globalStats ?? globalStats : globalStats
+  const sidebarSavedPoints = demo.active ? demo.globalSavedPoints ?? globalSavedPoints : globalSavedPoints
+  const sidebarStatus: ReturnType<typeof useAppStore.getState>['status'] = demo.active && !status ? demo.status : status
   const liveUptime = useLiveUptime()
   const userInfo = useAuthStore((s) => s.userInfo)
   const logout = useAuthStore((s) => s.logout)
@@ -87,8 +92,8 @@ export function Sidebar() {
 
   const cooldownSec = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000))
 
-  const tb = (globalStats?.token_breakdown ?? stats?.token_breakdown) as Record<string, unknown> | undefined
-  const sidebarStats = globalStats ?? stats
+  const tb = (sidebarGlobalStats?.token_breakdown ?? stats?.token_breakdown) as Record<string, unknown> | undefined
+  const sidebarStats = sidebarGlobalStats ?? stats
   const shares = sidebarTokenShares(tb)
   const edgeConfigured = useMemo(
     () => isEdgeUpstreamConfigured(setup?.edge),
@@ -233,8 +238,8 @@ export function Sidebar() {
                 <NavCardIcon navId={card.navId} />
               </span>
               <div className="nav-card-expand">
-                <NavCardBody navId={card.navId} status={status} sidebarStats={sidebarStats} savedPoints={globalSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} t={t} locale={locale} />
-                <NavCardFoot navId={card.navId} status={status} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} cloudModelLabel={cloudModelLabel} t={t} locale={locale} />
+                <NavCardBody navId={card.navId} status={sidebarStatus} sidebarStats={sidebarStats} savedPoints={sidebarSavedPoints} shares={shares} tb={tb} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} liveUptime={liveUptime} t={t} locale={locale} />
+                <NavCardFoot navId={card.navId} status={sidebarStatus} sidebarStats={sidebarStats} edgeConfigured={!!edgeConfigured} cloudConfigured={!!cloudConfigured} setup={setup} profileLabel={profileLabel} routeTab={routeTab} edgeModelLabel={edgeModelLabel} cloudModelLabel={cloudModelLabel} t={t} locale={locale} />
               </div>
             </Link>
           )

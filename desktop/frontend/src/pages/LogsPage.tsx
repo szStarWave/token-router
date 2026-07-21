@@ -6,6 +6,7 @@ import {
   useRoutingLogsQuery,
 } from '../queries/gateway'
 import { useAppStore } from '../stores/appStore'
+import { useOnboardingDemo } from '../lib/onboarding-demo'
 import { useI18n } from '../hooks/useI18n'
 import { gatewayOpenLogsDir } from '../lib/tauri'
 import { LOG_LOAD_OLDER_THRESHOLD, LOG_MAX_LINES } from '../constants/defaults'
@@ -140,6 +141,11 @@ export function LogsPage() {
     })
   }, [routingQuery.data, logView, pollAfterId])
 
+  const demo = useOnboardingDemo()
+  const effectiveRoutingEntries = demo.active && logView === 'routing' && demo.routingLogs.length > 0
+    ? demo.routingLogs
+    : routingEntries
+
   const emptyMessage = useMemo(() => {
     if (!connected) return t('logs.offline')
     if (logView === 'routing') {
@@ -172,7 +178,7 @@ export function LogsPage() {
 
   const scrollContentKey =
     logView === 'routing'
-      ? routingEntries.map((e) => e.id).join(',')
+      ? effectiveRoutingEntries.map((e) => e.id).join(',')
       : otherLines.map((l) => l.id).join(',')
 
   useEffect(() => {
@@ -309,7 +315,7 @@ export function LogsPage() {
     }
   }
 
-  const showEmpty = logView === 'routing' ? !routingEntries.length : !otherLines.length
+  const showEmpty = logView === 'routing' ? !effectiveRoutingEntries.length : !otherLines.length
 
   return (
     <section className="page active" id="page-logs">
@@ -368,7 +374,7 @@ export function LogsPage() {
           {emptyMessage && showEmpty ? (
             <div className="log-line info">{emptyMessage}</div>
           ) : logView === 'routing' ? (
-            routingEntries.map((entry) => <RoutingLogCard key={entry.id} entry={entry} />)
+            effectiveRoutingEntries.map((entry) => <RoutingLogCard key={entry.id} entry={entry} />)
           ) : (
             otherLines.map((line) => (
               <div key={line.id} className={`log-line ${line.level}`}>

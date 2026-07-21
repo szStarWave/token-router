@@ -12,7 +12,8 @@ import {
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
 import { apiFetch } from './gateway'
-import { isTauri } from './tauri'
+import { isTauri } from './ui-state'
+import { getUiState, setUiEdgeUserConfigured, setUiEdgeManualEntries } from './ui-state'
 import type { UpstreamSetupView } from '../types/gateway'
 
 export type {
@@ -62,8 +63,6 @@ export type EdgeReconcileCompleteCallback = (result: EdgeReconcileResult) => voi
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 export const HERDSMAN_INSTALL_URL = 'https://flowyaipc.cn/#ai-engine'
-const EDGE_USER_CONFIGURED_KEY = 'tr-edge-user-configured'
-const EDGE_MANUAL_ENTRIES_KEY = 'tr-edge-manual-entries'
 const HERDSMAN_CONNECTION_POLL_MS = 12_000
 
 function isValidManualEntry(entry: unknown): entry is ManualEdgeEntry {
@@ -105,7 +104,17 @@ function dedupeManualEntries(entries: ManualEdgeEntry[]): ManualEdgeEntry[] {
 
 function loadManualEntriesFromStorage(): ManualEdgeEntry[] {
   try {
-    const raw = localStorage.getItem(EDGE_MANUAL_ENTRIES_KEY)
+    if (isTauri()) {
+      const raw = getUiState().edgeManualEntries
+      if (!Array.isArray(raw)) return []
+      const valid = raw.filter(isValidManualEntry)
+      const deduped = dedupeManualEntries(valid)
+      if (deduped.length !== valid.length || JSON.stringify(valid) !== JSON.stringify(deduped)) {
+        persistManualEntries(deduped)
+      }
+      return deduped
+    }
+    const raw = localStorage.getItem('tr-edge-manual-entries')
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
@@ -121,8 +130,12 @@ function loadManualEntriesFromStorage(): ManualEdgeEntry[] {
 }
 
 function persistManualEntries(entries: ManualEdgeEntry[]): void {
+  if (isTauri()) {
+    setUiEdgeManualEntries(entries as unknown[])
+    return
+  }
   try {
-    localStorage.setItem(EDGE_MANUAL_ENTRIES_KEY, JSON.stringify(entries))
+    localStorage.setItem('tr-edge-manual-entries', JSON.stringify(entries))
   } catch {
     // ignore quota / private mode
   }
@@ -137,15 +150,24 @@ const uiChangeListeners = new Set<EdgeUiChangeCallback>()
 const reconcileCompleteListeners = new Set<EdgeReconcileCompleteCallback>()
 
 function isEdgeUserConfigured(): boolean {
-  return localStorage.getItem(EDGE_USER_CONFIGURED_KEY) === '1'
+  if (isTauri()) return getUiState().edgeUserConfigured
+  return localStorage.getItem('tr-edge-user-configured') === '1'
 }
 
 function markEdgeUserConfigured(): void {
-  localStorage.setItem(EDGE_USER_CONFIGURED_KEY, '1')
+  if (isTauri()) {
+    setUiEdgeUserConfigured(true)
+    return
+  }
+  localStorage.setItem('tr-edge-user-configured', '1')
 }
 
 function clearEdgeUserConfigured(): void {
-  localStorage.removeItem(EDGE_USER_CONFIGURED_KEY)
+  if (isTauri()) {
+    setUiEdgeUserConfigured(false)
+    return
+  }
+  localStorage.removeItem('tr-edge-user-configured')
 }
 
 function updateHerdsmanConnectionPoll(): void {

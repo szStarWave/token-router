@@ -88,8 +88,8 @@ export function RoutingPage() {
           <div className="panel-title">{t('routing.experience')}</div>
           <div className="form-switches">
             <div className="switch-row">
-              <label htmlFor="experience_enabled">{t('field.experienceEnabled')}</label>
-              <label className="switch" aria-hidden="true">
+              <span className="switch-row-label">{t('field.experienceEnabled')}</span>
+              <label className="switch">
                 <input type="checkbox" id="experience_enabled" checked={!!form.experience_enabled} onChange={(e) => set('experience_enabled', e.target.checked)} />
                 <span className="switch-slider" />
               </label>
@@ -109,8 +109,8 @@ export function RoutingPage() {
           <p className="hint">{t('routing.adaptiveHint')}</p>
           <div className="form-switches">
             <div className="switch-row">
-              <label htmlFor="adaptive_routing_enabled">{t('field.adaptiveRoutingEnabled')}</label>
-              <label className="switch" aria-hidden="true">
+              <span className="switch-row-label">{t('field.adaptiveRoutingEnabled')}</span>
+              <label className="switch">
                 <input type="checkbox" id="adaptive_routing_enabled" checked={!!form.adaptive_routing_enabled} onChange={(e) => set('adaptive_routing_enabled', e.target.checked)} />
                 <span className="switch-slider" />
               </label>
@@ -129,15 +129,15 @@ export function RoutingPage() {
           <p className="hint">{t('routing.classifierHint')}</p>
           <div className="form-switches">
             <div className="switch-row">
-              <label htmlFor="classifier_enabled">{t('field.classifierEnabled')}</label>
-              <label className="switch" aria-hidden="true">
+              <span className="switch-row-label">{t('field.classifierEnabled')}</span>
+              <label className="switch">
                 <input type="checkbox" id="classifier_enabled" checked={!!form.classifier_enabled} onChange={(e) => set('classifier_enabled', e.target.checked)} />
                 <span className="switch-slider" />
               </label>
             </div>
             <div className="switch-row">
-              <label htmlFor="classifier_prior_from_heuristic">{t('field.classifierPriorFromHeuristic')}</label>
-              <label className="switch" aria-hidden="true">
+              <span className="switch-row-label">{t('field.classifierPriorFromHeuristic')}</span>
+              <label className="switch">
                 <input type="checkbox" id="classifier_prior_from_heuristic" checked={form.classifier_prior_from_heuristic !== false} onChange={(e) => set('classifier_prior_from_heuristic', e.target.checked)} />
                 <span className="switch-slider" />
               </label>

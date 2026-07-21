@@ -81,20 +81,4 @@ export async function refreshGatewayStatusAfterRestart(
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
-export function readGatewayAuthKeyFromStorage(): string | null {
-  try {
-    return localStorage.getItem('tr-gateway-auth-key')
-  } catch {
-    return null
-  }
-}
-
-export function persistGatewayAuthKeyFull(key: string): void {
-  try {
-    localStorage.setItem('tr-gateway-auth-key', key)
-  } catch {
-    /* ignore */
-  }
-}
-
 export { useAuthStore, useAppStore }

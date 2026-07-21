@@ -52,6 +52,8 @@
     "allow-check-agent-initialized",
     "allow-check-agent-deployed",
     "allow-wsl-detect-environment",
-    "allow-wsl-configure-agents"
+    "allow-wsl-configure-agents",
+    "allow-ui-state-load",
+    "allow-ui-state-save"
   ]
 }

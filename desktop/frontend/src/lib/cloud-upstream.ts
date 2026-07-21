@@ -13,6 +13,8 @@ import {
 import { useSetupStore } from '../stores/setupStore'
 import { useAppStore } from '../stores/appStore'
 import { apiFetch } from './gateway'
+import { isTauri } from './ui-state'
+import { getUiState, setUiCloudUserConfigured, setUiCloudManualEntries } from './ui-state'
 import type { UpstreamSetupView } from '../types/gateway'
 
 export type { CloudDisplayItem, ManualCloudEntry, SetupCloud } from '../stores/cloudStore'
@@ -26,49 +28,69 @@ export const CLOUD_CUSTOM_MODELS_ENABLED = false
 /** Default max context for custom cloud models (1M). */
 export const DEFAULT_CLOUD_CONTEXT_WINDOW = 1_000_000
 
-const CLOUD_USER_CONFIGURED_KEY = 'tr-cloud-user-configured'
-const CLOUD_MANUAL_ENTRIES_KEY = 'tr-cloud-manual-entries'
-
 const uiChangeListeners = new Set<() => void>()
 
 function loadManualEntriesFromStorage(): ManualCloudEntry[] {
   try {
-    const raw = localStorage.getItem(CLOUD_MANUAL_ENTRIES_KEY)
+    if (isTauri()) {
+      const raw = getUiState().cloudManualEntries
+      if (!Array.isArray(raw)) return []
+      return raw.filter(
+        (entry): entry is ManualCloudEntry => isValidCloudEntry(entry),
+      )
+    }
+    const raw = localStorage.getItem('tr-cloud-manual-entries')
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (entry): entry is ManualCloudEntry =>
-        !!entry
-        && typeof entry === 'object'
-        && typeof (entry as ManualCloudEntry).id === 'string'
-        && typeof (entry as ManualCloudEntry).name === 'string'
-        && typeof (entry as ManualCloudEntry).base_url === 'string'
-        && typeof (entry as ManualCloudEntry).model === 'string',
-    )
+    return parsed.filter((entry): entry is ManualCloudEntry => isValidCloudEntry(entry))
   } catch {
     return []
   }
 }
 
+function isValidCloudEntry(entry: unknown): entry is ManualCloudEntry {
+  return (
+    !!entry
+    && typeof entry === 'object'
+    && typeof (entry as ManualCloudEntry).id === 'string'
+    && typeof (entry as ManualCloudEntry).name === 'string'
+    && typeof (entry as ManualCloudEntry).base_url === 'string'
+    && typeof (entry as ManualCloudEntry).model === 'string'
+  )
+}
+
 function persistManualEntries(entries: ManualCloudEntry[]): void {
+  if (isTauri()) {
+    setUiCloudManualEntries(entries as unknown[])
+    return
+  }
   try {
-    localStorage.setItem(CLOUD_MANUAL_ENTRIES_KEY, JSON.stringify(entries))
+    localStorage.setItem('tr-cloud-manual-entries', JSON.stringify(entries))
   } catch {
     // ignore quota / private mode
   }
 }
 
 function isCloudUserConfigured(): boolean {
-  return localStorage.getItem(CLOUD_USER_CONFIGURED_KEY) === '1'
+  if (isTauri()) return getUiState().cloudUserConfigured
+  return localStorage.getItem('tr-cloud-user-configured') === '1'
 }
 
 function markCloudUserConfigured(): void {
-  localStorage.setItem(CLOUD_USER_CONFIGURED_KEY, '1')
+  if (isTauri()) {
+    setUiCloudUserConfigured(true)
+    return
+  }
+  localStorage.setItem('tr-cloud-user-configured', '1')
 }
 
 function clearCloudUserConfigured(): void {
-  localStorage.removeItem(CLOUD_USER_CONFIGURED_KEY)
+  if (isTauri()) {
+    setUiCloudUserConfigured(false)
+    return
+  }
+  localStorage.removeItem('tr-cloud-user-configured')
 }
 
 function notifyUiChange(): void {

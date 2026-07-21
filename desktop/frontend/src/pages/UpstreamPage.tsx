@@ -34,6 +34,7 @@ import {
   upsertManualEntry,
   type ManualEdgeEntry,
 } from '../lib/edge-upstream'
+import { useOnboardingDemo } from '../lib/onboarding-demo'
 import { fmtNum, fmtPct } from '../lib/stats-utils'
 import type { UpstreamSetupView } from '../types/gateway'
 import { DEFAULT_CLOUD_TOKEN_BUDGET, CLOUD_BUDGET_MIN, CLOUD_BUDGET_MAX } from '../constants/defaults'
@@ -62,15 +63,20 @@ export function UpstreamPage() {
   const cloudFlowyModels = useCloudStore((s) => s.flowyModels)
   const saveSetup = useSaveSetupMutation()
   const modelsQuery = useCloudModelsQuery()
+  const demo = useOnboardingDemo()
+  const demoActive = demo.active
+
+  const effectiveSelectedKey = demoActive ? demo.edgeSelectedKey ?? selectedKey : selectedKey
+  const effectiveCloudSelectedKey = demoActive ? demo.cloudSelectedKey ?? cloudSelectedKey : cloudSelectedKey
 
   const edgeConfigured = useMemo(
-    () => isEdgeUpstreamConfigured(setup?.edge),
-    [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
+    () => demoActive || isEdgeUpstreamConfigured(setup?.edge),
+    [demoActive, setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
 
   const cloudConfigured = useMemo(
-    () => isCloudModelUiConfigured(setup?.cloud) || !!setup?.cloud?.configured,
-    [setup?.cloud, cloudSelectedKey, cloudFlowyModels],
+    () => demoActive || isCloudModelUiConfigured(setup?.cloud) || !!setup?.cloud?.configured,
+    [demoActive, setup?.cloud, cloudSelectedKey, cloudFlowyModels],
   )
 
   const initialCloudQuota = cloudQuotaFromSetup(setup?.cloud)
@@ -118,6 +124,31 @@ export function UpstreamPage() {
   const cloudDisplayItems = buildCloudDisplayItems()
   const flowyItems = cloudDisplayItems.filter((i) => i.type === 'flowy')
 
+  const demoHerdsmanItems = demoActive && !herdsmanItems.length
+    ? demo.edgeModels.map((m) => ({
+        key: `herdsman:${m.id}`,
+        type: 'herdsman' as const,
+        id: m.id,
+        name: m.name,
+        base_url: m.endpoint,
+        model: m.id,
+        context_window: m.context_window,
+      }))
+    : herdsmanItems
+
+  const demoFlowyItems = demoActive && !flowyItems.length
+    ? demo.cloudModels.map((m) => ({
+        key: `flowy:${m.id}`,
+        type: 'flowy' as const,
+        id: m.id,
+        name: m.name,
+        base_url: 'https://api.flowy.ai/v1',
+        model: m.id,
+        icon: m.icon,
+        context_window: m.context_window,
+      }))
+    : flowyItems
+
   const applyCloudQuotaFromSetup = (cloud: UpstreamSetupView['cloud']) => {
     const { budget, enabled } = cloudQuotaFromSetup(cloud)
     setQuotaEnabled(enabled)
@@ -127,7 +158,7 @@ export function UpstreamPage() {
   }
 
   const saveCloud = (slider: number, quota: boolean) => {
-    if (!connected) return
+    if (demoActive || !connected) return
     quotaEditingRef.current = true
     const saveGen = ++cloudSaveGenRef.current
     const budget = quota ? budgetFromSlider(slider) : 0
@@ -146,6 +177,7 @@ export function UpstreamPage() {
   }
 
   const saveEdge = () => {
+    if (demoActive) return
     void persistEdgeSelection((body) => saveSetup.mutate(body))
   }
 
@@ -177,24 +209,32 @@ export function UpstreamPage() {
   }
 
   const budgetValue = budgetFromSlider(budgetSlider)
+  const demoEdgeModelName = demoActive && demo.edgeModels.length > 0
+    ? demo.edgeModels.find((m) => `herdsman:${m.id}` === demo.edgeSelectedKey)?.name ?? demo.edgeModels[0].name
+    : null
   const edgeModelLabel = useMemo(
-    () => getEdgeModelDisplayName(setup?.edge),
-    [setup?.edge, herdsmanConnected, selectedKey, cachedModels],
+    () => demoEdgeModelName ?? getEdgeModelDisplayName(setup?.edge),
+    [demoEdgeModelName, setup?.edge, herdsmanConnected, selectedKey, cachedModels],
   )
   const edgeModelTypeLabel = useMemo(() => {
+    if (demoActive) return t('edgeModel.herdsman')
     const sourceType = resolveEdgeModelSourceType(setup?.edge)
     if (!sourceType) return ''
     return sourceType === 'herdsman' ? t('edgeModel.herdsman') : t('edgeModel.custom')
-  }, [setup?.edge, herdsmanConnected, selectedKey, cachedModels, t])
+  }, [demoActive, setup?.edge, herdsmanConnected, selectedKey, cachedModels, t])
+  const demoCloudModelName = demoActive && demo.cloudModels.length > 0
+    ? demo.cloudModels.find((m) => `flowy:${m.id}` === demo.cloudSelectedKey)?.name ?? demo.cloudModels[0].name
+    : null
   const cloudModelLabel = useMemo(
-    () => getCloudModelDisplayName(setup?.cloud?.model),
-    [setup?.cloud?.model, cloudSelectedKey, cloudFlowyModels],
+    () => demoCloudModelName ?? getCloudModelDisplayName(setup?.cloud?.model),
+    [demoCloudModelName, setup?.cloud?.model, cloudSelectedKey, cloudFlowyModels],
   )
   const cloudModelTypeLabel = useMemo(() => {
+    if (demoActive) return t('cloudModel.flowy')
     const sourceType = resolveCloudModelSourceType(setup?.cloud)
     if (!sourceType) return ''
     return sourceType === 'flowy' ? t('cloudModel.flowy') : t('cloudModel.custom')
-  }, [setup?.cloud, cloudSelectedKey, cloudFlowyModels, t])
+  }, [demoActive, setup?.cloud, cloudSelectedKey, cloudFlowyModels, t])
 
   return (
     <section className="page active" id="page-upstream">
@@ -244,16 +284,16 @@ export function UpstreamPage() {
           <div className="edge-model-subsection">
             <div className="edge-model-subsection-title">{t('edgeModel.herdsmanListTitle')}</div>
             <div id="edge-herdsman-model-list" className="edge-model-list">
-              {!herdsmanConnected ? (
+              {!herdsmanConnected && !demoActive ? (
                 <HerdsmanSetupBanner installed={herdsmanInstalled} />
-              ) : !herdsmanItems.length ? (
+              ) : !demoHerdsmanItems.length ? (
                 <HerdsmanNoModelsBanner />
               ) : (
-                herdsmanItems.map((item) => (
+                demoHerdsmanItems.map((item) => (
                   <EdgeModelListItem
                     key={item.key}
                     item={item}
-                    selected={selectedKey === item.key}
+                    selected={effectiveSelectedKey === item.key}
                     typeLabel={t('edgeModel.herdsman')}
                     selectLabel={item.name}
                     editLabel={t('action.edit')}
@@ -336,18 +376,18 @@ export function UpstreamPage() {
           <div className="edge-model-subsection">
             <div className="edge-model-subsection-title">{t('cloudModel.flowyListTitle')}</div>
             <div id="cloud-flowy-model-list" className="edge-model-list">
-              {!getAuthToken() ? (
+              {!getAuthToken() && !demoActive ? (
                 <div className="edge-model-list-empty">{t('cloudModel.flowyLoginRequired')}</div>
-              ) : modelsQuery.isLoading && !flowyItems.length ? (
+              ) : modelsQuery.isLoading && !demoFlowyItems.length ? (
                 <div className="edge-model-list-empty">{t('status.loading')}</div>
-              ) : !flowyItems.length ? (
+              ) : !demoFlowyItems.length ? (
                 <div className="edge-model-list-empty">{t('cloudModel.flowyEmpty')}</div>
               ) : (
-                flowyItems.map((item) => (
+                demoFlowyItems.map((item) => (
                   <EdgeModelListItem
                     key={item.key}
                     item={item}
-                    selected={cloudSelectedKey === item.key}
+                    selected={effectiveCloudSelectedKey === item.key}
                     typeLabel={t('cloudModel.flowy')}
                     selectLabel={item.name}
                     editLabel={t('action.edit')}
