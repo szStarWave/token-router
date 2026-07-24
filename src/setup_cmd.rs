@@ -141,6 +141,7 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
                 "端侧模型 (留空=不固定)",
                 edge.and_then(|e| e.model.as_deref()).unwrap_or(""),
             )?),
+            upstream_model: None,
             api_key: prompt_api_key("端侧", edge)?,
             clear: false,
             token_budget: None,
@@ -159,6 +160,7 @@ fn interactive_patch(current: &UpstreamSetupView) -> Result<UpstreamSetupUpdate>
         cloud: Some(UpstreamEndpointPatch {
             base_url: Some(cloud_url),
             model: Some(cloud_model),
+            upstream_model: None,
             api_key: cloud_key,
             token_budget,
             clear: false,

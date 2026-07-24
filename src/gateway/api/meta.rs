@@ -144,7 +144,7 @@ fn is_decisive_reason_code(code: &str) -> bool {
     PREFIXES.iter().any(|p| code.starts_with(p))
 }
 
-const LOG_USER_PREVIEW_MAX: usize = 120;
+const LOG_USER_PREVIEW_MAX: usize = 1000;
 
 /// Collapse whitespace and cap length for structured log fields.
 pub fn truncate_user_preview_for_log(text: &str) -> String {
@@ -406,7 +406,7 @@ mod tests {
             truncate_user_preview_for_log("line1\nline2"),
             "line1 line2"
         );
-        let long = "a".repeat(150);
+        let long = "a".repeat(550);
         let out = truncate_user_preview_for_log(&long);
         assert_eq!(out.chars().count(), LOG_USER_PREVIEW_MAX + 1);
         assert!(out.ends_with("\u{2026}"));

@@ -11,7 +11,7 @@ use crate::gateway::api::meta::{
 };
 use crate::gateway::routing::RouteDecision;
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 /// Keep the newest N routing decisions on disk.
 const MAX_ROWS: i64 = 50_000;
 const DEFAULT_LIMIT: u32 = 100;
@@ -34,6 +34,12 @@ pub struct RoutingLogEntryJson {
     pub reason_codes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_in: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_out: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +177,39 @@ impl RoutingLogStore {
             }
             conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
         }
+        if version < 6 {
+            let has_tokens_in: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('routing_logs') WHERE name = 'tokens_in'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_tokens_in == 0 {
+                conn.execute("ALTER TABLE routing_logs ADD COLUMN tokens_in INTEGER", [])?;
+            }
+            let has_tokens_out: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('routing_logs') WHERE name = 'tokens_out'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_tokens_out == 0 {
+                conn.execute("ALTER TABLE routing_logs ADD COLUMN tokens_out INTEGER", [])?;
+            }
+            let has_cached_tokens: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('routing_logs') WHERE name = 'cached_tokens'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_cached_tokens == 0 {
+                conn.execute("ALTER TABLE routing_logs ADD COLUMN cached_tokens INTEGER", [])?;
+            }
+            conn.execute("UPDATE schema_version SET version = ?1", params![SCHEMA_VERSION])?;
+        }
         Ok(())
     }
 
@@ -265,6 +304,15 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
         Ok(())
     }
 
+    pub fn mark_token_usage(&self, id: i64, tokens_in: i64, tokens_out: i64, cached_tokens: i64) -> anyhow::Result<()> {
+        let conn = self.conn.lock().expect("routing log db mutex");
+        conn.execute(
+            "UPDATE routing_logs SET tokens_in = ?1, tokens_out = ?2, cached_tokens = ?3 WHERE id = ?4",
+            params![tokens_in, tokens_out, cached_tokens, id],
+        )?;
+        Ok(())
+    }
+
     pub fn query(&self, query: RoutingLogsQuery) -> anyhow::Result<RoutingLogsResponse> {
         let limit = query
             .limit
@@ -275,7 +323,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
 
         if let Some(before_id) = query.before_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason, tokens_in, tokens_out, cached_tokens
                  FROM routing_logs
                  WHERE id < ?1
                  ORDER BY id DESC
@@ -298,7 +346,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
 
         if let Some(after_id) = query.after_id {
             let mut stmt = conn.prepare(
-                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
+                "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason, tokens_in, tokens_out, cached_tokens
                  FROM routing_logs
                  WHERE id > ?1
                  ORDER BY id ASC
@@ -314,7 +362,7 @@ pub fn mark_served(&self, id: i64, served_route: &str, served_model: Option<&str
         }
 
         let mut stmt = conn.prepare(
-            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason
+            "SELECT id, recorded_at_iso, route, served_route, step_kind, model, user_preview, difficulty, reason_codes, served_model, error_reason, tokens_in, tokens_out, cached_tokens
              FROM routing_logs
              ORDER BY id DESC
              LIMIT ?1",
@@ -366,6 +414,9 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutingLogEntryJson
             .map(str::to_string)
             .collect(),
         error_reason: error_reason.filter(|s| !s.trim().is_empty()),
+        tokens_in: row.get(11)?,
+        tokens_out: row.get(12)?,
+        cached_tokens: row.get(13)?,
     })
 }
 

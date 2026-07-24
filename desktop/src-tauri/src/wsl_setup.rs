@@ -51,15 +51,6 @@ pub struct WslDetectResult {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WslConfigureResult {
-    pub distro: String,
-    pub gateway_host: String,
-    pub configured: Vec<AgentSetupResult>,
-    pub skipped: Vec<String>,
-}
-
 fn decode_wsl_output(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -76,9 +67,15 @@ fn decode_wsl_output(bytes: &[u8]) -> String {
 }
 
 fn run_wsl_raw(args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("wsl.exe")
-        .args(args)
-        .output()
+    let mut cmd = Command::new("wsl.exe");
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.output()
         .map_err(|e| format!("failed to run wsl.exe: {e}"))
 }
 
@@ -451,51 +448,35 @@ fn ensure_running_distro(distro: &str) -> Result<(), String> {
     Err(format!("WSL distro `{distro}` is not running"))
 }
 
-fn configure_wsl_agents(distro: &str, api_key: Option<String>) -> Result<WslConfigureResult, String> {
+fn configure_single_wsl_agent(
+    distro: &str,
+    agent: &str,
+    api_key: Option<String>,
+) -> Result<AgentSetupResult, String> {
     ensure_running_distro(distro)?;
     let context = fetch_distro_context(distro)?;
     let home = context.home_unc;
+
+    let init = agent_init_status_at(&home, agent)?;
+    if !init.initialized {
+        return Err(format!("agent_not_initialized:{agent}:{}", init.config_path));
+    }
 
     let config = AppConfig::load().map_err(|e| e.to_string())?;
     let port = listen_port_from_addr(&config.listen_addr);
     let gateway = pick_wsl_gateway_host(distro, port, &context.gateway_candidates);
     let (_base, openai_v1_base, anthropic_base) = gateway_urls_from_host(&gateway.host, port);
 
-    let mut configured = Vec::new();
-    let mut skipped = Vec::new();
-
-    for agent in WSL_AGENTS {
-        let init = agent_init_status_at(&home, agent)?;
-        if !init.initialized {
-            skipped.push(format!("{agent}: not initialized"));
-            continue;
-        }
-        let result = match *agent {
-            "openclaw" => configure_openclaw_at(&home, &openai_v1_base, api_key.clone()),
-            "hermes" => configure_hermes_at(&home, agent, &openai_v1_base, api_key.clone()),
-            "claude-code" => configure_claude_code_at(&home, &anthropic_base, api_key.clone()),
-            "codex" => configure_codex_at(&home, &openai_v1_base, api_key.clone()),
-            "opencode" => configure_opencode_at(&home, &openai_v1_base, api_key.clone()),
-            "codebuddy" => configure_codebuddy_at(&home, &openai_v1_base, api_key.clone()),
-            "workbuddy" => configure_workbuddy_at(&home, &openai_v1_base, api_key.clone()),
-            _ => continue,
-        };
-        match result {
-            Ok(item) => configured.push(item),
-            Err(err) => skipped.push(format!("{agent}: {err}")),
-        }
+    match agent {
+        "openclaw" => configure_openclaw_at(&home, &openai_v1_base, api_key),
+        "hermes" => configure_hermes_at(&home, agent, &openai_v1_base, api_key),
+        "claude-code" => configure_claude_code_at(&home, &anthropic_base, api_key),
+        "codex" => configure_codex_at(&home, &openai_v1_base, api_key),
+        "opencode" => configure_opencode_at(&home, &openai_v1_base, api_key),
+        "codebuddy" => configure_codebuddy_at(&home, &openai_v1_base, api_key),
+        "workbuddy" => configure_workbuddy_at(&home, &openai_v1_base, api_key),
+        _ => Err(format!("unknown agent: {agent}")),
     }
-
-    if configured.is_empty() && !skipped.is_empty() {
-        return Err(skipped.join("; "));
-    }
-
-    Ok(WslConfigureResult {
-        distro: distro.to_string(),
-        gateway_host: gateway.host,
-        configured,
-        skipped,
-    })
 }
 
 #[tauri::command]
@@ -506,15 +487,20 @@ pub async fn wsl_detect_environment() -> Result<WslDetectResult, String> {
 }
 
 #[tauri::command]
-pub async fn wsl_configure_agents(
+pub async fn wsl_configure_agent(
     distro: String,
+    agent: String,
     api_key: Option<String>,
-) -> Result<WslConfigureResult, String> {
+) -> Result<AgentSetupResult, String> {
     let distro = distro.trim().to_string();
+    let agent = agent.trim().to_string();
     if distro.is_empty() {
         return Err("WSL distro is required".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || configure_wsl_agents(&distro, api_key))
+    if agent.is_empty() {
+        return Err("Agent is required".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || configure_single_wsl_agent(&distro, &agent, api_key))
         .await
         .map_err(|err| format!("WSL configure task failed: {err}"))?
 }

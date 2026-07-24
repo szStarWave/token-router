@@ -125,6 +125,9 @@ pub struct UpstreamEndpoint {
     /// Upstream model id; `auto` keeps the client request model for Flowy routing.
     #[serde(default)]
     pub model: Option<String>,
+    /// Actual model name to forward to upstream when different from `model` (the display id).
+    #[serde(default)]
+    pub upstream_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

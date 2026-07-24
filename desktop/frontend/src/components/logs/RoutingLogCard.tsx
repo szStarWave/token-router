@@ -5,7 +5,6 @@ import {
   parseDifficultyBreakdown,
   pickDisplayReasonCodes,
   pickFinalRouteFactorCode,
-  truncatePreview,
 } from '../../lib/routing-log'
 import { explainDifficultyPartKey, explainFinalRouteFactor, stepKindLabel } from '../../lib/routing-reasons'
 import { useI18n } from '../../hooks/useI18n'
@@ -54,7 +53,7 @@ export function RoutingLogCard({ entry }: Props) {
   const [difficultyExpanded, setDifficultyExpanded] = useState(false)
   const [errorExpanded, setErrorExpanded] = useState(false)
   const previewText = entry.hasUserPreview
-    ? truncatePreview(entry.userPreview)
+    ? entry.userPreview
     : t('logs.noMessagePreview')
   const previewTitle = entry.hasUserPreview ? entry.userPreview : undefined
   const { shown: reasonTags, overflow } = pickDisplayReasonCodes(entry.reasonCodes)
@@ -84,6 +83,24 @@ export function RoutingLogCard({ entry }: Props) {
             <span className="routing-log-card__model">{entry.servedModel ?? entry.model}</span>
           </>
         ) : null}
+        {entry.tokensIn != null && entry.tokensOut != null && (
+          <>
+            <span className="routing-log-card__sep">·</span>
+            <div className="routing-log-card__tokens">
+              <span className="routing-log-card__token">{t('logs.tokensTotal')}: {entry.tokensIn + entry.tokensOut}</span>
+              <span className="routing-log-card__token-sep">·</span>
+              <span className="routing-log-card__token">{t('logs.tokensIn')}: {entry.tokensIn}</span>
+              <span className="routing-log-card__token-sep">·</span>
+              <span className="routing-log-card__token">{t('logs.tokensOut')}: {entry.tokensOut}</span>
+              {entry.cachedTokens != null && entry.cachedTokens > 0 && (
+                <>
+                  <span className="routing-log-card__token-sep">·</span>
+                  <span className="routing-log-card__token">{t('logs.tokensCached')}: {entry.cachedTokens}</span>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
       <p className="routing-log-card__preview" title={previewTitle}>
         <span className="routing-log-card__preview-label">{t('logs.messagePreview')}:</span>{' '}

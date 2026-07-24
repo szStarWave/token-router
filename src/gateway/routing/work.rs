@@ -131,11 +131,13 @@ mod tests {
             base_url: "http://127.0.0.1:11434/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         file.upstream.cloud = Some(UpstreamEndpoint {
             base_url: "https://api.example.com/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         AppConfig::from_file(file, std::path::PathBuf::from("/tmp/flowy-test"))
             .unwrap()

@@ -26,9 +26,11 @@ pub struct AgentUpstreamConfig {
     pub edge_base_url: Option<String>,
     pub edge_api_key: Option<String>,
     pub edge_model: Option<String>,
+    pub edge_upstream_model: Option<String>,
     pub cloud_base_url: Option<String>,
     pub cloud_api_key: Option<String>,
     pub cloud_model: Option<String>,
+    pub cloud_upstream_model: Option<String>,
     pub cloud_token_budget: Option<u64>,
 }
 
@@ -37,6 +39,7 @@ pub struct ResolvedUpstream {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub upstream_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,9 +51,11 @@ pub struct AppConfig {
     pub edge_base_url: Option<String>,
     pub edge_api_key: Option<String>,
     pub edge_model: Option<String>,
+    pub edge_upstream_model: Option<String>,
     pub cloud_base_url: Option<String>,
     pub cloud_api_key: Option<String>,
     pub cloud_model: Option<String>,
+    pub cloud_upstream_model: Option<String>,
     pub default_profile: Profile,
     pub ctx_edge_max_tokens: u32,
     pub data_dir: PathBuf,
@@ -150,6 +155,7 @@ impl AppConfig {
                 .and_then(|e| e.api_key.clone())
                 .filter(|s| !s.is_empty()),
             edge_model: file.upstream.edge.as_ref().and_then(|e| e.model.clone()),
+            edge_upstream_model: file.upstream.edge.as_ref().and_then(|e| e.upstream_model.clone()),
             cloud_base_url: file
                 .upstream
                 .cloud
@@ -163,6 +169,7 @@ impl AppConfig {
                 .and_then(|e| e.api_key.clone())
                 .filter(|s| !s.is_empty()),
             cloud_model: file.upstream.cloud.as_ref().and_then(|e| e.model.clone()),
+            cloud_upstream_model: file.upstream.cloud.as_ref().and_then(|e| e.upstream_model.clone()),
             default_profile,
             ctx_edge_max_tokens: file.gateway.ctx_edge_max_tokens,
             data_dir,
@@ -225,6 +232,7 @@ impl AppConfig {
                                 .and_then(|e| e.api_key.clone())
                                 .filter(|s| !s.is_empty()),
                             edge_model: edge.and_then(|e| e.model.clone()),
+                            edge_upstream_model: edge.and_then(|e| e.upstream_model.clone()),
                             cloud_base_url: cloud
                                 .filter(|e| endpoint_configured(e))
                                 .map(|e| e.base_url.clone()),
@@ -232,6 +240,7 @@ impl AppConfig {
                                 .and_then(|e| e.api_key.clone())
                                 .filter(|s| !s.is_empty()),
                             cloud_model: cloud.and_then(|e| e.model.clone()),
+                            cloud_upstream_model: cloud.and_then(|e| e.upstream_model.clone()),
                             cloud_token_budget: ac.cloud_token_budget,
                         },
                     )
@@ -262,6 +271,10 @@ impl AppConfig {
                     .and_then(|a| a.edge_model.as_deref())
                     .or(self.edge_model.as_deref())
                     .map(String::from),
+                upstream_model: agent_cfg
+                    .and_then(|a| a.edge_upstream_model.as_deref())
+                    .or(self.edge_upstream_model.as_deref())
+                    .map(String::from),
             },
             "cloud" => ResolvedUpstream {
                 base_url: agent_cfg
@@ -276,11 +289,16 @@ impl AppConfig {
                     .and_then(|a| a.cloud_model.as_deref())
                     .or(self.cloud_model.as_deref())
                     .map(String::from),
+                upstream_model: agent_cfg
+                    .and_then(|a| a.cloud_upstream_model.as_deref())
+                    .or(self.cloud_upstream_model.as_deref())
+                    .map(String::from),
             },
             _ => ResolvedUpstream {
                 base_url: None,
                 api_key: None,
                 model: None,
+                upstream_model: None,
             },
         }
     }

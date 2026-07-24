@@ -1579,6 +1579,7 @@
     .routing-log-card__meta {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 6px;
       font-size: 12px;
       color: var(--muted-foreground);
@@ -1589,12 +1590,22 @@
       font-family: var(--mono);
       font-size: 11px;
     }
+    .routing-log-card__tokens {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      font-size: 11px;
+    }
+    .routing-log-card__token-sep { opacity: 0.6; }
     .routing-log-card__preview {
       margin: 0 0 10px;
       font-size: 13px;
       line-height: 1.5;
       color: var(--foreground);
-      word-break: break-word;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .routing-log-card__preview-label {
       color: var(--muted-foreground);

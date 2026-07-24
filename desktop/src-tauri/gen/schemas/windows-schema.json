@@ -561,10 +561,10 @@
           "markdownDescription": "Enables the ui_state_save command."
         },
         {
-          "description": "Writes Token Router provider config into WSL agent configs.",
+          "description": "Writes Token Router provider config into a single WSL agent config.",
           "type": "string",
-          "const": "allow-wsl-configure-agents",
-          "markdownDescription": "Writes Token Router provider config into WSL agent configs."
+          "const": "allow-wsl-configure-agent",
+          "markdownDescription": "Writes Token Router provider config into a single WSL agent config."
         },
         {
           "description": "Detects running WSL distros and agent setup state.",

@@ -4,6 +4,6 @@ description = "Detects running WSL distros and agent setup state."
 commands.allow = ["wsl_detect_environment"]
 
 [[permission]]
-identifier = "allow-wsl-configure-agents"
-description = "Writes Token Router provider config into WSL agent configs."
-commands.allow = ["wsl_configure_agents"]
+identifier = "allow-wsl-configure-agent"
+description = "Writes Token Router provider config into a single WSL agent config."
+commands.allow = ["wsl_configure_agent"]

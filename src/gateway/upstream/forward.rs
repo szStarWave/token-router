@@ -31,6 +31,7 @@ struct UpstreamTarget {
     base_url: Option<String>,
     api_key: Option<String>,
     model: Option<String>,
+    upstream_model: Option<String>,
     tier: &'static str,
 }
 
@@ -455,6 +456,7 @@ impl UpstreamClient {
             base_url: resolved.base_url,
             api_key: resolved.api_key,
             model: resolved.model,
+            upstream_model: resolved.upstream_model,
             tier: "edge",
         }
     }
@@ -466,6 +468,7 @@ impl UpstreamClient {
             base_url: resolved.base_url,
             api_key: resolved.api_key,
             model: resolved.model,
+            upstream_model: resolved.upstream_model,
             tier: "cloud",
         }
     }
@@ -485,6 +488,7 @@ impl UpstreamClient {
             url,
             target.api_key.as_deref(),
             target.model.as_deref(),
+            target.upstream_model.as_deref(),
             target.tier,
             prompt_fallback,
             auth_key,
@@ -498,6 +502,7 @@ impl UpstreamClient {
         base: &str,
         api_key: Option<&str>,
         endpoint_model: Option<&str>,
+        upstream_model: Option<&str>,
         tier: &str,
         prompt_fallback: u32,
         auth_key: Option<&AuthKeyContext>,
@@ -507,7 +512,7 @@ impl UpstreamClient {
         let start = Instant::now();
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let url_preview = url.clone();
-        let upstream_req = apply_upstream_model(req, endpoint_model, tier, Some(base));
+        let upstream_req = apply_upstream_model(req, endpoint_model, upstream_model, tier, Some(base));
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -618,6 +623,7 @@ impl UpstreamClient {
             url,
             target.api_key.as_deref(),
             target.model.as_deref(),
+            target.upstream_model.as_deref(),
             target.tier,
             decision,
             agent_id,
@@ -632,6 +638,7 @@ impl UpstreamClient {
         base: &str,
         api_key: Option<&str>,
         endpoint_model: Option<&str>,
+        upstream_model: Option<&str>,
         tier: &str,
         decision: &RouteDecision,
         agent_id: Option<&str>,
@@ -641,7 +648,7 @@ impl UpstreamClient {
         self.record_upstream_call(tier);
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let url_preview = url.clone();
-        let upstream_req = apply_upstream_model(req, endpoint_model, tier, Some(base));
+        let upstream_req = apply_upstream_model(req, endpoint_model, upstream_model, tier, Some(base));
         let mut builder = self.http.post(url).json(&upstream_req);
         if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
@@ -765,7 +772,7 @@ impl UpstreamClient {
         agent_id: Option<&str>,
         auth_key: Option<&AuthKeyContext>,
     ) -> ChatCompletionResponse {
-        let (_, completion, _) = tokens_from_response(&resp, decision.tokens_in_estimate);
+        let (prompt, completion, cached) = tokens_from_response(&resp, decision.tokens_in_estimate);
         self.stats.record_completion_tokens(completion, auth_key);
         self.stats.record_final_response(
             &FinalResponseMetrics {
@@ -781,6 +788,9 @@ impl UpstreamClient {
         );
         if served_tier == "cloud" {
             self.record_cloud_tokens_complete(agent_id, &resp, decision.tokens_in_estimate);
+        }
+        if let Some(log_id) = decision.routing_log_id {
+            let _ = self.routing_logs.mark_token_usage(log_id, prompt as i64, completion as i64, cached as i64);
         }
         let forwarded = self.resolve_served_model(req, served_tier, agent_id);
         let served_model = effective_upstream_model(&forwarded, &resp.model);
@@ -812,6 +822,7 @@ impl UpstreamClient {
         apply_upstream_model(
             req,
             target.model.as_deref(),
+            target.upstream_model.as_deref(),
             served_tier,
             target.base_url.as_deref(),
         )
@@ -984,6 +995,7 @@ impl UpstreamClient {
 fn apply_upstream_model(
     req: &ChatCompletionRequest,
     endpoint_model: Option<&str>,
+    upstream_model: Option<&str>,
     tier: &str,
     upstream_base: Option<&str>,
 ) -> ChatCompletionRequest {
@@ -992,7 +1004,9 @@ fn apply_upstream_model(
     } else {
         req.for_upstream(upstream_base)
     };
-    if let Some(model) = endpoint_model {
+    // Prefer upstream_model (actual forwarding name) over endpoint_model (display id).
+    let model = upstream_model.or(endpoint_model);
+    if let Some(model) = model {
         let m = model.trim();
         if !m.is_empty() && !is_router_auto_model(m) {
             upstream_req.model = m.to_string();

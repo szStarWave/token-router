@@ -44,6 +44,7 @@ mod tests {
                 base_url: "http://127.0.0.1:11434/v1".into(),
                 api_key: None,
                 model: None,
+                upstream_model: None,
             });
         }
         if cloud {
@@ -51,6 +52,7 @@ mod tests {
                 base_url: "https://api.deepseek.com/v1".into(),
                 api_key: Some("test-key".into()),
                 model: None,
+                upstream_model: None,
             });
         }
         AppConfig::from_file(file, std::path::PathBuf::from("/tmp/flowy-test"))

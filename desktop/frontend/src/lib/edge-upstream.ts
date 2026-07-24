@@ -30,6 +30,7 @@ export interface EdgeSavePayload {
   edge: {
     base_url: string
     model: string | null
+    upstream_model?: string
     api_key?: string
   }
   gateway?: {
@@ -540,7 +541,7 @@ function edgeSelectionMatchesSetup(
   const model = setupEdge?.model?.trim()
   const url = setupEdge?.base_url?.trim()
   if (!model || !url) return false
-  const itemModel = item.type === 'manual' ? (item.model || '') : (item.id || '')
+  const itemModel = item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
   return edgeEndpointSignature(item.base_url, itemModel) === edgeEndpointSignature(url, model)
 }
 
@@ -572,7 +573,7 @@ export function isEdgeUpstreamConfigured(
 export function getEdgeModelValue(): string {
   const item = getSelectedItem()
   if (!item) return ''
-  return item.type === 'manual' ? (item.model || '') : (item.id || '')
+  return item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
 }
 
 export function getEdgeModelDisplayName(setupEdge?: SetupEdge | null): string {
@@ -653,7 +654,7 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
   if (model && url) {
     const targetSig = edgeEndpointSignature(url, model)
     const matches = items.filter((item) => {
-      const itemModel = item.type === 'manual' ? (item.model || '') : (item.id || '')
+      const itemModel = item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
       return edgeEndpointSignature(item.base_url, itemModel) === targetSig
     })
     const herdsman = matches.find((item) => item.type === 'herdsman')
@@ -670,7 +671,7 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
   }
 
   if (model) {
-    const match = items.find((item) => item.id === model || item.model === model)
+    const match = items.find((item) => item.id === model || item.model === model || item.name === model)
     if (match) {
       state.setSelectedKey(match.key)
       return
@@ -804,7 +805,7 @@ export function syncEdgeFromSetup(edge: SetupEdge | null | undefined): void {
       id: newManualId(),
       name: model,
       base_url: url,
-      model,
+      model: edge.upstream_model || model,
       api_key: edge.api_key || undefined,
       fromSetupRestore: true,
     }
@@ -895,14 +896,18 @@ export function buildEdgeSavePayload(modelId?: string | null): EdgeSavePayload {
   const preferred = modelId || getEdgeModelValue()
   const items = buildDisplayItems()
   const item =
-    items.find((i) => i.id === preferred || i.model === preferred) ?? getSelectedItem()
+    items.find((i) => i.id === preferred || i.model === preferred || i.name === preferred) ?? getSelectedItem()
   if (!item) {
     return { edge: { base_url: '', model: null } }
   }
 
   const payload: EdgeSavePayload['edge'] = {
     base_url: normalizeHerdsmanEndpoint(item.base_url),
-    model: item.type === 'manual' ? (item.model ?? null) : item.id,
+    model: item.type === 'manual' ? ((item.name || item.model) ?? null) : item.id,
+  }
+
+  if (item.type === 'manual' && item.model && item.model !== payload.model) {
+    payload.upstream_model = item.model
   }
 
   if (item.type === 'manual' && item.api_key) {

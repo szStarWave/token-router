@@ -57,6 +57,7 @@ export interface UpstreamEndpointView {
   configured: boolean
   base_url: string
   model?: string | null
+  upstream_model?: string | null
   api_key_set?: boolean
   token_budget?: number | null
   token_quota_enabled?: boolean
@@ -75,6 +76,7 @@ export interface UpstreamSetupUpdate {
   cloud?: {
     base_url?: string
     model?: string
+    upstream_model?: string
     api_key?: string
     token_budget?: number | null
     clear?: boolean
@@ -82,6 +84,7 @@ export interface UpstreamSetupUpdate {
   edge?: {
     base_url?: string
     model?: string | null
+    upstream_model?: string
     api_key?: string
     clear?: boolean
   }
@@ -237,6 +240,9 @@ export interface RoutingLogApiEntry {
   difficulty?: number
   reason_codes: string[]
   error_reason?: string | null
+  tokens_in?: number | null
+  tokens_out?: number | null
+  cached_tokens?: number | null
 }
 
 export interface RoutingLogsResponse {

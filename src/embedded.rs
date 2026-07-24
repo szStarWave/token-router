@@ -12,7 +12,7 @@ use crate::gateway::{init_logging, server, LogRotateConfig};
 
 struct EmbeddedGateway {
     cancel: CancellationToken,
-    thread: JoinHandle<Result<()>>,
+    thread: Option<JoinHandle<Result<()>>>,
     gateway_url: String,
 }
 
@@ -72,18 +72,39 @@ pub fn start(home: Option<&Path>, port: Option<u16>) -> Result<String> {
         Ok(()) => {
             *guard = Some(EmbeddedGateway {
                 cancel,
-                thread,
+                thread: Some(thread),
                 gateway_url: gateway_url.clone(),
             });
             Ok(gateway_url)
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
+            if probe_gateway_health(&gateway_url) {
+                tracing::info!("embedded gateway already running at {gateway_url}, adopting");
+                *guard = Some(EmbeddedGateway {
+                    cancel,
+                    thread: Some(thread),
+                    gateway_url: gateway_url.clone(),
+                });
+                return Ok(gateway_url);
+            }
             cancel.cancel();
             let _ = thread.join();
             bail!("embedded gateway did not become ready within 30s");
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             let join_result = thread.join().unwrap_or_else(|_| Ok(()));
+            if probe_gateway_health(&gateway_url) {
+                tracing::info!(
+                    "embedded gateway thread exited but {} is healthy, adopting",
+                    gateway_url
+                );
+                *guard = Some(EmbeddedGateway {
+                    cancel,
+                    thread: None,
+                    gateway_url: gateway_url.clone(),
+                });
+                return Ok(gateway_url);
+            }
             if let Err(join_err) = join_result {
                 return Err(join_err);
             }
@@ -100,10 +121,11 @@ pub fn stop() -> Result<()> {
     let embedded = guard.take().context("gateway is not running in this process")?;
 
     embedded.cancel.cancel();
-    embedded
-        .thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("embedded gateway thread panicked"))??;
+    if let Some(thread) = embedded.thread {
+        thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("embedded gateway thread panicked"))??;
+    }
     Ok(())
 }
 
@@ -121,4 +143,48 @@ pub fn gateway_url() -> Option<String> {
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().map(|g| g.gateway_url.clone()))
+}
+
+/// Check whether a gateway is already serving at `url` by requesting `/health`.
+/// Uses a simple TCP connection to avoid introducing a runtime dependency.
+fn probe_gateway_health(url: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let health_url = format!("{}/health", url.trim_end_matches('/'));
+    let addr = match health_url.strip_prefix("http://") {
+        Some(rest) => match rest.split_once('/') {
+            Some((host_port, _)) => host_port,
+            None => rest,
+        },
+        None => return false,
+    };
+    let socket_addr: std::net::SocketAddr = match addr.parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+
+    let mut stream = match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        addr
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut buf = [0u8; 4096];
+    let n = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+
+    let response = String::from_utf8_lossy(&buf[..n]);
+    response.contains(r#""status":"ok""#) || response.contains(r#""status": "ok""#)
 }

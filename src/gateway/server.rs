@@ -1,7 +1,8 @@
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use tokio::net::TcpListener;
@@ -165,7 +166,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
         .layer(CorsLayer::permissive());
 
     let addr: SocketAddr = config.listen_addr.parse()?;
-    let listener = TcpListener::bind(addr).await?;
+    let listener = bind_gateway(addr).await?;
 
     if let Some(ready) = opts.ready {
         let _ = ready.send(());
@@ -237,4 +238,48 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
 #[allow(dead_code)]
 pub fn app_router(state: AppState) -> Router {
     router(state)
+}
+
+/// Bind the gateway listener with platform-specific settings.
+///
+/// On Windows, `SO_REUSEADDR` is set and bind is retried up to 5 times
+/// with exponential backoff to work around TIME_WAIT after a crash.
+/// On other platforms the default `TcpListener::bind` is used.
+async fn bind_gateway(addr: SocketAddr) -> io::Result<TcpListener> {
+    #[cfg(windows)]
+    {
+        bind_gateway_windows(addr).await
+    }
+    #[cfg(not(windows))]
+    {
+        TcpListener::bind(addr).await
+    }
+}
+
+/// Windows-specific bind with `SO_REUSEADDR` and retry on `AddrInUse`.
+#[cfg(windows)]
+async fn bind_gateway_windows(addr: SocketAddr) -> io::Result<TcpListener> {
+    use tokio::net::TcpSocket;
+
+    let max_attempts = 5;
+    let base_delay = Duration::from_millis(200);
+    for attempt in 0..max_attempts {
+        let socket = match addr {
+            SocketAddr::V4(_) => TcpSocket::new_v4()?,
+            SocketAddr::V6(_) => TcpSocket::new_v6()?,
+        };
+        socket.set_reuseaddr(true)?;
+        match socket.bind(addr) {
+            Ok(()) => return socket.listen(1024),
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && attempt + 1 < max_attempts => {
+                tokio::time::sleep(base_delay * (attempt as u32 + 1)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AddrInUse,
+        format!("port {} is still in use after {max_attempts} retries — another process may be holding it", addr.port()),
+    ))
 }

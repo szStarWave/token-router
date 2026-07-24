@@ -136,6 +136,7 @@ pub struct UpstreamEndpointView {
     pub configured: bool,
     pub base_url: String,
     pub model: Option<String>,
+    pub upstream_model: Option<String>,
     pub api_key_set: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
@@ -151,6 +152,7 @@ pub struct UpstreamEndpointPatch {
     /// Omit to keep existing; empty string clears the key.
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub upstream_model: Option<String>,
     /// When true, remove this tier entirely (edge only).
     #[serde(default)]
     pub clear: bool,
@@ -395,6 +397,7 @@ pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> Upstream
                         configured: false,
                         base_url: String::new(),
                         model: None,
+                        upstream_model: None,
                         api_key_set: false,
                         token_budget: budget,
                         token_quota_enabled,
@@ -501,6 +504,7 @@ fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
         configured: endpoint_configured(ep),
         base_url: ep.base_url.clone(),
         model: ep.model.clone(),
+        upstream_model: ep.upstream_model.clone(),
         api_key_set: ep
             .api_key
             .as_ref()
@@ -517,6 +521,7 @@ pub fn apply_default_upstream(file: &mut ConfigFile) {
             base_url: String::new(),
             api_key: None,
             model: Some(CLOUD_MODEL_AUTO.to_string()),
+            upstream_model: None,
         }),
         edge: None,
     };
@@ -781,6 +786,7 @@ fn apply_tier_patch(slot: &mut Option<UpstreamEndpoint>, patch: &UpstreamEndpoin
         base_url: String::new(),
         api_key: None,
         model: None,
+        upstream_model: None,
     });
 
     if let Some(url) = &patch.base_url {
@@ -789,6 +795,10 @@ fn apply_tier_patch(slot: &mut Option<UpstreamEndpoint>, patch: &UpstreamEndpoin
     if let Some(model) = &patch.model {
         let m = model.trim();
         entry.model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(upstream_model) = &patch.upstream_model {
+        let m = upstream_model.trim();
+        entry.upstream_model = if m.is_empty() { None } else { Some(m.to_string()) };
     }
     if let Some(key) = &patch.api_key {
         let k = key.trim();

@@ -241,7 +241,7 @@ function cloudSelectionMatchesSetup(
   const model = setupCloud?.model?.trim()
   const url = setupCloud?.base_url?.trim()
   if (!model || !url) return false
-  const itemModel = item.type === 'manual' ? item.model : item.id
+  const itemModel = item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
   return (
     normalizeUrl(item.base_url) === normalizeUrl(url)
     && (itemModel === model || item.id === model)
@@ -264,7 +264,7 @@ export function isCloudModelUiConfigured(setupCloud: SetupCloud | null | undefin
 export function getCloudModelValue(): string {
   const item = getSelectedCloudItem()
   if (!item) return ''
-  return item.type === 'manual' ? (item.model || '') : (item.id || '')
+  return item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
 }
 
 export function getCloudModelDisplayName(modelId?: string | null): string {
@@ -362,8 +362,11 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
 
   if (model && url) {
     const matches = items.filter(
-      (item) => (item.model === model || item.id === model)
-        && normalizeUrl(item.base_url) === url,
+      (item) => {
+        const itemModel = item.type === 'manual' ? (item.name || item.model || '') : (item.id || '')
+        return (itemModel === model || item.id === model)
+          && normalizeUrl(item.base_url) === url
+      },
     )
     const flowy = matches.find((item) => item.type === 'flowy')
     if (flowy) {
@@ -379,7 +382,7 @@ function ensureSelectedKey(preferredModel?: string | null, preferredUrl?: string
   }
 
   if (model) {
-    const match = items.find((item) => item.id === model || item.model === model)
+    const match = items.find((item) => item.id === model || item.model === model || item.name === model)
     if (match) {
       state.setSelectedKey(match.key)
       return
@@ -552,7 +555,7 @@ export function syncCloudFromSetup(cloud: SetupCloud | null | undefined): void {
       id: newManualId(),
       name: model,
       base_url: url,
-      model,
+      model: cloud.upstream_model || model,
       api_key: cloud.api_key || undefined,
       context_window: DEFAULT_CLOUD_CONTEXT_WINDOW,
       fromSetupRestore: true,
@@ -613,6 +616,7 @@ export function normalizeCloudTokenBudget(tokenBudget: unknown) {
 export interface CloudSavePayload {
   base_url: string
   model: string
+  upstream_model?: string
   api_key?: string
   token_budget?: number
 }
@@ -644,7 +648,10 @@ export function buildCloudSavePayload(
 
   const payload: CloudSavePayload = {
     base_url: normalizeUrl(item.base_url),
-    model: item.model || item.id,
+    model: item.name || item.model || item.id,
+  }
+  if (item.type === 'manual' && item.model && item.model !== payload.model) {
+    payload.upstream_model = item.model
   }
   if (item.api_key) payload.api_key = item.api_key
   if (tokenBudget != null) payload.token_budget = tokenBudget

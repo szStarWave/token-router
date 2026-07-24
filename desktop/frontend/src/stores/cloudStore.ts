@@ -31,6 +31,7 @@ export interface SetupCloudSelection {
 export interface SetupCloud {
   base_url?: string | null
   model?: string | null
+  upstream_model?: string | null
   api_key?: string | null
 }
 

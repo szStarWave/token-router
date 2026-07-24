@@ -26,16 +26,11 @@ export interface WslDetectResult {
   message?: string | null
 }
 
-export interface WslConfigureResult {
-  distro: string
-  gatewayHost: string
-  configured: Array<{
-    path: string
-    model: string
-    baseUrl: string
-    agent: string
-  }>
-  skipped: string[]
+export interface WslAgentSetupResult {
+  path: string
+  model: string
+  baseUrl: string
+  agent: string
 }
 
 let wslDetectSessionCache: WslDetectResult | null = null
@@ -67,10 +62,11 @@ export async function detectWslEnvironment(options?: { force?: boolean }): Promi
   }
 }
 
-export async function configureWslAgents(distro: string): Promise<WslConfigureResult> {
+export async function configureWslAgent(distro: string, agent: string): Promise<WslAgentSetupResult> {
   const apiKey = await resolveApiKey('openclaw')
-  return tauriInvoke<WslConfigureResult>('wsl_configure_agents', {
+  return tauriInvoke<WslAgentSetupResult>('wsl_configure_agent', {
     distro,
+    agent,
     apiKey: apiKey ?? null,
   })
 }

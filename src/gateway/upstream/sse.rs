@@ -85,6 +85,9 @@ pub fn instrument_stream(inner: SseStream, ctx: StreamRecordContext) -> SseStrea
             }
         }
         if let Some(bundle) = ctx.post_serve.as_ref() {
+            if let Some(log_id) = bundle.decision.routing_log_id {
+                let _ = bundle.routing_logs.mark_token_usage(log_id, prompt as i64, completion as i64, cached as i64);
+            }
             crate::gateway::served_outcome::run_stream_post_serve(
                 bundle,
                 ctx.tier,

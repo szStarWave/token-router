@@ -261,6 +261,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8080/v1".into(),
                 api_key: None,
                 model: edge_model.map(str::to_string),
+                upstream_model: None,
             });
         }
         if cloud {
@@ -268,6 +269,7 @@ mod tests {
                 base_url: "https://api.flowy.test/claw/v1".into(),
                 api_key: Some("token".into()),
                 model: cloud_model.map(str::to_string),
+                upstream_model: None,
             });
         }
         AppConfig::from_file(file, std::env::temp_dir()).unwrap()

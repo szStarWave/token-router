@@ -288,7 +288,7 @@ pub fn run() {
             agent_setup::check_agent_initialized,
             agent_setup::check_agent_deployed,
             wsl_setup::wsl_detect_environment,
-            wsl_setup::wsl_configure_agents,
+            wsl_setup::wsl_configure_agent,
             gateway_start,
             gateway_stop,
             gateway_restart,

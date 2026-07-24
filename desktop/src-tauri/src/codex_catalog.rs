@@ -46,6 +46,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8080/v1".into(),
                 api_key: None,
                 model: Some(model.to_string()),
+                upstream_model: None,
             });
         }
         if let Some(model) = cloud_model {
@@ -53,6 +54,7 @@ mod tests {
                 base_url: "https://example.com".into(),
                 api_key: Some("key".into()),
                 model: Some(model.to_string()),
+                upstream_model: None,
             });
         }
         AppConfig::from_file(file, std::env::temp_dir()).unwrap()

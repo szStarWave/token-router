@@ -60,11 +60,13 @@ mod tests {
             base_url: "http://127.0.0.1:11434/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         file.upstream.cloud = Some(crate::config::UpstreamEndpoint {
             base_url: "https://api.example/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         AppConfig::from_file(file, "/tmp/flowy-test".into()).unwrap()
     }
@@ -93,11 +95,13 @@ mod tests {
             base_url: "http://127.0.0.1:11434/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         file.upstream.cloud = Some(crate::config::UpstreamEndpoint {
             base_url: "https://api.example/v1".into(),
             api_key: None,
             model: None,
+            upstream_model: None,
         });
         let config = AppConfig::from_file(file, "/tmp/flowy-test".into()).unwrap();
         let eff = compute_effective_routing(&config);

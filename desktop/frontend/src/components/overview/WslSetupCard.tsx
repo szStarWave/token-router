@@ -3,7 +3,7 @@ import { useAppStore } from '../../stores/appStore'
 import { useI18n } from '../../hooks/useI18n'
 import { isWindowsTauri } from '../../lib/tauri'
 import {
-  configureWslAgents,
+  configureWslAgent,
   detectWslEnvironment,
   getWslDetectSessionCache,
   wslSetupErrorMessage,
@@ -40,12 +40,10 @@ export function WslSetupCard() {
   const showToast = useAppStore((s) => s.showToast)
   const desktopApp = isWindowsTauri()
 
-  const [loading, setLoading] = useState(false)
   const [detecting, setDetecting] = useState(false)
   const [detect, setDetect] = useState<WslDetectResult | null>(null)
   const [selectedDistro, setSelectedDistro] = useState<string | null>(null)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [pendingConfigure, setPendingConfigure] = useState(false)
+  const [configuringAgents, setConfiguringAgents] = useState<Record<string, boolean>>({})
 
   const runningDistros = detect?.runningDistros ?? []
   const activeDistro = useMemo(
@@ -53,7 +51,7 @@ export function WslSetupCard() {
     [runningDistros, selectedDistro],
   )
 
-  const disabled = !desktopApp || !connected || loading || detecting
+  const disabled = !desktopApp || !connected || detecting
   const disabledHint = !desktopApp
     ? t('overview.wslWindowsOnly')
     : !connected
@@ -125,53 +123,36 @@ export function WslSetupCard() {
     return parts.join(' · ')
   }, [activeDistro, detect, detecting, initializedAgents.length, runningDistros.length, selectedDistro, t])
 
-  const executeConfigure = async (distro: string) => {
-    setLoading(true)
-    try {
-      const result = await configureWslAgents(distro)
-      setSelectedDistro(distro)
-      await refreshDetect(true)
-      showToast('toast.wslConfigured', true, {
-        n: result.configured.length,
-        distro: result.distro,
-        host: result.gatewayHost,
-      })
-    } catch (err) {
-      showToast('toast.wslConfigureFail', false, { msg: wslSetupErrorMessage(err) })
-    } finally {
-      setLoading(false)
-      setPendingConfigure(false)
-    }
-  }
-
-  const runConfigure = () => {
-    if (disabled) return
-    if (!runningDistros.length) return
-
-    if (runningDistros.length > 1) {
-      if (!selectedDistro) {
-        setPendingConfigure(true)
-        setPickerOpen(true)
-        return
-      }
-      void executeConfigure(selectedDistro)
+  const handleConfigureAgent = async (agent: string) => {
+    const distro = selectedDistro ?? runningDistros[0]?.name
+    if (!distro) {
+      showToast('toast.agentConfigureFail', false, { msg: t('overview.wslSelectDistroPrompt') })
       return
     }
 
-    void executeConfigure(runningDistros[0].name)
-  }
-
-  const confirmPicker = () => {
-    if (!selectedDistro) return
-    setPickerOpen(false)
-    if (pendingConfigure) {
-      void executeConfigure(selectedDistro)
+    setConfiguringAgents((prev) => ({ ...prev, [agent]: true }))
+    try {
+      const result = await configureWslAgent(distro, agent)
+      await refreshDetect(true)
+      showToast('toast.agentConfigured', true, {
+        agent: result.agent,
+        model: result.model,
+        path: result.path,
+      })
+    } catch (err) {
+      const msg = wslSetupErrorMessage(err)
+      if (msg.includes('agent_not_initialized')) {
+        const parts = msg.split(':')
+        const ag = parts[1] || agent
+        const path = parts.slice(2).join(':') || ''
+        showToast('toast.agentNotInitialized', false, { agent: ag, path })
+      } else {
+        showToast('toast.agentConfigureFail', false, { msg })
+      }
+    } finally {
+      setConfiguringAgents((prev) => ({ ...prev, [agent]: false }))
     }
   }
-
-  const canConfigure = !!runningDistros.length
-    && initializedAgents.length > 0
-    && (runningDistros.length === 1 || !!selectedDistro)
 
   if (!desktopApp) return null
 
@@ -204,12 +185,20 @@ export function WslSetupCard() {
             {initializedAgents.map((item) => {
               const key = AGENT_NAME_KEYS[item.agent]
               const label = key ? t(key) : agentKindLabel(item.agent as AgentKind) || item.agent
+              const configuring = configuringAgents[item.agent] ?? false
+              const distroReady = !!(selectedDistro ?? runningDistros[0]?.name)
               return (
                 <li key={item.agent}>
                   <span>{label}</span>
-                  <span className={`tag bordered ${item.deployed ? 'ok' : 'off'}`}>
-                    {item.deployed ? t('overview.wslAgentConfigured') : t('overview.wslAgentPending')}
-                  </span>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${item.deployed ? 'btn-ghost' : 'btn-primary'}`}
+                    disabled={!distroReady || disabled || configuring}
+                    onClick={() => void handleConfigureAgent(item.agent)}
+                  >
+                    {configuring ? <BtnSpinner /> : null}
+                    {item.deployed ? t('overview.agentDeployed') : t('overview.deployAgent')}
+                  </button>
                 </li>
               )
             })}
@@ -219,69 +208,14 @@ export function WslSetupCard() {
         <div className="agent-quick-setup-actions">
           <button
             type="button"
-            className="btn btn-primary"
-            id="btn-wsl-configure"
-            disabled={disabled || !canConfigure}
-            onClick={runConfigure}
-          >
-            {loading ? <BtnSpinner /> : null}
-            {t('overview.wslConfigure')}
-          </button>
-          <button
-            type="button"
             className="btn btn-ghost"
             id="btn-wsl-refresh"
-            disabled={detecting || loading}
+            disabled={detecting}
             onClick={() => void refreshDetect(true)}
           >
             {detecting ? <BtnSpinner /> : null}
             {t('overview.wslRefreshDetect')}
           </button>
-        </div>
-      </div>
-
-      <div id="wsl-distro-dialog" className={`security-dialog wsl-distro-dialog${pickerOpen ? ' open' : ''}`}>
-        <div className="security-panel">
-          <h3 id="wsl-distro-dialog-title">{t('overview.wslSelectDistroTitle')}</h3>
-          <p className="hint">{t('overview.wslSelectDistroDesc')}</p>
-          <div className="form-grid">
-            <div>
-              <label htmlFor="wsl-distro-dialog-select">{t('overview.wslSelectedDistro')}</label>
-              <select
-                id="wsl-distro-dialog-select"
-                value={selectedDistro ?? ''}
-                onChange={(e) => setSelectedDistro(e.target.value || null)}
-              >
-                <option value="">{t('overview.wslSelectDistroPlaceholder')}</option>
-                {runningDistros.map((distro) => (
-                  <option key={distro.name} value={distro.name}>{distro.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="security-actions">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              id="wsl-distro-dialog-cancel"
-              onClick={() => {
-                setPickerOpen(false)
-                setPendingConfigure(false)
-              }}
-            >
-              {t('action.cancel')}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              id="wsl-distro-dialog-confirm"
-              disabled={!selectedDistro || loading}
-              onClick={confirmPicker}
-            >
-              {loading ? <BtnSpinner /> : null}
-              {t('overview.wslConfigure')}
-            </button>
-          </div>
         </div>
       </div>
     </>

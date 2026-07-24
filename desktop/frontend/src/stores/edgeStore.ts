@@ -36,6 +36,7 @@ export interface SetupEdgeSelection {
 export interface SetupEdge {
   base_url?: string | null
   model?: string | null
+  upstream_model?: string | null
   api_key?: string | null
 }
 

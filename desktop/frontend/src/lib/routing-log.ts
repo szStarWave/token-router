@@ -15,6 +15,9 @@ export interface RoutingLogEntry {
   reasonCodes: string[]
   difficulty?: number | null
   errorReason?: string | null
+  tokensIn?: number | null
+  tokensOut?: number | null
+  cachedTokens?: number | null
   raw: string
 }
 
@@ -101,6 +104,9 @@ export function mapApiRoutingEntry(entry: RoutingLogApiEntry): RoutingLogEntry {
     reasonCodes: entry.reason_codes,
     difficulty: entry.difficulty ?? null,
     errorReason: entry.error_reason ?? null,
+    tokensIn: entry.tokens_in ?? null,
+    tokensOut: entry.tokens_out ?? null,
+    cachedTokens: entry.cached_tokens ?? null,
     raw: '',
   }
 }
