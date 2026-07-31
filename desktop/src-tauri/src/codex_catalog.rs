@@ -8,7 +8,6 @@ use token_router::gateway::api::codex_catalog::{
 use token_router::gateway::AppConfig;
 
 pub use token_router::gateway::api::codex_catalog::CodexCatalogModelSpec;
-pub use token_router::gateway::api::codex_catalog::CODEX_CATALOG_MODEL_ID;
 pub use token_router::gateway::api::codex_catalog::TOKEN_ROUTER_CODEX_MODEL_CATALOG_FILENAME;
 
 pub fn codex_catalog_specs_for_agent(config: &AppConfig, context_window: u64) -> Vec<CodexCatalogModelSpec> {

@@ -1,6 +1,6 @@
 import { useAppStore } from '../stores/appStore'
 import { useSetupStore } from '../stores/setupStore'
-import { resolveAgentContextWindow, resolveApiKey, type AgentKind } from './agent-quick-setup'
+import { resolveApiKey, type AgentKind } from './agent-quick-setup'
 
 export type CcSwitchApp = 'claude' | 'codex' | 'openclaw' | 'gemini' | 'opencode' | 'hermes'
 
@@ -11,12 +11,11 @@ const OPENCLAW_PROVIDER = 'token-router'
 const OPENCLAW_MODEL_DISPLAY = 'Token Router Auto Route'
 const OPENCLAW_CONTEXT_WINDOW = 1_000_000
 const OPENCLAW_TIMEOUT_SECONDS = 300
-const CODEX_PROVIDER = 'token_router'
-const CODEX_PROVIDER_NAME = 'TokenRouter'
+const CODEX_PROVIDER = 'custom'
+const CODEX_PROVIDER_NAME = 'Token Router'
 const OPENCODE_PROVIDER = 'token-router'
 const OPENCODE_PROVIDER_NAME = 'Token Router'
 const OPENCODE_MODEL_DISPLAY = 'Token Router Auto Route'
-const CODEX_MODEL = 'token-router'
 const DEFAULT_MODEL = 'auto'
 
 const CC_SWITCH_AGENT_MAP: Record<CcSwitchApp, AgentKind> = {
@@ -33,7 +32,6 @@ export interface CcSwitchExportParams {
   apiKey: string
   model: string
   providerName?: string
-  contextWindow?: number
 }
 
 function utf8ToBase64(value: string): string {
@@ -45,28 +43,19 @@ function utf8ToBase64(value: string): string {
   return btoa(binary)
 }
 
-function buildCodexToml(baseUrl: string, model: string, apiKey: string, contextWindow?: number): string {
-  const lines = [
-    `model = "${model}"`,
+function buildCodexToml(baseUrl: string): string {
+  return [
     `model_provider = "${CODEX_PROVIDER}"`,
-    `model_catalog_json = "token-router-model-catalog.json"`,
-    `model_reasoning_effort = "medium"`,
-    `disable_response_storage = true`,
-  ]
-  if (contextWindow != null && contextWindow > 0) {
-    lines.push(`model_context_window = ${contextWindow}`)
-  }
-  lines.push(
+    'model_reasoning_effort = "high"',
+    'disable_response_storage = true',
     '',
     `[model_providers.${CODEX_PROVIDER}]`,
     `name = "${CODEX_PROVIDER_NAME}"`,
     `base_url = "${baseUrl}"`,
-    `experimental_bearer_token = "${apiKey}"`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
     '',
-  )
-  return lines.join('\n')
+  ].join('\n')
 }
 
 function buildOpenClawJson(baseUrl: string, apiKey: string): string {
@@ -93,18 +82,23 @@ function buildOpenClawJson(baseUrl: string, apiKey: string): string {
 
 function buildHermesJson(baseUrl: string, model: string, apiKey: string): string {
   return JSON.stringify({
+    providers: {
+      'token-router': {
+        api: baseUrl,
+        api_key: apiKey,
+        default_model: model,
+      },
+    },
     model: {
+      provider: 'token-router',
       default: model,
-      provider: 'custom',
-      base_url: baseUrl,
-      api_key: apiKey,
     },
   })
 }
 
 function buildOpenCodeJson(baseUrl: string, model: string, apiKey: string): string {
   return JSON.stringify({
-    $schema: 'https://opencode.ai/config.json',
+    model: `${OPENCODE_PROVIDER}/${model}`,
     provider: {
       [OPENCODE_PROVIDER]: {
         npm: '@ai-sdk/openai-compatible',
@@ -120,7 +114,6 @@ function buildOpenCodeJson(baseUrl: string, model: string, apiKey: string): stri
         },
       },
     },
-    model: `${OPENCODE_PROVIDER}/${model}`,
   })
 }
 
@@ -152,12 +145,9 @@ export function buildCcSwitchImportUrl(app: CcSwitchApp, opts: CcSwitchExportPar
       break
     case 'codex': {
       params.set('configFormat', 'toml')
-      params.set(
-        'config',
-        utf8ToBase64(
-          buildCodexToml(opts.baseUrl, opts.model, opts.apiKey, opts.contextWindow),
-        ),
-      )
+      params.set('config', utf8ToBase64(buildCodexToml(opts.baseUrl)))
+      params.set('endpoint', opts.baseUrl)
+      params.set('apiKey', opts.apiKey)
       break
     }
     case 'openclaw': {
@@ -200,9 +190,8 @@ export async function exportToCcSwitch(app: CcSwitchApp): Promise<string> {
   }
 
   const baseUrl = resolveEndpoint(app, gatewayBase)
-  const model = app === 'codex' ? CODEX_MODEL : resolveModel()
-  const contextWindow = app === 'codex' ? resolveAgentContextWindow() : undefined
-  return buildCcSwitchImportUrl(app, { baseUrl, apiKey, model, contextWindow })
+  const model = resolveModel()
+  return buildCcSwitchImportUrl(app, { baseUrl, apiKey, model })
 }
 
 export function ccSwitchAppLabel(app: CcSwitchApp): string {
