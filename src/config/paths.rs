@@ -1,10 +1,28 @@
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 /// Application data directory name under user home (e.g. `~/{APP_DIR_NAME}/`).
 #[cfg(feature = "desktop")]
 pub const APP_DIR_NAME: &str = ".token-router-desktop";
 #[cfg(not(feature = "desktop"))]
 pub const APP_DIR_NAME: &str = ".token-router";
+
+/// Process-wide app home for the running gateway (`--home`).
+/// Agent one-click configure must read auth keys / listen addr from this home,
+/// not the default `~/.token-router`.
+static RUNTIME_APP_HOME: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Remember the active gateway data dir (set when the daemon loads config).
+pub fn set_runtime_app_home(home: PathBuf) {
+    if let Ok(mut guard) = RUNTIME_APP_HOME.write() {
+        *guard = Some(home);
+    }
+}
+
+/// Active gateway data dir, if the process has loaded a config.
+pub fn runtime_app_home() -> Option<PathBuf> {
+    RUNTIME_APP_HOME.read().ok().and_then(|g| g.clone())
+}
 
 /// User home directory (cross-platform).
 ///
@@ -14,16 +32,21 @@ pub fn user_home() -> anyhow::Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve user home directory"))
 }
 
-/// Application root: `{user_home}/{APP_DIR_NAME}`
+/// Default application root: `{user_home}/{APP_DIR_NAME}` (ignores runtime home).
 pub fn app_dir() -> anyhow::Result<PathBuf> {
     Ok(user_home()?.join(APP_DIR_NAME))
 }
 
-/// Resolve application home: explicit `home` or default `app_dir()`.
+/// Resolve application home: explicit `home`, else running gateway home, else `app_dir()`.
 pub fn resolve_app_dir(home: Option<&Path>) -> anyhow::Result<PathBuf> {
     match home {
         Some(h) => Ok(h.to_path_buf()),
-        None => app_dir(),
+        None => {
+            if let Some(h) = runtime_app_home() {
+                return Ok(h);
+            }
+            app_dir()
+        }
     }
 }
 

@@ -100,8 +100,14 @@ impl AppConfig {
         home: Option<&std::path::Path>,
         port: Option<u16>,
     ) -> anyhow::Result<Self> {
-        let (config_path, _) = ensure_initialized(home)?;
-        let app_home = paths::resolve_app_dir(home)?;
+        let app_home = match home {
+            Some(h) => h.to_path_buf(),
+            None => paths::runtime_app_home().unwrap_or(paths::app_dir()?),
+        };
+        // So agent configure / auth helpers in this process use the same home as
+        // the running gateway (herdsman passes `--home`, not the default dir).
+        paths::set_runtime_app_home(app_home.clone());
+        let (config_path, _) = ensure_initialized(Some(&app_home))?;
         let (mut file, _) = load_from_path(&config_path)?;
         if let Some(port) = port.filter(|&p| p != 0) {
             apply_port_override(&mut file, port)?;

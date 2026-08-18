@@ -11,6 +11,7 @@ use crate::gateway::agent_usage::AgentCloudUsageStore;
 use crate::gateway::api::compat::CodexChatHistoryStore;
 use crate::gateway::api::auth_keys;
 use crate::gateway::api::admin;
+use crate::gateway::api::agents;
 use crate::gateway::api::anthropic::anthropic_messages_handler;
 use crate::gateway::api::chat::chat_completions;
 use crate::gateway::api::models::{get_model, list_models};
@@ -82,6 +83,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/admin/shutdown", post(admin::shutdown))
         .route("/v1/admin/restart", post(admin::restart))
+        .route("/v1/admin/agents", get(agents::agents_list))
+        .route("/v1/admin/agents/{agent}", get(agents::agents_get))
+        .route(
+            "/v1/admin/agents/{agent}/configure",
+            post(agents::agents_configure),
+        )
+        .route("/v1/admin/wsl", get(agents::wsl_detect))
+        .route(
+            "/v1/admin/wsl/{distro}/agents/{agent}/configure",
+            post(agents::wsl_configure),
+        )
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/models", get(list_models))
         .route("/v1/models/{model_id}", get(get_model))

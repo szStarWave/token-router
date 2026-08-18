@@ -38,9 +38,17 @@ pub fn is_process_alive(pid: u32) -> bool {
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Best-effort on Windows: OpenProcess check omitted; rely on HTTP health.
+        // Avoid trusting stale gateway.pid: Windows previously stubbed this as always
+        // true, which blocked restart after crash. Without a Win32 OpenProcess dep,
+        // treat pid-file presence alone as inconclusive (false); a live gateway still
+        // holds the listen socket so a second bind will fail if one is running.
+        let _ = pid;
+        false
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         let _ = pid;
         true
     }

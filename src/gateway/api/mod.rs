@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod agents;
 pub mod anthropic;
 pub mod auth;
 pub mod auth_keys;
