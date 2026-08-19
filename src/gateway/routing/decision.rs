@@ -149,7 +149,8 @@ pub fn decide(
             edge_load,
             &mut reason_codes,
         );
-        let route = finalize_route(route, config, &mut reason_codes);
+        // Fixed edge/cloud must fail closed: do not remap to the other upstream
+        // when the requested tier is unset (finalize_route would rewrite the tier).
         sessions.record_tokens(&conv_key, signals.tok_total_in);
         return finish(
             route,

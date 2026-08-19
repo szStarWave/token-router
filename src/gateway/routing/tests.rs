@@ -365,6 +365,135 @@ mod tests {
     }
 
     #[test]
+    fn fixed_edge_keeps_edge_when_only_cloud_configured() {
+        let mut cfg = test_config(false, true);
+        cfg.fixed_route = Some(RouteTier::Edge);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(
+            decision.route,
+            RouteTier::Edge,
+            "fixed edge must not remap to cloud-only: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "UPSTREAM_CLOUD_ONLY"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn fixed_cloud_keeps_cloud_when_only_edge_configured() {
+        let mut cfg = test_config(true, false);
+        cfg.fixed_route = Some(RouteTier::Cloud);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &simple_greeting_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(
+            decision.route,
+            RouteTier::Cloud,
+            "fixed cloud must not remap to edge-only: {:?}",
+            decision
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "UPSTREAM_EDGE_ONLY"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn fixed_edge_skips_work_verify_and_multimodal_strategies() {
+        let mut cfg = test_config_with_verify_rate(true, true, 1.0);
+        cfg.fixed_route = Some(RouteTier::Edge);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &work_tool_select_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision.route, RouteTier::Edge, "{:?}", decision);
+        assert!(
+            matches!(decision.work_strategy, WorkStrategy::None),
+            "{:?}",
+            decision.work_strategy
+        );
+        assert!(
+            matches!(decision.multimodal_strategy, MultimodalStrategy::None),
+            "{:?}",
+            decision.multimodal_strategy
+        );
+        assert!(!decision.casual_quality_fallback);
+
+        let decision_mm = decide_test(
+            &cfg,
+            &simple_image_request(),
+            &sessions,
+            None,
+            Some(test_multimodal_store().as_ref()),
+        );
+        assert_eq!(decision_mm.route, RouteTier::Edge, "{:?}", decision_mm);
+        assert!(
+            matches!(decision_mm.multimodal_strategy, MultimodalStrategy::None),
+            "{:?}",
+            decision_mm.multimodal_strategy
+        );
+    }
+
+    #[test]
+    fn fixed_edge_ignores_edge_busy_redirect() {
+        let mut cfg = test_config_with_verify_rate(true, true, 0.0);
+        cfg.fixed_route = Some(RouteTier::Edge);
+        let sessions = SessionStore::new_in_memory();
+        let tracker = EdgeInferenceTracker::new();
+        let _guard = tracker.begin();
+        let decision = decide(
+            &cfg,
+            &work_tool_select_request(),
+            &sessions,
+            None,
+            None,
+            &EffectiveRouting::passthrough(&cfg),
+            Some(tracker.as_ref()),
+            None,
+            None,
+            None,
+            test_wordfreq().as_ref(),
+        );
+        assert_eq!(
+            decision.route,
+            RouteTier::Edge,
+            "fixed edge must not divert to cloud when busy: {:?}",
+            decision
+        );
+        assert!(
+            !decision.reason_codes.iter().any(|c| c == "GATE_EDGE_BUSY"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
     fn simple_greeting_prefers_edge() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();

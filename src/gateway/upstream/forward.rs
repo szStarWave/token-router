@@ -112,6 +112,17 @@ impl UpstreamClient {
         agent_id: Option<&str>,
         auth_key: Option<&AuthKeyContext>,
     ) -> AppResult<ChatCompletionResponse> {
+        // Fixed `route=edge` / `route=cloud`: never try the other tier on failure.
+        if !self.allow_cross_tier_fallback() {
+            return match decision.route {
+                RouteTier::Cloud => {
+                    self.complete_cloud_only(req, decision, agent_id, auth_key)
+                        .await
+                }
+                _ => self.complete_edge_only(req, decision, agent_id, auth_key).await,
+            };
+        }
+
         if decision.multimodal_strategy != MultimodalStrategy::None {
             return self.complete_multimodal(req, decision, agent_id, auth_key).await;
         }
@@ -125,15 +136,9 @@ impl UpstreamClient {
                 self.complete_edge_with_quality_fallback(req, decision, agent_id, auth_key)
                     .await
             }
-            RouteTier::Edge if !self.allow_cross_tier_fallback() => {
-                self.complete_edge_only(req, decision, agent_id, auth_key).await
-            }
             RouteTier::Edge => {
                 self.complete_edge_with_context_fallback(req, decision, agent_id, auth_key)
                     .await
-            }
-            RouteTier::Cloud if !self.allow_cross_tier_fallback() => {
-                self.complete_cloud_only(req, decision, agent_id, auth_key).await
             }
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
@@ -206,6 +211,16 @@ impl UpstreamClient {
         agent_id: Option<&str>,
         auth_key: Option<&AuthKeyContext>,
     ) -> AppResult<(SseStream, bool)> {
+        // Fixed `route=edge` / `route=cloud`: never try the other tier on failure.
+        if !self.allow_cross_tier_fallback() {
+            return match decision.route {
+                RouteTier::Cloud => {
+                    self.stream_cloud_only(req, decision, agent_id, auth_key).await
+                }
+                _ => self.stream_edge_only(req, decision, agent_id, auth_key).await,
+            };
+        }
+
         if decision.multimodal_strategy != MultimodalStrategy::None {
             return self.stream_multimodal(req, decision, agent_id, auth_key).await;
         }
@@ -218,15 +233,9 @@ impl UpstreamClient {
             RouteTier::Edge if decision.casual_quality_fallback => {
                 self.stream_cascade(req, decision, agent_id, auth_key).await
             }
-            RouteTier::Edge if !self.allow_cross_tier_fallback() => {
-                self.stream_edge_only(req, decision, agent_id, auth_key).await
-            }
             RouteTier::Edge => self
                 .stream_edge_with_context_fallback(req, decision, agent_id, auth_key)
                 .await,
-            RouteTier::Cloud if !self.allow_cross_tier_fallback() => {
-                self.stream_cloud_only(req, decision, agent_id, auth_key).await
-            }
             RouteTier::Cloud => {
                 if self.cloud_token_budget_ok(agent_id, decision.tokens_in_estimate) {
                     self.stream_target(req, self.target_cloud(agent_id), decision, agent_id, auth_key)
@@ -835,10 +844,7 @@ impl UpstreamClient {
 
     /// Fixed `edge` / `cloud` must never cross tiers; errors propagate as-is.
     fn allow_cross_tier_fallback(&self) -> bool {
-        !matches!(
-            self.cfg().fixed_route,
-            Some(RouteTier::Edge) | Some(RouteTier::Cloud)
-        )
+        allow_cross_tier_fallback(self.cfg().fixed_route)
     }
 
     async fn complete_edge_only(
@@ -1053,6 +1059,13 @@ fn attach_meta(
     resp
 }
 
+fn allow_cross_tier_fallback(fixed_route: Option<RouteTier>) -> bool {
+    !matches!(
+        fixed_route,
+        Some(RouteTier::Edge) | Some(RouteTier::Cloud)
+    )
+}
+
 fn is_context_overflow_upstream_error(err: &AppError) -> bool {
     let AppError::Upstream(msg) = err else {
         return false;
@@ -1124,6 +1137,209 @@ mod context_overflow_error_tests {
         assert!(!is_context_overflow_upstream_error(&AppError::Upstream(
             "rate limit exceeded".into()
         )));
+    }
+}
+
+#[cfg(test)]
+mod fixed_route_no_cross_tier_tests {
+    use super::*;
+    use crate::config::{ConfigFile, UpstreamEndpoint};
+    use crate::gateway::agent_usage::AgentCloudUsageStore;
+    use crate::gateway::api::openai::{ChatCompletionRequest, Message, Role};
+    use crate::gateway::config::AppConfig;
+    use crate::gateway::config_manager::ConfigManager;
+    use crate::gateway::edge_load::EdgeInferenceTracker;
+    use crate::gateway::multimodal::MultimodalStore;
+    use crate::gateway::routing::{EffectiveRouting, WordFreqStore, decide};
+    use crate::gateway::routing_log::RoutingLogStore;
+    use crate::gateway::session::SessionStore;
+    use crate::gateway::stats::GatewayStats;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn fixed_edge_and_cloud_disallow_cross_tier_fallback() {
+        assert!(!allow_cross_tier_fallback(Some(RouteTier::Edge)));
+        assert!(!allow_cross_tier_fallback(Some(RouteTier::Cloud)));
+        assert!(allow_cross_tier_fallback(Some(RouteTier::Cascade)));
+        assert!(allow_cross_tier_fallback(None));
+    }
+
+    fn spawn_http_counter(status: u16, body: &'static str) -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let hits_c = hits.clone();
+        thread::spawn(move || {
+            listener.set_nonblocking(false).ok();
+            while let Ok((mut stream, _)) = listener.accept() {
+                hits_c.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        // Give the acceptor a moment to start.
+        thread::sleep(Duration::from_millis(20));
+        (format!("http://{addr}/v1"), hits)
+    }
+
+    fn ok_chat_body() -> &'static str {
+        r#"{"id":"t","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hello world ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#
+    }
+
+    fn build_client(edge_url: &str, cloud_url: &str, route: &str) -> UpstreamClient {
+        let mut file = ConfigFile::default();
+        file.gateway.route = route.into();
+        file.upstream.edge = Some(UpstreamEndpoint {
+            base_url: edge_url.into(),
+            api_key: None,
+            model: Some("edge-model".into()),
+            upstream_model: None,
+        });
+        file.upstream.cloud = Some(UpstreamEndpoint {
+            base_url: cloud_url.into(),
+            api_key: Some("cloud-key".into()),
+            model: Some("cloud-model".into()),
+            upstream_model: None,
+        });
+        let dir = std::env::temp_dir().join(format!(
+            "tr-fixed-route-{}-{}",
+            std::process::id(),
+            route
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let cfg = AppConfig::from_file(file, dir.clone()).expect("config");
+        let mgr = ConfigManager::new(cfg);
+        let logs = RoutingLogStore::open(&dir).expect("logs");
+        let usage = AgentCloudUsageStore::open(&dir).expect("usage");
+        UpstreamClient::new(
+            mgr,
+            GatewayStats::new_in_memory(),
+            MultimodalStore::new_in_memory(),
+            EdgeInferenceTracker::new(),
+            usage,
+            logs,
+            SessionStore::new_in_memory(),
+        )
+    }
+
+    fn greeting_req() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("hi".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: vec![],
+            stream: false,
+            tool_choice: None,
+            max_tokens: Some(8),
+            ..Default::default()
+        }
+    }
+
+    fn decide_for(client: &UpstreamClient, req: &ChatCompletionRequest) -> RouteDecision {
+        let cfg = client.cfg();
+        let wordfreq = WordFreqStore::open_in_memory().expect("wordfreq");
+        decide(
+            &cfg,
+            req,
+            client.sessions.as_ref(),
+            None,
+            Some(client.multimodal.as_ref()),
+            &EffectiveRouting::passthrough(&cfg),
+            None,
+            None,
+            None,
+            None,
+            &wordfreq,
+        )
+    }
+
+    #[tokio::test]
+    async fn fixed_edge_failure_does_not_call_cloud() {
+        let (edge_url, edge_hits) = spawn_http_counter(500, r#"{"error":"edge down"}"#);
+        let (cloud_url, cloud_hits) = spawn_http_counter(200, ok_chat_body());
+        let client = build_client(&edge_url, &cloud_url, "edge");
+        let req = greeting_req();
+        let decision = decide_for(&client, &req);
+        assert_eq!(decision.route, RouteTier::Edge);
+        let err = client
+            .complete(&req, &decision, None, None)
+            .await
+            .expect_err("fixed edge must fail closed");
+        assert!(
+            matches!(err, AppError::Upstream(_)) || matches!(err, AppError::Unavailable(_)),
+            "{err:?}"
+        );
+        assert!(edge_hits.load(Ordering::SeqCst) >= 1, "edge should be hit");
+        assert_eq!(
+            cloud_hits.load(Ordering::SeqCst),
+            0,
+            "cloud must not be called on fixed edge failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn fixed_cloud_failure_does_not_call_edge() {
+        let (edge_url, edge_hits) = spawn_http_counter(200, ok_chat_body());
+        let (cloud_url, cloud_hits) = spawn_http_counter(500, r#"{"error":"cloud down"}"#);
+        let client = build_client(&edge_url, &cloud_url, "cloud");
+        let req = greeting_req();
+        let decision = decide_for(&client, &req);
+        assert_eq!(decision.route, RouteTier::Cloud);
+        let err = client
+            .complete(&req, &decision, None, None)
+            .await
+            .expect_err("fixed cloud must fail closed");
+        assert!(
+            matches!(err, AppError::Upstream(_)) || matches!(err, AppError::Unavailable(_)),
+            "{err:?}"
+        );
+        assert!(cloud_hits.load(Ordering::SeqCst) >= 1, "cloud should be hit");
+        assert_eq!(
+            edge_hits.load(Ordering::SeqCst),
+            0,
+            "edge must not be called on fixed cloud failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_edge_failure_may_call_cloud() {
+        let (edge_url, edge_hits) = spawn_http_counter(500, r#"{"error":"edge down"}"#);
+        let (cloud_url, cloud_hits) = spawn_http_counter(200, ok_chat_body());
+        let client = build_client(&edge_url, &cloud_url, "cascade");
+        let req = greeting_req();
+        let decision = decide_for(&client, &req);
+        assert_eq!(decision.route, RouteTier::Cascade);
+        let resp = client
+            .complete(&req, &decision, None, None)
+            .await
+            .expect("cascade should fall back to cloud");
+        assert!(
+            resp.choices
+                .first()
+                .and_then(|c| c.message.content.as_ref())
+                .is_some()
+        );
+        assert!(edge_hits.load(Ordering::SeqCst) >= 1);
+        assert!(
+            cloud_hits.load(Ordering::SeqCst) >= 1,
+            "cascade must call cloud after edge failure"
+        );
     }
 }
 

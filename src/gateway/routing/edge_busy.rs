@@ -166,10 +166,57 @@ mod tests {
             &config,
             Some(tracker.as_ref()),
         ));
+        let mut codes = Vec::new();
+        let (route, work, mm) = apply_edge_busy_fallback(
+            RouteTier::Edge,
+            WorkStrategy::Verify,
+            MultimodalStrategy::Probe,
+            StepKind::ToolSelect,
+            &config,
+            Some(tracker.as_ref()),
+            &mut codes,
+        );
+        assert_eq!(route, RouteTier::Edge);
+        assert_eq!(work, WorkStrategy::Verify);
+        assert_eq!(mm, MultimodalStrategy::Probe);
+        assert!(codes.is_empty());
     }
 
     #[test]
-    fn busy_forces_cloud_on_fixed_route_fallback() {
+    fn busy_keeps_cloud_when_route_fixed_cloud() {
+        let mut file = ConfigFile::default();
+        file.gateway.route = "cloud".into();
+        file.upstream.edge = Some(UpstreamEndpoint {
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: None,
+            model: None,
+            upstream_model: None,
+        });
+        file.upstream.cloud = Some(UpstreamEndpoint {
+            base_url: "https://api.example.com/v1".into(),
+            api_key: None,
+            model: None,
+            upstream_model: None,
+        });
+        let config = AppConfig::from_file(file, "/tmp/flowy-cloud-busy-fixed".into()).unwrap();
+        let tracker = EdgeInferenceTracker::new();
+        let _g = tracker.begin();
+        let mut codes = Vec::new();
+        let (route, _, _) = apply_edge_busy_fallback(
+            RouteTier::Cloud,
+            WorkStrategy::None,
+            MultimodalStrategy::None,
+            StepKind::ToolSelect,
+            &config,
+            Some(tracker.as_ref()),
+            &mut codes,
+        );
+        assert_eq!(route, RouteTier::Cloud);
+        assert!(codes.is_empty());
+    }
+
+    #[test]
+    fn busy_forces_cloud_on_auto_cascade_when_edge_busy() {
         let config = dual_config();
         let tracker = EdgeInferenceTracker::new();
         let _g = tracker.begin();
