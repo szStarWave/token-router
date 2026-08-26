@@ -587,15 +587,20 @@ fn backup_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn strip_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
+}
+
 fn read_json_file(path: &Path) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({}));
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let raw = strip_bom(&raw);
     if raw.trim().is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_str(&raw).map_err(|e| format!("invalid JSON at {}: {e}", path.display()))
+    serde_json::from_str(raw).map_err(|e| format!("invalid JSON at {}: {e}", path.display()))
 }
 
 fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
@@ -609,6 +614,7 @@ fn read_toml_file(path: &Path) -> Result<toml_edit::DocumentMut, String> {
         return Ok(toml_edit::DocumentMut::new());
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let raw = strip_bom(&raw);
     if raw.trim().is_empty() {
         return Ok(toml_edit::DocumentMut::new());
     }
@@ -626,10 +632,11 @@ fn read_yaml_file(path: &Path) -> Result<Value, String> {
         return Ok(json!({}));
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let raw = strip_bom(&raw);
     if raw.trim().is_empty() {
         return Ok(json!({}));
     }
-    serde_yaml::from_str(&raw).map_err(|e| format!("invalid YAML at {}: {e}", path.display()))
+    serde_yaml::from_str(raw).map_err(|e| format!("invalid YAML at {}: {e}", path.display()))
 }
 
 fn write_yaml_file(path: &Path, value: &Value) -> Result<(), String> {
@@ -734,10 +741,17 @@ fn merge_openclaw_config(existing: &mut Value, base_url: &str, model_id: &str, a
     if !model.is_object() {
         *model = json!({});
     }
-    model
-        .as_object_mut()
-        .unwrap()
-        .insert("primary".to_string(), json!(format!("{OPENCLAW_PROVIDER}/{model_id}")));
+    let model_obj = model.as_object_mut().unwrap();
+    let has_primary = model_obj
+        .get("primary")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if !has_primary {
+        model_obj.insert(
+            "primary".to_string(),
+            json!(format!("{OPENCLAW_PROVIDER}/{model_id}")),
+        );
+    }
 }
 
 fn read_yaml_file_legacy_removed_marker() {}
@@ -764,6 +778,21 @@ fn merge_hermes_config(existing: &mut Value, base_url: &str, model_id: &str, api
     provider_obj.insert("api".to_string(), json!(base_url));
     provider_obj.insert("api_key".to_string(), json!(api_key));
     provider_obj.insert("default_model".to_string(), json!(model_id));
+
+    let has_model_selection = root.get("model").is_some_and(|model_block| {
+        let provider_set = model_block
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty());
+        let default_set = model_block
+            .get("default")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty());
+        provider_set || default_set
+    });
+    if has_model_selection {
+        return;
+    }
 
     let model_block = root.entry("model").or_insert_with(|| json!({}));
     if !model_block.is_object() {
@@ -855,7 +884,36 @@ fn merge_opencode_config(existing: &mut Value, base_url: &str, model_id: &str, a
         .unwrap()
         .insert("name".to_string(), json!(OPENCODE_MODEL_DISPLAY));
 
-    root.insert("model".to_string(), json!(format!("{OPENCODE_PROVIDER}/{model_id}")));
+    // Additive only: never set root model/small_model. Also clear a previously
+    // forced Token Router selection so built-in / recent defaults can return.
+    if root
+        .get("model")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.starts_with(&format!("{OPENCODE_PROVIDER}/")))
+    {
+        root.remove("model");
+    }
+    if root
+        .get("small_model")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.starts_with(&format!("{OPENCODE_PROVIDER}/")))
+    {
+        root.remove("small_model");
+    }
+
+    // enabled_providers, when non-empty, is an allowlist that hides all other
+    // providers. Only append when the user already maintains such a filter.
+    if let Some(enabled) = root.get_mut("enabled_providers") {
+        if let Some(enabled_arr) = enabled.as_array_mut() {
+            if !enabled_arr.is_empty()
+                && !enabled_arr
+                    .iter()
+                    .any(|v| v.as_str() == Some(OPENCODE_PROVIDER))
+            {
+                enabled_arr.push(json!(OPENCODE_PROVIDER));
+            }
+        }
+    }
 }
 
 fn models_json_chat_completions_url(openai_v1_base: &str) -> String {
@@ -883,7 +941,7 @@ fn merge_models_json_config(
     }
     let models_arr = models.as_array_mut().unwrap();
 
-    let new_model = json!({
+    let patch = json!({
         "id": model_id,
         "name": MODELS_JSON_MODEL_DISPLAY,
         "vendor": MODELS_JSON_VENDOR,
@@ -895,25 +953,32 @@ fn merge_models_json_config(
         "supportsImages": true
     });
 
-    if let Some(idx) = models_arr
-        .iter()
-        .position(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
-    {
-        models_arr[idx] = new_model;
+    if let Some(entry) = models_arr.iter_mut().find(|m| {
+        m.get("id").and_then(|v| v.as_str()) == Some(model_id)
+    }) {
+        if let Some(obj) = entry.as_object_mut() {
+            for (k, v) in patch.as_object().unwrap() {
+                obj.insert(k.clone(), v.clone());
+            }
+        } else {
+            *entry = patch;
+        }
     } else {
-        models_arr.push(new_model);
+        models_arr.push(patch);
     }
 
-    let available = root.entry("availableModels").or_insert_with(|| json!([]));
-    if !available.is_array() {
-        *available = json!([]);
-    }
-    let available_arr = available.as_array_mut().unwrap();
-    if !available_arr
-        .iter()
-        .any(|v| v.as_str() == Some(model_id))
-    {
-        available_arr.insert(0, json!(model_id));
+    // availableModels, when non-empty, filters the UI to ONLY those IDs (hiding
+    // built-ins). Only append when the user already maintains such a filter.
+    if let Some(available) = root.get_mut("availableModels") {
+        if let Some(available_arr) = available.as_array_mut() {
+            if !available_arr.is_empty()
+                && !available_arr
+                    .iter()
+                    .any(|v| v.as_str() == Some(model_id))
+            {
+                available_arr.insert(0, json!(model_id));
+            }
+        }
     }
 }
 
@@ -953,9 +1018,23 @@ fn merge_codex_config(doc: &mut toml_edit::DocumentMut, base_url: &str, _context
         doc["model"] = toml_edit::value(DEFAULT_MODEL);
     }
 
-    doc["model_provider"] = toml_edit::value(CODEX_PROVIDER);
-    doc["model_reasoning_effort"] = toml_edit::value("high");
-    doc["disable_response_storage"] = toml_edit::value(true);
+    let has_existing_provider = doc
+        .get("model_provider")
+        .and_then(|item| item.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if !has_existing_provider {
+        doc["model_provider"] = toml_edit::value(CODEX_PROVIDER);
+    }
+
+    let has_reasoning_effort = doc.get("model_reasoning_effort").is_some();
+    if !has_reasoning_effort {
+        doc["model_reasoning_effort"] = toml_edit::value("high");
+    }
+
+    let has_disable_response_storage = doc.get("disable_response_storage").is_some();
+    if !has_disable_response_storage {
+        doc["disable_response_storage"] = toml_edit::value(true);
+    }
 
     if let Some(providers) = doc.get_mut("model_providers").and_then(|p| p.as_table_mut()) {
         providers.remove("token_router");
@@ -1431,7 +1510,7 @@ mod tests {
     use serde_yaml;
 
     #[test]
-    fn merge_openclaw_switches_selection_to_token_router_and_preserves_other_providers() {
+    fn merge_openclaw_adds_provider_and_preserves_existing_primary() {
         let mut doc = json!({
             "models": {
                 "providers": {
@@ -1455,7 +1534,7 @@ mod tests {
         assert_eq!(providers["token-router"]["timeoutSeconds"], 300);
         assert_eq!(
             doc["agents"]["defaults"]["model"]["primary"],
-            "token-router/auto"
+            "anthropic/claude-sonnet"
         );
         let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -1466,7 +1545,21 @@ mod tests {
     }
 
     #[test]
-    fn merge_hermes_switches_selection_to_token_router_and_preserves_other_sections() {
+    fn merge_openclaw_sets_primary_when_missing() {
+        let mut doc = json!({});
+        merge_openclaw_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        assert_eq!(
+            doc["agents"]["defaults"]["model"]["primary"],
+            "token-router/auto"
+        );
+        assert_eq!(
+            doc["models"]["providers"]["token-router"]["baseUrl"],
+            "http://127.0.0.1:11088/v1"
+        );
+    }
+
+    #[test]
+    fn merge_hermes_adds_provider_and_sets_selection_when_missing() {
         let mut doc = json!({
             "name": "keep-me",
             "provider": "anthropic"
@@ -1488,6 +1581,27 @@ mod tests {
         write_yaml_file(&path, &doc).unwrap();
         assert!(hermes_has_token_router(&path).unwrap());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_hermes_preserves_existing_model_selection() {
+        let mut doc = json!({
+            "model": {
+                "provider": "anthropic",
+                "default": "claude-sonnet",
+                "base_url": "https://api.anthropic.com",
+                "max_tokens": 8192
+            }
+        });
+        merge_hermes_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        assert_eq!(
+            doc["providers"]["token-router"]["api"],
+            "http://127.0.0.1:11088/v1"
+        );
+        assert_eq!(doc["model"]["provider"], "anthropic");
+        assert_eq!(doc["model"]["default"], "claude-sonnet");
+        assert_eq!(doc["model"]["base_url"], "https://api.anthropic.com");
+        assert_eq!(doc["model"]["max_tokens"], 8192);
     }
 
     #[test]
@@ -1517,17 +1631,27 @@ mod tests {
     }
 
     #[test]
-    fn merge_opencode_config_sets_token_router_provider_and_selection() {
+    fn merge_opencode_config_adds_provider_and_preserves_existing_model() {
         let mut doc = json!({
             "theme": "dark",
-            "model": "openai/gpt-4o"
+            "model": "openai/gpt-4o",
+            "provider": {
+                "openai": {
+                    "models": { "gpt-4o": { "name": "GPT-4o" } }
+                }
+            }
         });
         merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
         assert_eq!(doc["theme"], "dark");
-        assert_eq!(doc["model"], "token-router/auto");
+        assert_eq!(doc["model"], "openai/gpt-4o");
+        assert!(doc["provider"].get("openai").is_some());
         assert_eq!(
             doc["provider"]["token-router"]["options"]["baseURL"],
             "http://127.0.0.1:11088/v1"
+        );
+        assert_eq!(
+            doc["provider"]["token-router"]["models"]["auto"]["name"],
+            OPENCODE_MODEL_DISPLAY
         );
         let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -1538,7 +1662,102 @@ mod tests {
     }
 
     #[test]
-    fn merge_codex_config_uses_custom_provider_and_preserves_model() {
+    fn merge_opencode_config_does_not_set_default_model() {
+        let mut doc = json!({ "theme": "dark" });
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        assert!(
+            doc.get("model").is_none(),
+            "must not force root model selection"
+        );
+        assert_eq!(
+            doc["provider"]["token-router"]["options"]["baseURL"],
+            "http://127.0.0.1:11088/v1"
+        );
+        assert_eq!(
+            doc["provider"]["token-router"]["models"]["auto"]["name"],
+            OPENCODE_MODEL_DISPLAY
+        );
+    }
+
+    #[test]
+    fn read_json_file_accepts_utf8_bom() {
+        let dir = std::env::temp_dir().join(format!("agent-setup-bom-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        let body = "\u{feff}{\"theme\":\"dark\"}\n";
+        fs::write(&path, body).unwrap();
+        let doc = read_json_file(&path).unwrap();
+        assert_eq!(doc["theme"], "dark");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_opencode_config_clears_forced_token_router_model() {
+        let mut doc = json!({
+            "model": "token-router/auto",
+            "small_model": "token-router/auto",
+            "provider": {
+                "openai": {
+                    "models": { "gpt-4o": { "name": "GPT-4o" } }
+                }
+            }
+        });
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        assert!(doc.get("model").is_none());
+        assert!(doc.get("small_model").is_none());
+        assert!(doc["provider"].get("openai").is_some());
+        assert_eq!(
+            doc["provider"]["token-router"]["models"]["auto"]["name"],
+            OPENCODE_MODEL_DISPLAY
+        );
+    }
+
+    #[test]
+    fn merge_opencode_config_preserves_other_token_router_models() {
+        let mut doc = json!({
+            "provider": {
+                "token-router": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Token Router",
+                    "models": {
+                        "gpt-4o": { "name": "GPT-4o" },
+                        "claude-sonnet": { "name": "Claude Sonnet" }
+                    }
+                }
+            }
+        });
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        let models = &doc["provider"]["token-router"]["models"];
+        assert_eq!(models["gpt-4o"]["name"], "GPT-4o");
+        assert_eq!(models["claude-sonnet"]["name"], "Claude Sonnet");
+        assert_eq!(models["auto"]["name"], OPENCODE_MODEL_DISPLAY);
+    }
+
+    #[test]
+    fn merge_opencode_config_does_not_create_enabled_providers_filter() {
+        let mut doc = json!({});
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        assert!(
+            doc.get("enabled_providers").is_none(),
+            "must not introduce enabled_providers allowlist"
+        );
+    }
+
+    #[test]
+    fn merge_opencode_config_appends_to_existing_enabled_providers() {
+        let mut doc = json!({
+            "enabled_providers": ["openai", "anthropic"]
+        });
+        merge_opencode_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
+        let enabled = doc["enabled_providers"].as_array().unwrap();
+        assert_eq!(enabled.len(), 3);
+        assert_eq!(enabled[0], "openai");
+        assert_eq!(enabled[1], "anthropic");
+        assert_eq!(enabled[2], "token-router");
+    }
+
+    #[test]
+    fn merge_codex_config_adds_custom_provider_and_preserves_selection() {
         let mut doc = toml_edit::DocumentMut::from_str(
             r#"# keep me
 model = "gpt-5.5"
@@ -1562,16 +1781,16 @@ base_url = "https://api.openai.com/v1"
             "existing model preserved: {rendered}"
         );
         assert!(
-            rendered.contains(r#"model_provider = "custom""#),
-            "model_provider switched to custom: {rendered}"
+            rendered.contains(r#"model_provider = "openai""#),
+            "model_provider preserved: {rendered}"
         );
         assert!(
             rendered.contains(r#"model_reasoning_effort = "high""#),
-            "model_reasoning_effort set to high: {rendered}"
+            "model_reasoning_effort set when missing: {rendered}"
         );
         assert!(
-            rendered.contains("disable_response_storage = true"),
-            "disable_response_storage set to true: {rendered}"
+            rendered.contains("disable_response_storage = false"),
+            "disable_response_storage preserved: {rendered}"
         );
         assert!(
             !rendered.contains("model_context_window"),
@@ -1618,6 +1837,27 @@ base_url = "https://api.openai.com/v1"
         .unwrap();
         merge_codex_config(&mut doc, "http://127.0.0.1:11088/v1", 1_000_000);
         assert_eq!(codex_doc_model(&doc), DEFAULT_MODEL);
+        assert_eq!(
+            doc["model_provider"].as_str(),
+            Some("openai"),
+            "existing model_provider preserved"
+        );
+    }
+
+    #[test]
+    fn merge_codex_config_sets_provider_when_missing() {
+        let mut doc = toml_edit::DocumentMut::from_str(
+            r#"model = "gpt-5.5"
+"#,
+        )
+        .unwrap();
+        merge_codex_config(&mut doc, "http://127.0.0.1:11088/v1", 1_000_000);
+        assert_eq!(doc["model_provider"].as_str(), Some(CODEX_PROVIDER));
+        assert_eq!(codex_doc_model(&doc), "gpt-5.5");
+        assert_eq!(
+            doc["disable_response_storage"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1638,6 +1878,14 @@ experimental_bearer_token = "old-key"
         assert!(
             !rendered.contains("model_providers.token_router"),
             "stale token_router provider removed: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"model_provider = "token_router""#),
+            "existing model_provider preserved: {rendered}"
+        );
+        assert!(
+            rendered.contains("[model_providers.custom]"),
+            "custom provider added: {rendered}"
         );
         assert_eq!(codex_doc_model(&doc), "gpt-5.5");
     }
@@ -1671,8 +1919,12 @@ base_url = "https://api.openai.com/v1"
             "user openai provider preserved: {rendered}"
         );
         assert!(
-            rendered.contains(r#"model_provider = "custom""#),
-            "current model_provider switched to custom: {rendered}"
+            rendered.contains(r#"model_provider = "openai""#),
+            "existing model_provider preserved: {rendered}"
+        );
+        assert!(
+            rendered.contains("[model_providers.custom]"),
+            "custom provider added: {rendered}"
         );
         assert_eq!(codex_doc_model(&doc), "gpt-4o");
     }
@@ -1734,10 +1986,55 @@ model_catalog_json = "my-custom-models.json"
     }
 
     #[test]
+    fn merge_models_json_config_does_not_create_available_models_filter() {
+        let mut doc = json!({
+            "models": [
+                { "id": "deepseek-chat", "name": "DeepSeek", "vendor": "DeepSeek" }
+            ]
+        });
+        merge_models_json_config(
+            &mut doc,
+            "http://127.0.0.1:11088/v1/chat/completions",
+            "auto",
+            "test-key",
+            262_144,
+        );
+        assert_eq!(doc["models"].as_array().unwrap().len(), 2);
+        assert!(
+            doc.get("availableModels").is_none(),
+            "must not introduce availableModels filter that hides built-ins"
+        );
+    }
+
+    #[test]
+    fn merge_models_json_config_leaves_empty_available_models_empty() {
+        let mut doc = json!({
+            "models": [],
+            "availableModels": []
+        });
+        merge_models_json_config(
+            &mut doc,
+            "http://127.0.0.1:11088/v1/chat/completions",
+            "auto",
+            "test-key",
+            262_144,
+        );
+        assert_eq!(doc["models"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["availableModels"], json!([]));
+    }
+
+    #[test]
     fn merge_models_json_config_overwrites_same_id() {
         let mut doc = json!({
             "models": [
-                { "id": "auto", "name": "Old", "vendor": "Other", "url": "https://old.example.com/v1/chat/completions" }
+                {
+                    "id": "auto",
+                    "name": "Old",
+                    "vendor": "Other",
+                    "url": "https://old.example.com/v1/chat/completions",
+                    "relatedModels": { "lite": "fast-model" },
+                    "temperature": 0.2
+                }
             ]
         });
         merge_models_json_config(
@@ -1750,6 +2047,8 @@ model_catalog_json = "my-custom-models.json"
         assert_eq!(doc["models"].as_array().unwrap().len(), 1);
         assert_eq!(doc["models"][0]["vendor"], MODELS_JSON_VENDOR);
         assert_eq!(doc["models"][0]["apiKey"], "new-key");
+        assert_eq!(doc["models"][0]["relatedModels"]["lite"], "fast-model");
+        assert_eq!(doc["models"][0]["temperature"], 0.2);
         let dir = std::env::temp_dir().join(format!("agent-setup-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("models.json");
@@ -1799,7 +2098,7 @@ base_url = \"https://api.openai.com/v1\"
             "# top-level comment",
             "# another comment",
             "model = \"gpt-4o\"",
-            "model_provider = \"custom\"",
+            "model_provider = \"openai\"",
             "[model_providers.openai]",
             "name = \"OpenAI\"",
             "[model_providers.custom]",
@@ -1816,6 +2115,7 @@ base_url = \"https://api.openai.com/v1\"
         let reread = fs::read_to_string(&path).unwrap();
         assert!(reread.contains("# top-level comment"));
         assert!(reread.contains("custom"));
+        assert!(reread.contains(r#"model_provider = "openai""#));
         assert!(codex_has_token_router(&path).unwrap());
         let _ = fs::remove_dir_all(dir);
     }
@@ -1847,23 +2147,6 @@ base_url = \"https://api.openai.com/v1\"
         assert!(reread.contains("token-router:"));
         assert!(hermes_has_token_router(&path).unwrap());
         let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn merge_hermes_clears_stale_model_base_url_and_keeps_other_model_keys() {
-        let mut doc = json!({
-            "model": {
-                "provider": "anthropic",
-                "default": "claude-sonnet",
-                "base_url": "https://api.anthropic.com",
-                "max_tokens": 8192
-            }
-        });
-        merge_hermes_config(&mut doc, "http://127.0.0.1:11088/v1", "auto", "test-key");
-        assert_eq!(doc["model"]["provider"], "token-router");
-        assert_eq!(doc["model"]["default"], "auto");
-        assert!(doc["model"].get("base_url").is_none());
-        assert_eq!(doc["model"]["max_tokens"], 8192);
     }
 
     #[test]
