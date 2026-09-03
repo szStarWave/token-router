@@ -69,6 +69,8 @@ ctx_edge_max_tokens = 200000
 # --- 日志轮转（~/.token-router/logs/gateway.log）---
 # log_max_size_mb = 10               # 单文件超过此大小（MiB）时轮转；0 = 禁用
 # log_max_files = 5                  # 保留文件总数（当前 + 归档）；至少 2 才启用轮转
+# image_route = "auto"               # auto | edge | cloud（文生图/图生图；与 chat route 独立）
+# video_route = "auto"               # auto | edge | cloud（文生视频/图生视频；与 chat/image 独立）
 
 # ---------------------------------------------------------------------------
 # 上游（OpenAI 兼容 Chat Completions）
@@ -82,6 +84,42 @@ base_url = "http://127.0.0.1:11434/v1"
 base_url = "https://api.deepseek.com/v1"
 model = "auto"               # auto = 保留客户端 model，由 token-router 路由
 # api_key = "sk-your-deepseek-api-key"
+
+# ---------------------------------------------------------------------------
+# 文生图 / 图生图上游（与 chat 分开）
+# ---------------------------------------------------------------------------
+# [upstream.image.edge]
+# provider = "comfyui"
+# base_url = "http://127.0.0.1:8188"
+# model = "v1-5-pruned-emaonly.safetensors"
+# # workflow_file = "comfy-t2i-workflow.json"
+# # workflow_file_i2i = "comfy-i2i-workflow.json"
+
+# [upstream.image.cloud]
+# provider = "openai"          # openai | dashscope | seedream
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-image-1"
+# api_key = "sk-..."
+# # Seedream: provider = "seedream", base_url = "https://ark.cn-beijing.volces.com/api/v3"
+# # DashScope: provider = "dashscope", base_url = "https://dashscope.aliyuncs.com/api/v1", model = "wan2.6-t2i"
+
+# ---------------------------------------------------------------------------
+# 文生视频 / 图生视频上游（与 chat/image 分开）
+# ---------------------------------------------------------------------------
+# [upstream.video.edge]
+# provider = "comfyui"
+# base_url = "http://127.0.0.1:8188"
+# model = "your-video-ckpt.safetensors"
+# # workflow_file = "comfy-t2v-workflow.json"
+# # workflow_file_i2v = "comfy-i2v-workflow.json"
+
+# [upstream.video.cloud]
+# provider = "openai"          # openai | dashscope | seedance
+# base_url = "https://api.openai.com/v1"
+# model = "sora-2"
+# api_key = "sk-..."
+# # DashScope: provider = "dashscope", base_url = "https://dashscope.aliyuncs.com/api/v1", model = "wan2.6-t2v"
+# # Seedance: provider = "seedance", base_url = "https://ark.cn-beijing.volces.com/api/v3", model = "doubao-seedance-1-0-pro-250528"
 
 # ---------------------------------------------------------------------------
 # CLI

@@ -6,6 +6,8 @@ pub mod auth_keys;
 pub mod chat;
 pub mod codex_catalog;
 pub mod compat;
+pub mod images;
+pub mod videos;
 pub mod meta;
 pub mod models;
 pub mod openai;

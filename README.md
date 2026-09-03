@@ -162,10 +162,29 @@ src/
     │   ├── data.rs         模型能力缓存
     │   ├── fingerprint.rs  上游指纹（缓存失效依据）
     │   └── store.rs        能力查询 + 探测记录
+    ├── image/              文生图 / 图生图
+    │   ├── mod.rs          ImageClient + provider 分发
+    │   ├── tier.rs         edge/cloud 选择（含端侧忙升云）
+    │   ├── types.rs        OpenAI Images 请求/响应类型
+    │   ├── openai.rs       OpenAI Images 适配
+    │   ├── seedream.rs     火山 Seedream 适配
+    │   ├── dashscope.rs    百炼万相适配
+    │   └── comfyui.rs      本地 ComfyUI 适配
+    ├── video/              文生视频 / 图生视频
+    │   ├── mod.rs          VideoClient + provider 分发
+    │   ├── tier.rs         edge/cloud 选择（含端侧忙升云）
+    │   ├── store.rs        本地 VideoJobStore
+    │   ├── types.rs        OpenAI Videos 请求/响应类型
+    │   ├── openai.rs       OpenAI Videos / Sora 适配
+    │   ├── dashscope.rs    百炼万相视频适配
+    │   ├── seedance.rs     火山 Seedance 适配
+    │   └── comfyui.rs      本地 ComfyUI 视频适配
     ├── api/                HTTP 处理层
     │   ├── mod.rs          路由注册
     │   ├── routes.rs       路由表定义
     │   ├── chat.rs         聊天接口主处理
+    │   ├── images.rs       文生图 / 图生图接口
+    │   ├── videos.rs       文生视频 / 图生视频接口
     │   ├── auth.rs         请求鉴权
     │   ├── admin.rs        管理端点
     │   ├── setup.rs        配置页 Web UI
@@ -461,7 +480,15 @@ token-router gateway restart
 
 #### 9. 端侧负载感知（`edge_load.rs`）
 
-`EdgeInferenceTracker` 使用 `AtomicU32` 追踪并发推理数。通过 RAII 守卫 `EdgeInferenceGuard`（`begin()` 返回，`drop()` 时递减），确保不会漏减计数。
+`EdgeInferenceTracker` 使用 `AtomicU32` 追踪并发推理数。通过 RAII 守卫 `EdgeInferenceGuard`（`begin()` 返回，`drop()` 时递减），确保不会漏减计数。文生图 / 文生视频走 edge 时同样持有该守卫；`image_route=auto` / `video_route=auto` 且端侧忙时可直接升云。
+
+#### 9.1 文生图 / 图生图（`image/` + `api/images.rs`）
+
+对外 OpenAI Images 兼容：`POST /v1/images/generations`、`POST /v1/images/edits`。配置 `[upstream.image.edge|cloud]` + `gateway.image_route`；provider 适配 openai / seedream / dashscope / comfyui。
+
+#### 9.2 文生视频 / 图生视频（`video/` + `api/videos.rs`）
+
+对外 OpenAI Videos 异步 API：`POST/GET /v1/videos`、`GET /v1/videos/{id}`、`GET .../content`。配置 `[upstream.video.edge|cloud]` + `gateway.video_route`；非 OpenAI 上游经本地 `VideoJobStore` 映射任务生命周期。provider：openai / dashscope / seedance / comfyui。
 
 #### 10. 会话管理（`session/`）
 
@@ -891,8 +918,88 @@ token-router stats --global --lang zh # 全局累计 + 中文
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions 兼容（Agent 主入口） |
 | `POST` | `/v1/responses` | OpenAI Responses API 兼容 |
 | `POST` | `/v1/messages` | Anthropic Messages API 兼容 |
+| `POST` | `/v1/images/generations` | OpenAI Images 文生图兼容 |
+| `POST` | `/v1/images/edits` | OpenAI Images 图生图/编辑兼容（multipart） |
+| `POST` | `/v1/videos` | OpenAI Videos 创建任务（文生/图生视频） |
+| `GET` | `/v1/videos` | OpenAI Videos 任务列表 |
+| `GET` | `/v1/videos/{video_id}` | OpenAI Videos 查询状态 |
+| `GET` | `/v1/videos/{video_id}/content` | OpenAI Videos 下载 MP4 |
 
 三种 LLM API 入口共享同一路由引擎与 edge/cloud 上游配置；请求在网关内归一化为 OpenAI Chat Completions 格式后转发至 `{base_url}/chat/completions`。Agent 可按 SDK 习惯选择入口（OpenAI SDK → `/v1/chat/completions`，Codex/Responses 客户端 → `/v1/responses`，Anthropic SDK → `/v1/messages`）。`token_router_meta` 扩展字段仅出现在 OpenAI Chat Completions 响应中。
+
+### 5.0 文生图 / 图生图
+
+对外始终使用 OpenAI Images 格式；网关按 `[upstream.image.edge|cloud]` 与 `gateway.image_route` 选择本地或云端，并适配各厂商协议。
+
+| 端点 | Content-Type | 说明 |
+|------|--------------|------|
+| `POST /v1/images/generations` | `application/json` | `prompt` 文生图 |
+| `POST /v1/images/edits` | `multipart/form-data` | `image` + `prompt`（可选 `mask`）图生图 |
+
+**路由**：`image_route=auto` 优先 edge；端侧忙且已配 cloud 时直接升云（与 chat 共用 `EdgeInferenceTracker`）。`image_route=edge|cloud` 固定单端，忙碌不跨端。
+
+**Provider**（配置字段 `provider`）：`openai` / `seedream` / `dashscope` / `comfyui`。
+
+```bash
+# 文生图
+curl -s http://127.0.0.1:11080/v1/images/generations \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1","prompt":"a red balloon","n":1,"size":"1024x1024"}'
+
+# 图生图
+curl -s http://127.0.0.1:11080/v1/images/edits \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "model=gpt-image-1" \
+  -F "prompt=make it night" \
+  -F "image=@input.png"
+```
+
+### 5.0.1 文生视频 / 图生视频
+
+对外始终使用 OpenAI Videos 异步契约；网关按 `[upstream.video.edge|cloud]` 与 `gateway.video_route` 选择本地或云端，并适配各厂商协议。非 OpenAI 上游的任务写入本地 `videos/` job store。
+
+| 端点 | 说明 |
+|------|------|
+| `POST /v1/videos` | 创建任务；仅 `prompt` = 文生视频；带 `input_reference` / `image_url` = 图生视频 |
+| `GET /v1/videos` | 列表（`limit` / `after` / `order`）；仅本网关创建的任务 |
+| `GET /v1/videos/{id}` | 查询状态（未终态时刷新上游） |
+| `GET /v1/videos/{id}/content` | 下载 MP4（`variant=video`；thumbnail 首版 400） |
+
+**路由**：`video_route=auto` 优先 edge；端侧忙且已配 cloud 时直接升云。`video_route=edge|cloud` 固定单端。
+
+**Provider**：`openai` / `dashscope` / `seedance` / `comfyui`。
+
+```bash
+# 文生视频
+JOB=$(curl -s http://127.0.0.1:11080/v1/videos \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"sora-2","prompt":"a cat walking on the beach","seconds":"8","size":"1280x720"}')
+echo "$JOB"
+VIDEO_ID=$(echo "$JOB" | jq -r .id)
+
+# 轮询状态
+while true; do
+  STATUS=$(curl -s http://127.0.0.1:11080/v1/videos/$VIDEO_ID \
+    -H "Authorization: Bearer $TOKEN" | jq -r .status)
+  echo "status=$STATUS"
+  [[ "$STATUS" == "completed" || "$STATUS" == "failed" ]] && break
+  sleep 10
+done
+
+# 下载
+curl -L http://127.0.0.1:11080/v1/videos/$VIDEO_ID/content \
+  -H "Authorization: Bearer $TOKEN" -o out.mp4
+
+# 图生视频（multipart）
+curl -s http://127.0.0.1:11080/v1/videos \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "model=sora-2" \
+  -F "prompt=animate this still" \
+  -F "seconds=8" \
+  -F "input_reference=@frame.png;type=image/png"
+```
 
 **响应扩展**（非流式 JSON 根上的 `token_router_meta`，Agent 可忽略；仅 `/v1/chat/completions`）：
 
@@ -1062,6 +1169,8 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 | `session_cleanup_interval_secs` | `3600` | `sessions/` 扫描间隔（秒）；**改后需重启 Gateway** |
 | `api_key` | — | 选填；入站鉴权 |
 | `admin_token` | — | 选填；保护 shutdown、restart 与 setup 写操作 |
+| `image_route` | `auto` | 文生图/图生图：`auto` / `edge` / `cloud`（与 chat `route` 独立） |
+| `video_route` | `auto` | 文生视频/图生视频：`auto` / `edge` / `cloud`（与 chat/image 独立） |
 | `experience_enabled` | `true` | 按 `step_kind` 隐式学习 |
 | `experience_learning_rate` | `0.08` | 经验偏置学习强度 |
 | `experience_max_bias` | `0.12` | 单步态难度偏置上限 |
@@ -1112,7 +1221,31 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 
 至少配置一侧。只配 edge 时全部走端侧；只配 cloud 时全部走云端。
 
-### 6.3 `[agent.<id>]`
+### 6.3 `[upstream.image.edge]` / `[upstream.image.cloud]`
+
+与 chat 上游完全独立。对外 `/v1/images/generations` 与 `/v1/images/edits` 使用此配置。
+
+| 字段 | 说明 |
+|------|------|
+| `provider` | `openai` / `dashscope` / `seedream` / `comfyui` |
+| `base_url` | 上游根路径（OpenAI/Seedream 含 `/v1` 或 `/api/v3`；DashScope 含 `/api/v1`；ComfyUI 为根如 `http://127.0.0.1:8188`） |
+| `api_key` | 选填 |
+| `model` / `upstream_model` | 显示 id / 实际上游模型 id |
+| `workflow_file` / `workflow_file_i2i` | 仅 ComfyUI：覆盖内置 T2I / I2I workflow（API format JSON 路径） |
+
+### 6.4 `[upstream.video.edge]` / `[upstream.video.cloud]`
+
+与 chat / image 上游完全独立。对外 `/v1/videos*` 使用此配置。
+
+| 字段 | 说明 |
+|------|------|
+| `provider` | `openai` / `dashscope` / `seedance` / `comfyui` |
+| `base_url` | 上游根路径（OpenAI 含 `/v1`；DashScope 含 `/api/v1`；Seedance/方舟含 `/api/v3`；ComfyUI 为根） |
+| `api_key` | 选填 |
+| `model` / `upstream_model` | 显示 id / 实际上游模型 id |
+| `workflow_file` / `workflow_file_i2v` | 仅 ComfyUI：覆盖内置 T2V / I2V workflow |
+
+### 6.5 `[agent.<id>]`
 
 为特定 Agent 设置专属上游和云端 token 预算。客户端在请求头中设置 `X-Agent-Id` 来标识 agent，Agent 配置为部分覆盖：未设置的字段回退到默认 `[upstream.*]`。
 
@@ -1138,13 +1271,13 @@ model = "claude-sonnet"
 
 **预算超限行为**：当 agent 在当前 5 小时窗口内的云端 token 用量（估计值）接近或超过 `cloud_token_budget` 时，路由引擎将原本的 `Cloud` 决策降为 `Cascade`（先走 edge，质量不过关再升云），从而控制云端费用。Setup API 调用示例见 [§5.1](#51-setup-api-调用示例)。
 
-### 6.4 `[cli]`
+### 6.6 `[cli]`
 
 | 字段 | 说明 |
 |------|------|
 | `gateway_url` | CLI 访问 Gateway 的 URL，默认 `http://{gateway.listen}` |
 
-### 6.5 常用组合
+### 6.7 常用组合
 
 ```toml
 # 智能路由 + 级联（OpenClaw 推荐）
@@ -1167,7 +1300,7 @@ adaptive_routing_enabled = true
 # default_profile = "economy"
 ```
 
-### 6.6 日常 / 心跳 vs Agent 任务（速查）
+### 6.8 日常 / 心跳 vs Agent 任务（速查）
 
 | 目标 | 建议 |
 |------|------|

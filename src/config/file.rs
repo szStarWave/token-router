@@ -106,6 +106,12 @@ pub struct GatewaySection {
     /// Total log files to keep (active + archived). Minimum 2 to enable rotation.
     #[serde(default = "default_log_max_files")]
     pub log_max_files: usize,
+    /// Image generation routing: `auto` | `edge` | `cloud` (independent of chat `route`).
+    #[serde(default = "default_image_route")]
+    pub image_route: String,
+    /// Video generation routing: `auto` | `edge` | `cloud` (independent of chat `route`).
+    #[serde(default = "default_video_route")]
+    pub video_route: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,6 +120,28 @@ pub struct UpstreamSection {
     pub edge: Option<UpstreamEndpoint>,
     #[serde(default)]
     pub cloud: Option<UpstreamEndpoint>,
+    /// Text-to-image / image-to-image upstreams (separate from chat).
+    #[serde(default)]
+    pub image: ImageUpstreamSection,
+    /// Text-to-video / image-to-video upstreams (separate from chat/image).
+    #[serde(default)]
+    pub video: VideoUpstreamSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageUpstreamSection {
+    #[serde(default)]
+    pub edge: Option<ImageUpstreamEndpoint>,
+    #[serde(default)]
+    pub cloud: Option<ImageUpstreamEndpoint>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VideoUpstreamSection {
+    #[serde(default)]
+    pub edge: Option<VideoUpstreamEndpoint>,
+    #[serde(default)]
+    pub cloud: Option<VideoUpstreamEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +156,65 @@ pub struct UpstreamEndpoint {
     /// Actual model name to forward to upstream when different from `model` (the display id).
     #[serde(default)]
     pub upstream_model: Option<String>,
+}
+
+/// Image generation upstream (`openai` | `dashscope` | `seedream` | `comfyui`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUpstreamEndpoint {
+    /// Provider adapter id.
+    #[serde(default = "default_image_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub upstream_model: Option<String>,
+    /// Optional ComfyUI T2I workflow JSON path (API format).
+    #[serde(default)]
+    pub workflow_file: Option<String>,
+    /// Optional ComfyUI I2I workflow JSON path (API format).
+    #[serde(default)]
+    pub workflow_file_i2i: Option<String>,
+}
+
+/// Video generation upstream (`openai` | `dashscope` | `seedance` | `comfyui`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoUpstreamEndpoint {
+    #[serde(default = "default_video_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub upstream_model: Option<String>,
+    /// Optional ComfyUI T2V workflow JSON path (API format).
+    #[serde(default)]
+    pub workflow_file: Option<String>,
+    /// Optional ComfyUI I2V workflow JSON path (API format).
+    #[serde(default)]
+    pub workflow_file_i2v: Option<String>,
+}
+
+fn default_image_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_video_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_image_route() -> String {
+    "auto".to_string()
+}
+
+fn default_video_route() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,6 +430,8 @@ impl Default for GatewaySection {
             wordfreq_max_tokens_per_observation: default_wordfreq_max_tokens_per_observation(),
             log_max_size_mb: default_log_max_size_mb(),
             log_max_files: default_log_max_files(),
+            image_route: default_image_route(),
+            video_route: default_video_route(),
         }
     }
 }
@@ -405,6 +494,8 @@ ctx_edge_max_tokens = 200000
 # classifier_prior_from_heuristic = true
 # log_max_size_mb = 10              # gateway.log size before rotate (MiB); 0 = disable
 # log_max_files = 5                 # active + archived files; min 2 to rotate
+# image_route = "auto"              # auto | edge | cloud (image gen; independent of chat route)
+# video_route = "auto"              # auto | edge | cloud (video gen; independent of chat/image)
 
 # [upstream.cloud]
 # base_url = "https://api.deepseek.com/v1"
@@ -414,6 +505,28 @@ ctx_edge_max_tokens = 200000
 # [upstream.edge]
 # base_url = "http://127.0.0.1:11434/v1"
 # model = "qwen3:8b"             # optional; omit or auto = keep client model
+
+# [upstream.image.edge]
+# provider = "comfyui"
+# base_url = "http://127.0.0.1:8188"
+# model = "v1-5-pruned-emaonly.safetensors"
+
+# [upstream.image.cloud]
+# provider = "openai"            # openai | dashscope | seedream
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-image-1"
+# api_key = "sk-..."
+
+# [upstream.video.edge]
+# provider = "comfyui"
+# base_url = "http://127.0.0.1:8188"
+# model = "your-video-ckpt.safetensors"
+
+# [upstream.video.cloud]
+# provider = "openai"            # openai | dashscope | seedance
+# base_url = "https://api.openai.com/v1"
+# model = "sora-2"
+# api_key = "sk-..."
 
 [cli]
 # gateway_url = "http://127.0.0.1:{port}"

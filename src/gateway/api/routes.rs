@@ -14,7 +14,9 @@ use crate::gateway::api::admin;
 use crate::gateway::api::agents;
 use crate::gateway::api::anthropic::anthropic_messages_handler;
 use crate::gateway::api::chat::chat_completions;
+use crate::gateway::api::images::{images_edits, images_generations};
 use crate::gateway::api::models::{get_model, list_models};
+use crate::gateway::api::videos::{videos_content, videos_create, videos_list, videos_retrieve};
 use crate::gateway::api::responses::responses_handler;
 use crate::gateway::api::setup;
 use crate::gateway::classifier::ClassifierStore;
@@ -23,6 +25,8 @@ use crate::gateway::routing_log::RoutingLogStore;
 use crate::gateway::server::GatewayRuntime;
 use crate::gateway::edge_load::EdgeInferenceTracker;
 use crate::gateway::experience::ExperienceStore;
+use crate::gateway::image::ImageClient;
+use crate::gateway::video::VideoClient;
 use crate::gateway::multimodal::MultimodalStore;
 use crate::gateway::routing::{AdaptiveTuner, WordFreqStore};
 use crate::gateway::session::SessionStore;
@@ -37,6 +41,8 @@ pub struct AppState {
     pub classifier: Arc<ClassifierStore>,
     pub multimodal: Arc<MultimodalStore>,
     pub upstream: UpstreamClient,
+    pub images: ImageClient,
+    pub videos: VideoClient,
     pub runtime: Arc<GatewayRuntime>,
     pub stats: Arc<GatewayStats>,
     pub adaptive_tuner: Arc<AdaptiveTuner>,
@@ -95,6 +101,11 @@ pub fn router(state: AppState) -> Router {
             post(agents::wsl_configure),
         )
         .route("/v1/chat/completions", post(chat_completions_handler))
+        .route("/v1/images/generations", post(images_generations))
+        .route("/v1/images/edits", post(images_edits))
+        .route("/v1/videos", post(videos_create).get(videos_list))
+        .route("/v1/videos/{video_id}", get(videos_retrieve))
+        .route("/v1/videos/{video_id}/content", get(videos_content))
         .route("/v1/models", get(list_models))
         .route("/v1/models/{model_id}", get(get_model))
         .route("/v1/responses", post(responses_handler))

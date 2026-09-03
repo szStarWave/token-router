@@ -136,6 +136,9 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let edge_load = EdgeInferenceTracker::new();
     let config_mgr = ConfigManager::new(config.clone());
     let codex_history = Arc::new(CodexChatHistoryStore::default());
+    let images = crate::gateway::image::ImageClient::new(edge_load.clone());
+    let video_store = crate::gateway::video::store::VideoJobStore::open(&config.data_dir)?;
+    let videos = crate::gateway::video::VideoClient::new(edge_load.clone(), video_store);
     let state = AppState {
         config_mgr: config_mgr.clone(),
         sessions: sessions.clone(),
@@ -151,6 +154,8 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
             routing_logs.clone(),
             sessions.clone(),
         ),
+        images,
+        videos,
         runtime: runtime.clone(),
         stats: stats.clone(),
         adaptive_tuner,

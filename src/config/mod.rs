@@ -10,14 +10,17 @@ pub use auth_keys::{
     UpdateGatewayAuthKeyRequest,
 };
 pub use file::{
-    ConfigFile, GatewayApiKeyEntry, UpstreamEndpoint, apply_port_override, ensure_initialized,
-    load, load_from_path, save,
+    ConfigFile, GatewayApiKeyEntry, ImageUpstreamEndpoint, ImageUpstreamSection, UpstreamEndpoint,
+    VideoUpstreamEndpoint, VideoUpstreamSection, apply_port_override, ensure_initialized, load,
+    load_from_path, save,
 };
 pub use setup::{
-    GatewayConfigPatch, GatewayConfigView, UpstreamEndpointPatch, UpstreamEndpointView,
-    UpstreamSetupUpdate, UpstreamSetupView, apply_default_upstream, apply_setup_patch,
-    apply_upstream_patch, endpoint_configured, gateway_view_from_section, is_setup_validation_error,
-    normalize_client_http_url, view_from_config, CLOUD_MODEL_AUTO, DEFAULT_CLOUD_BUDGET_AGENT_ID,
+    GatewayConfigPatch, GatewayConfigView, ImageUpstreamEndpointPatch, ImageUpstreamEndpointView,
+    UpstreamEndpointPatch, UpstreamEndpointView, UpstreamSetupUpdate, UpstreamSetupView,
+    VideoUpstreamEndpointPatch, VideoUpstreamEndpointView, apply_default_upstream,
+    apply_setup_patch, apply_upstream_patch, endpoint_configured, gateway_view_from_section,
+    image_endpoint_configured, is_setup_validation_error, normalize_client_http_url,
+    video_endpoint_configured, view_from_config, CLOUD_MODEL_AUTO, DEFAULT_CLOUD_BUDGET_AGENT_ID,
     mask_gateway_api_key,
 };
 pub use paths::{

@@ -43,6 +43,28 @@ pub struct ResolvedUpstream {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResolvedImageUpstream {
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2i: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedVideoUpstream {
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2v: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen_addr: String,
     /// `None` = `route=auto` (difficulty-based); `Some` = fixed tier from config.
@@ -56,6 +78,14 @@ pub struct AppConfig {
     pub cloud_api_key: Option<String>,
     pub cloud_model: Option<String>,
     pub cloud_upstream_model: Option<String>,
+    /// Image gen: `None` = auto; `Some(Edge|Cloud)` = fixed (Cascade unused for images).
+    pub image_route: Option<RouteTier>,
+    pub image_edge: Option<ResolvedImageUpstream>,
+    pub image_cloud: Option<ResolvedImageUpstream>,
+    /// Video gen: `None` = auto; `Some(Edge|Cloud)` = fixed.
+    pub video_route: Option<RouteTier>,
+    pub video_edge: Option<ResolvedVideoUpstream>,
+    pub video_cloud: Option<ResolvedVideoUpstream>,
     pub default_profile: Profile,
     pub ctx_edge_max_tokens: u32,
     pub data_dir: PathBuf,
@@ -126,6 +156,8 @@ impl AppConfig {
             .parse()
             .map_err(|()| anyhow::anyhow!("invalid gateway.default_profile"))?;
         let fixed_route = parse_config_route(&file.gateway.route)?;
+        let image_route = parse_image_route(&file.gateway.image_route)?;
+        let video_route = parse_video_route(&file.gateway.video_route)?;
         let routing_mode = file
             .gateway
             .routing_mode
@@ -176,6 +208,36 @@ impl AppConfig {
                 .filter(|s| !s.is_empty()),
             cloud_model: file.upstream.cloud.as_ref().and_then(|e| e.model.clone()),
             cloud_upstream_model: file.upstream.cloud.as_ref().and_then(|e| e.upstream_model.clone()),
+            image_route,
+            image_edge: file
+                .upstream
+                .image
+                .edge
+                .as_ref()
+                .filter(|e| image_endpoint_configured(e))
+                .map(resolve_image_endpoint),
+            image_cloud: file
+                .upstream
+                .image
+                .cloud
+                .as_ref()
+                .filter(|e| image_endpoint_configured(e))
+                .map(resolve_image_endpoint),
+            video_route,
+            video_edge: file
+                .upstream
+                .video
+                .edge
+                .as_ref()
+                .filter(|e| video_endpoint_configured(e))
+                .map(resolve_video_endpoint),
+            video_cloud: file
+                .upstream
+                .video
+                .cloud
+                .as_ref()
+                .filter(|e| video_endpoint_configured(e))
+                .map(resolve_video_endpoint),
             default_profile,
             ctx_edge_max_tokens: file.gateway.ctx_edge_max_tokens,
             data_dir,
@@ -308,6 +370,82 @@ impl AppConfig {
             },
         }
     }
+
+    pub fn resolve_image_upstream(&self, tier: &str) -> Option<ResolvedImageUpstream> {
+        match tier {
+            "edge" => self.image_edge.clone(),
+            "cloud" => self.image_cloud.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn any_image_upstream(&self) -> bool {
+        self.image_edge.is_some() || self.image_cloud.is_some()
+    }
+
+    pub fn resolve_video_upstream(&self, tier: &str) -> Option<ResolvedVideoUpstream> {
+        match tier {
+            "edge" => self.video_edge.clone(),
+            "cloud" => self.video_cloud.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn any_video_upstream(&self) -> bool {
+        self.video_edge.is_some() || self.video_cloud.is_some()
+    }
+}
+
+fn image_endpoint_configured(ep: &crate::config::ImageUpstreamEndpoint) -> bool {
+    !ep.base_url.trim().is_empty()
+}
+
+fn video_endpoint_configured(ep: &crate::config::VideoUpstreamEndpoint) -> bool {
+    !ep.base_url.trim().is_empty()
+}
+
+fn resolve_image_endpoint(ep: &crate::config::ImageUpstreamEndpoint) -> ResolvedImageUpstream {
+    ResolvedImageUpstream {
+        provider: {
+            let p = ep.provider.trim();
+            if p.is_empty() {
+                "openai".to_string()
+            } else {
+                p.to_ascii_lowercase()
+            }
+        },
+        base_url: Some(ep.base_url.trim().to_string()),
+        api_key: ep.api_key.clone().filter(|s| !s.is_empty()),
+        model: ep.model.clone(),
+        upstream_model: ep.upstream_model.clone(),
+        workflow_file: ep.workflow_file.clone().filter(|s| !s.trim().is_empty()),
+        workflow_file_i2i: ep
+            .workflow_file_i2i
+            .clone()
+            .filter(|s| !s.trim().is_empty()),
+    }
+}
+
+fn resolve_video_endpoint(ep: &crate::config::VideoUpstreamEndpoint) -> ResolvedVideoUpstream {
+    ResolvedVideoUpstream {
+        provider: {
+            let p = ep.provider.trim();
+            if p.is_empty() {
+                "openai".to_string()
+            } else {
+                p.to_ascii_lowercase()
+            }
+        },
+        base_url: Some(ep.base_url.trim().to_string()),
+        api_key: ep.api_key.clone().filter(|s| !s.is_empty()),
+        model: ep.model.clone(),
+        upstream_model: ep.upstream_model.clone(),
+        workflow_file: ep.workflow_file.clone().filter(|s| !s.trim().is_empty()),
+        workflow_file_i2v: ep
+            .workflow_file_i2v
+            .clone()
+            .filter(|s| !s.trim().is_empty()),
+    }
 }
 
 fn parse_config_route(s: &str) -> anyhow::Result<Option<RouteTier>> {
@@ -317,5 +455,23 @@ fn parse_config_route(s: &str) -> anyhow::Result<Option<RouteTier>> {
         "cloud" => Ok(Some(RouteTier::Cloud)),
         "cascade" => Ok(Some(RouteTier::Cascade)),
         other => anyhow::bail!("invalid gateway.route `{other}` (use auto|edge|cloud|cascade)"),
+    }
+}
+
+fn parse_image_route(s: &str) -> anyhow::Result<Option<RouteTier>> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" | "" => Ok(None),
+        "edge" => Ok(Some(RouteTier::Edge)),
+        "cloud" => Ok(Some(RouteTier::Cloud)),
+        other => anyhow::bail!("invalid gateway.image_route `{other}` (use auto|edge|cloud)"),
+    }
+}
+
+fn parse_video_route(s: &str) -> anyhow::Result<Option<RouteTier>> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" | "" => Ok(None),
+        "edge" => Ok(Some(RouteTier::Edge)),
+        "cloud" => Ok(Some(RouteTier::Cloud)),
+        other => anyhow::bail!("invalid gateway.video_route `{other}` (use auto|edge|cloud)"),
     }
 }

@@ -51,6 +51,8 @@ export interface GatewayConfigView {
   auth_enabled?: boolean
   api_key_set?: boolean
   api_key_preview?: string | null
+  image_route?: 'auto' | 'edge' | 'cloud'
+  video_route?: 'auto' | 'edge' | 'cloud'
 }
 
 export interface UpstreamEndpointView {
@@ -63,10 +65,36 @@ export interface UpstreamEndpointView {
   token_quota_enabled?: boolean
 }
 
+export interface ImageUpstreamEndpointView {
+  configured: boolean
+  provider: string
+  base_url: string
+  model?: string | null
+  upstream_model?: string | null
+  api_key_set?: boolean
+  workflow_file?: string | null
+  workflow_file_i2i?: string | null
+}
+
+export interface VideoUpstreamEndpointView {
+  configured: boolean
+  provider: string
+  base_url: string
+  model?: string | null
+  upstream_model?: string | null
+  api_key_set?: boolean
+  workflow_file?: string | null
+  workflow_file_i2v?: string | null
+}
+
 export interface UpstreamSetupView {
   gateway: GatewayConfigView
   edge?: UpstreamEndpointView | null
   cloud?: UpstreamEndpointView | null
+  image_edge?: ImageUpstreamEndpointView | null
+  image_cloud?: ImageUpstreamEndpointView | null
+  video_edge?: VideoUpstreamEndpointView | null
+  video_cloud?: VideoUpstreamEndpointView | null
   agent_id?: string | null
 }
 
@@ -86,6 +114,46 @@ export interface UpstreamSetupUpdate {
     model?: string | null
     upstream_model?: string
     api_key?: string
+    clear?: boolean
+  }
+  image_edge?: {
+    provider?: string
+    base_url?: string
+    model?: string | null
+    upstream_model?: string
+    api_key?: string
+    workflow_file?: string | null
+    workflow_file_i2i?: string | null
+    clear?: boolean
+  }
+  image_cloud?: {
+    provider?: string
+    base_url?: string
+    model?: string | null
+    upstream_model?: string
+    api_key?: string
+    workflow_file?: string | null
+    workflow_file_i2i?: string | null
+    clear?: boolean
+  }
+  video_edge?: {
+    provider?: string
+    base_url?: string
+    model?: string | null
+    upstream_model?: string
+    api_key?: string
+    workflow_file?: string | null
+    workflow_file_i2v?: string | null
+    clear?: boolean
+  }
+  video_cloud?: {
+    provider?: string
+    base_url?: string
+    model?: string | null
+    upstream_model?: string
+    api_key?: string
+    workflow_file?: string | null
+    workflow_file_i2v?: string | null
     clear?: boolean
   }
 }

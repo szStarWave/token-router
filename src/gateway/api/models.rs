@@ -124,6 +124,46 @@ pub fn build_models(config: &AppConfig, agent_id: Option<&str>) -> Vec<ModelObje
         }
     }
 
+    // Image generation models (configured display ids).
+    if let Some(img) = &config.image_edge {
+        if let Some(id) = explicit_model_id(img.model.as_deref()) {
+            push_model(
+                &mut out,
+                &mut seen,
+                model_object(&id, 0, "image-edge"),
+            );
+        }
+    }
+    if let Some(img) = &config.image_cloud {
+        if let Some(id) = explicit_model_id(img.model.as_deref()) {
+            push_model(
+                &mut out,
+                &mut seen,
+                model_object(&id, 0, "image-cloud"),
+            );
+        }
+    }
+
+    // Video generation models (configured display ids).
+    if let Some(vid) = &config.video_edge {
+        if let Some(id) = explicit_model_id(vid.model.as_deref()) {
+            push_model(
+                &mut out,
+                &mut seen,
+                model_object(&id, 0, "video-edge"),
+            );
+        }
+    }
+    if let Some(vid) = &config.video_cloud {
+        if let Some(id) = explicit_model_id(vid.model.as_deref()) {
+            push_model(
+                &mut out,
+                &mut seen,
+                model_object(&id, 0, "video-cloud"),
+            );
+        }
+    }
+
     out
 }
 
@@ -238,5 +278,24 @@ mod tests {
         assert_eq!(entries[0]["display_name"], CODEX_CATALOG_PROVIDER_DISPLAY_NAME);
         assert_eq!(entries[0]["visibility"], "list");
         assert_eq!(entries[0]["service_tiers"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn lists_video_models() {
+        let mut file = ConfigFile::default();
+        file.upstream.video.cloud = Some(crate::config::VideoUpstreamEndpoint {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: Some("sk".into()),
+            model: Some("sora-2".into()),
+            upstream_model: None,
+            workflow_file: None,
+            workflow_file_i2v: None,
+        });
+        let cfg = AppConfig::from_file(file, std::env::temp_dir()).unwrap();
+        let models = build_models(&cfg, None);
+        assert!(models
+            .iter()
+            .any(|m| m.id == "sora-2" && m.owned_by == "video-cloud"));
     }
 }

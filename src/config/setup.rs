@@ -1,4 +1,7 @@
-use super::file::{ConfigFile, GatewaySection, UpstreamEndpoint, UpstreamSection};
+use super::file::{
+    ConfigFile, GatewaySection, ImageUpstreamEndpoint, ImageUpstreamSection, UpstreamEndpoint,
+    UpstreamSection, VideoUpstreamEndpoint, VideoUpstreamSection,
+};
 use serde::{Deserialize, Serialize};
 
 pub const CLOUD_MODEL_AUTO: &str = "auto";
@@ -39,6 +42,20 @@ pub struct GatewayConfigView {
     pub api_key_set: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_preview: Option<String>,
+    /// Image generation routing: `auto` | `edge` | `cloud`.
+    #[serde(default = "default_image_route_view")]
+    pub image_route: String,
+    /// Video generation routing: `auto` | `edge` | `cloud`.
+    #[serde(default = "default_video_route_view")]
+    pub video_route: String,
+}
+
+fn default_image_route_view() -> String {
+    "auto".to_string()
+}
+
+fn default_video_route_view() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -73,6 +90,8 @@ pub struct GatewayConfigPatch {
     pub listen_lan: Option<bool>,
     pub auth_enabled: Option<bool>,
     pub api_key: Option<String>,
+    pub image_route: Option<String>,
+    pub video_route: Option<String>,
 }
 
 impl GatewayConfigPatch {
@@ -106,6 +125,8 @@ impl GatewayConfigPatch {
             && self.listen_lan.is_none()
             && self.auth_enabled.is_none()
             && self.api_key.is_none()
+            && self.image_route.is_none()
+            && self.video_route.is_none()
     }
 }
 
@@ -114,6 +135,14 @@ pub struct UpstreamSetupView {
     pub gateway: GatewayConfigView,
     pub edge: Option<UpstreamEndpointView>,
     pub cloud: Option<UpstreamEndpointView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edge: Option<ImageUpstreamEndpointView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_cloud: Option<ImageUpstreamEndpointView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_edge: Option<VideoUpstreamEndpointView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_cloud: Option<VideoUpstreamEndpointView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
 }
@@ -129,6 +158,14 @@ pub struct UpstreamSetupUpdate {
     pub edge: Option<UpstreamEndpointPatch>,
     #[serde(default)]
     pub cloud: Option<UpstreamEndpointPatch>,
+    #[serde(default)]
+    pub image_edge: Option<ImageUpstreamEndpointPatch>,
+    #[serde(default)]
+    pub image_cloud: Option<ImageUpstreamEndpointPatch>,
+    #[serde(default)]
+    pub video_edge: Option<VideoUpstreamEndpointPatch>,
+    #[serde(default)]
+    pub video_cloud: Option<VideoUpstreamEndpointPatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +180,30 @@ pub struct UpstreamEndpointView {
     /// Whether the configured `token_budget` limit is actively enforced.
     #[serde(default)]
     pub token_quota_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUpstreamEndpointView {
+    pub configured: bool,
+    pub provider: String,
+    pub base_url: String,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub api_key_set: bool,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2i: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoUpstreamEndpointView {
+    pub configured: bool,
+    pub provider: String,
+    pub base_url: String,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub api_key_set: bool,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2v: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -161,7 +222,41 @@ pub struct UpstreamEndpointPatch {
     pub token_budget: Option<Option<u64>>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageUpstreamEndpointPatch {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2i: Option<String>,
+    #[serde(default)]
+    pub clear: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VideoUpstreamEndpointPatch {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub workflow_file: Option<String>,
+    pub workflow_file_i2v: Option<String>,
+    #[serde(default)]
+    pub clear: bool,
+}
+
 pub fn endpoint_configured(ep: &UpstreamEndpoint) -> bool {
+    !ep.base_url.trim().is_empty()
+}
+
+pub fn image_endpoint_configured(ep: &ImageUpstreamEndpoint) -> bool {
+    !ep.base_url.trim().is_empty()
+}
+
+pub fn video_endpoint_configured(ep: &VideoUpstreamEndpoint) -> bool {
     !ep.base_url.trim().is_empty()
 }
 
@@ -359,6 +454,16 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
             .map(|entry| entry.key.as_str())
             .or(g.api_key.as_deref())
             .and_then(mask_gateway_api_key),
+        image_route: if g.image_route.trim().is_empty() {
+            "auto".to_string()
+        } else {
+            g.image_route.clone()
+        },
+        video_route: if g.video_route.trim().is_empty() {
+            "auto".to_string()
+        } else {
+            g.video_route.clone()
+        },
     }
 }
 
@@ -375,6 +480,10 @@ pub fn view_from_config(file: &ConfigFile) -> UpstreamSetupView {
             view.token_quota_enabled = token_quota_enabled;
             view
         }),
+        image_edge: file.upstream.image.edge.as_ref().map(image_endpoint_view),
+        image_cloud: file.upstream.image.cloud.as_ref().map(image_endpoint_view),
+        video_edge: file.upstream.video.edge.as_ref().map(video_endpoint_view),
+        video_cloud: file.upstream.video.cloud.as_ref().map(video_endpoint_view),
         agent_id: None,
     }
 }
@@ -411,6 +520,11 @@ pub fn view_from_config_for_agent(file: &ConfigFile, agent_id: &str) -> Upstream
                 v.token_quota_enabled = token_quota_enabled;
                 v
             }),
+        // Image/video upstreams are global only (no per-agent override in v1).
+        image_edge: file.upstream.image.edge.as_ref().map(image_endpoint_view),
+        image_cloud: file.upstream.image.cloud.as_ref().map(image_endpoint_view),
+        video_edge: file.upstream.video.edge.as_ref().map(video_endpoint_view),
+        video_cloud: file.upstream.video.cloud.as_ref().map(video_endpoint_view),
         agent_id: Some(agent_id.to_string()),
     }
 }
@@ -514,6 +628,46 @@ fn endpoint_view(ep: &UpstreamEndpoint) -> UpstreamEndpointView {
     }
 }
 
+fn image_endpoint_view(ep: &ImageUpstreamEndpoint) -> ImageUpstreamEndpointView {
+    ImageUpstreamEndpointView {
+        configured: image_endpoint_configured(ep),
+        provider: if ep.provider.trim().is_empty() {
+            "openai".to_string()
+        } else {
+            ep.provider.clone()
+        },
+        base_url: ep.base_url.clone(),
+        model: ep.model.clone(),
+        upstream_model: ep.upstream_model.clone(),
+        api_key_set: ep
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty()),
+        workflow_file: ep.workflow_file.clone(),
+        workflow_file_i2i: ep.workflow_file_i2i.clone(),
+    }
+}
+
+fn video_endpoint_view(ep: &VideoUpstreamEndpoint) -> VideoUpstreamEndpointView {
+    VideoUpstreamEndpointView {
+        configured: video_endpoint_configured(ep),
+        provider: if ep.provider.trim().is_empty() {
+            "openai".to_string()
+        } else {
+            ep.provider.clone()
+        },
+        base_url: ep.base_url.clone(),
+        model: ep.model.clone(),
+        upstream_model: ep.upstream_model.clone(),
+        api_key_set: ep
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty()),
+        workflow_file: ep.workflow_file.clone(),
+        workflow_file_i2v: ep.workflow_file_i2v.clone(),
+    }
+}
+
 /// Default upstream block: cloud model `auto`, edge unset.
 pub fn apply_default_upstream(file: &mut ConfigFile) {
     file.upstream = UpstreamSection {
@@ -524,6 +678,8 @@ pub fn apply_default_upstream(file: &mut ConfigFile) {
             upstream_model: None,
         }),
         edge: None,
+        image: ImageUpstreamSection::default(),
+        video: VideoUpstreamSection::default(),
     };
 }
 
@@ -564,6 +720,19 @@ pub fn apply_setup_patch(file: &mut ConfigFile, patch: &UpstreamSetupUpdate) -> 
             apply_tier_patch(&mut file.upstream.cloud, cloud);
         }
         apply_global_cloud_token_budget(file, &patch.cloud);
+    }
+    // Image/video upstream patches are always global.
+    if let Some(image_edge) = &patch.image_edge {
+        apply_image_tier_patch(&mut file.upstream.image.edge, image_edge)?;
+    }
+    if let Some(image_cloud) = &patch.image_cloud {
+        apply_image_tier_patch(&mut file.upstream.image.cloud, image_cloud)?;
+    }
+    if let Some(video_edge) = &patch.video_edge {
+        apply_video_tier_patch(&mut file.upstream.video.edge, video_edge)?;
+    }
+    if let Some(video_cloud) = &patch.video_cloud {
+        apply_video_tier_patch(&mut file.upstream.video.cloud, video_cloud)?;
     }
     Ok(())
 }
@@ -684,6 +853,14 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
             Some(normalize_gateway_api_key(k)?)
         };
     }
+    if let Some(image_route) = &patch.image_route {
+        validate_image_route(image_route)?;
+        g.image_route = image_route.trim().to_ascii_lowercase();
+    }
+    if let Some(video_route) = &patch.video_route {
+        validate_video_route(video_route)?;
+        g.video_route = video_route.trim().to_ascii_lowercase();
+    }
     if g.adaptive_verify_rate_floor > g.adaptive_verify_rate_ceiling {
         return Err(
             "adaptive_verify_rate_floor must be <= adaptive_verify_rate_ceiling".into(),
@@ -734,6 +911,24 @@ fn validate_route(s: &str) -> Result<(), String> {
         "auto" | "edge" | "cloud" | "cascade" => Ok(()),
         other => Err(format!(
             "invalid gateway.route `{other}` (use auto|edge|cloud|cascade)"
+        )),
+    }
+}
+
+fn validate_image_route(s: &str) -> Result<(), String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" | "edge" | "cloud" => Ok(()),
+        other => Err(format!(
+            "invalid gateway.image_route `{other}` (use auto|edge|cloud)"
+        )),
+    }
+}
+
+fn validate_video_route(s: &str) -> Result<(), String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" | "edge" | "cloud" => Ok(()),
+        other => Err(format!(
+            "invalid gateway.video_route `{other}` (use auto|edge|cloud)"
         )),
     }
 }
@@ -810,6 +1005,150 @@ fn apply_tier_patch(slot: &mut Option<UpstreamEndpoint>, patch: &UpstreamEndpoin
         && entry.model.is_none()
     {
         *slot = None;
+    }
+}
+
+fn apply_image_tier_patch(
+    slot: &mut Option<ImageUpstreamEndpoint>,
+    patch: &ImageUpstreamEndpointPatch,
+) -> Result<(), String> {
+    if patch.clear {
+        *slot = None;
+        return Ok(());
+    }
+
+    let entry = slot.get_or_insert_with(|| ImageUpstreamEndpoint {
+        provider: "openai".to_string(),
+        base_url: String::new(),
+        api_key: None,
+        model: None,
+        upstream_model: None,
+        workflow_file: None,
+        workflow_file_i2i: None,
+    });
+
+    if let Some(provider) = &patch.provider {
+        let p = provider.trim().to_ascii_lowercase();
+        validate_image_provider(&p)?;
+        entry.provider = p;
+    }
+    if let Some(url) = &patch.base_url {
+        entry.base_url = url.trim().to_string();
+    }
+    if let Some(model) = &patch.model {
+        let m = model.trim();
+        entry.model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(upstream_model) = &patch.upstream_model {
+        let m = upstream_model.trim();
+        entry.upstream_model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(key) = &patch.api_key {
+        let k = key.trim();
+        entry.api_key = if k.is_empty() { None } else { Some(k.to_string()) };
+    }
+    if let Some(wf) = &patch.workflow_file {
+        let w = wf.trim();
+        entry.workflow_file = if w.is_empty() { None } else { Some(w.to_string()) };
+    }
+    if let Some(wf) = &patch.workflow_file_i2i {
+        let w = wf.trim();
+        entry.workflow_file_i2i = if w.is_empty() {
+            None
+        } else {
+            Some(w.to_string())
+        };
+    }
+
+    if !image_endpoint_configured(entry)
+        && entry.api_key.is_none()
+        && entry.model.is_none()
+        && entry.workflow_file.is_none()
+        && entry.workflow_file_i2i.is_none()
+    {
+        *slot = None;
+    }
+    Ok(())
+}
+
+fn validate_image_provider(s: &str) -> Result<(), String> {
+    match s {
+        "openai" | "dashscope" | "seedream" | "comfyui" => Ok(()),
+        other => Err(format!(
+            "invalid image provider `{other}` (use openai|dashscope|seedream|comfyui)"
+        )),
+    }
+}
+
+fn apply_video_tier_patch(
+    slot: &mut Option<VideoUpstreamEndpoint>,
+    patch: &VideoUpstreamEndpointPatch,
+) -> Result<(), String> {
+    if patch.clear {
+        *slot = None;
+        return Ok(());
+    }
+
+    let entry = slot.get_or_insert_with(|| VideoUpstreamEndpoint {
+        provider: "openai".to_string(),
+        base_url: String::new(),
+        api_key: None,
+        model: None,
+        upstream_model: None,
+        workflow_file: None,
+        workflow_file_i2v: None,
+    });
+
+    if let Some(provider) = &patch.provider {
+        let p = provider.trim().to_ascii_lowercase();
+        validate_video_provider(&p)?;
+        entry.provider = p;
+    }
+    if let Some(url) = &patch.base_url {
+        entry.base_url = url.trim().to_string();
+    }
+    if let Some(model) = &patch.model {
+        let m = model.trim();
+        entry.model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(upstream_model) = &patch.upstream_model {
+        let m = upstream_model.trim();
+        entry.upstream_model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(key) = &patch.api_key {
+        let k = key.trim();
+        entry.api_key = if k.is_empty() { None } else { Some(k.to_string()) };
+    }
+    if let Some(wf) = &patch.workflow_file {
+        let w = wf.trim();
+        entry.workflow_file = if w.is_empty() { None } else { Some(w.to_string()) };
+    }
+    if let Some(wf) = &patch.workflow_file_i2v {
+        let w = wf.trim();
+        entry.workflow_file_i2v = if w.is_empty() {
+            None
+        } else {
+            Some(w.to_string())
+        };
+    }
+
+    if !video_endpoint_configured(entry)
+        && entry.api_key.is_none()
+        && entry.model.is_none()
+        && entry.workflow_file.is_none()
+        && entry.workflow_file_i2v.is_none()
+    {
+        *slot = None;
+    }
+    Ok(())
+}
+
+fn validate_video_provider(s: &str) -> Result<(), String> {
+    match s {
+        "openai" | "dashscope" | "seedance" | "comfyui" => Ok(()),
+        other => Err(format!(
+            "invalid video provider `{other}` (use openai|dashscope|seedance|comfyui)"
+        )),
     }
 }
 

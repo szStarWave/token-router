@@ -119,12 +119,14 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
   <title>Token Router — 配置</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    body { max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
     h1 { font-size: 1.35rem; }
+    h2 { font-size: 1.05rem; margin: 1.5rem 0 0.4rem; border-bottom: 1px solid #8884; padding-bottom: 0.25rem; }
     fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
     legend { padding: 0 0.4rem; font-weight: 600; }
     label { display: block; margin: 0.6rem 0 0.2rem; font-size: 0.9rem; }
-    input { width: 100%; box-sizing: border-box; padding: 0.45rem 0.55rem; border-radius: 6px; border: 1px solid #8886; }
+    input, select { width: 100%; box-sizing: border-box; padding: 0.45rem 0.55rem; border-radius: 6px; border: 1px solid #8886; }
+    input[type=checkbox] { width: auto; }
     .row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
     button { margin-top: 1rem; margin-right: 0.5rem; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
     #status { margin-top: 1rem; white-space: pre-wrap; font-size: 0.9rem; }
@@ -133,14 +135,15 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
   <h1>Token Router — 配置</h1>
-  <p class="hint">路由、经验学习、上游 URL 等保存后立即生效（<code>session_persist_enabled</code> 需重启）。云端 model 默认 <code>auto</code>。</p>
-  <label for="agent_id">Agent ID（留空=全局默认；指定后下方配置仅对该 agent 生效）</label>
+  <p class="hint">可配置 LLM / 文生图 / 文生视频上游。保存后立即生效（<code>session_persist_enabled</code> 需重启）。Image / Video 始终为全局配置（不受 Agent ID 影响）。</p>
+  <label for="agent_id">Agent ID（留空=全局默认；仅影响 LLM 上游与路由）</label>
   <input id="agent_id" placeholder="" />
   <label for="admin_token">Admin Token（若 config 中配置了 admin_token）</label>
   <input id="admin_token" type="password" placeholder="X-Token-Router-Admin-Token" autocomplete="off" />
 
+  <h2>LLM 路由</h2>
   <fieldset>
-    <legend>路由 gateway</legend>
+    <legend>gateway.route</legend>
     <label for="route">route</label>
     <select id="route">
       <option value="auto">auto</option>
@@ -195,8 +198,9 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     <input id="adaptive_max_theta_shift" type="number" min="0" max="0.5" step="0.01" />
   </fieldset>
 
+  <h2>LLM 上游</h2>
   <fieldset>
-    <legend>云端 Cloud</legend>
+    <legend>Cloud（chat）</legend>
     <label for="cloud_url">Base URL（OpenAI 兼容，含 /v1）</label>
     <input id="cloud_url" placeholder="https://api.deepseek.com/v1" />
     <label for="cloud_model">Model</label>
@@ -208,7 +212,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
   </fieldset>
 
   <fieldset>
-    <legend>端侧 Edge</legend>
+    <legend>Edge（chat）</legend>
     <label for="edge_url">Base URL</label>
     <input id="edge_url" placeholder="http://127.0.0.1:11434/v1" />
     <label for="edge_model">Model（可选，空=auto）</label>
@@ -218,9 +222,117 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     <label><input id="edge_clear" type="checkbox" /> 清除端侧配置</label>
   </fieldset>
 
+  <h2>文生图 / 图生图</h2>
+  <fieldset>
+    <legend>image_route</legend>
+    <label for="image_route">image_route（与 chat route 独立）</label>
+    <select id="image_route">
+      <option value="auto">auto</option>
+      <option value="edge">edge</option>
+      <option value="cloud">cloud</option>
+    </select>
+    <p class="hint">auto 优先 edge；端侧忙且已配 cloud 时直接升云。</p>
+  </fieldset>
+  <fieldset>
+    <legend>Image Cloud</legend>
+    <label for="image_cloud_provider">provider</label>
+    <select id="image_cloud_provider">
+      <option value="openai">openai</option>
+      <option value="dashscope">dashscope</option>
+      <option value="seedream">seedream</option>
+      <option value="comfyui">comfyui</option>
+    </select>
+    <label for="image_cloud_url">Base URL</label>
+    <input id="image_cloud_url" placeholder="https://api.openai.com/v1" />
+    <label for="image_cloud_model">Model</label>
+    <input id="image_cloud_model" placeholder="gpt-image-1" />
+    <label for="image_cloud_upstream_model">upstream_model（可选）</label>
+    <input id="image_cloud_upstream_model" placeholder="" />
+    <label for="image_cloud_key">API Key</label>
+    <input id="image_cloud_key" type="password" placeholder="留空则不修改" autocomplete="off" />
+    <label><input id="image_cloud_clear" type="checkbox" /> 清除 Image Cloud</label>
+  </fieldset>
+  <fieldset>
+    <legend>Image Edge</legend>
+    <label for="image_edge_provider">provider</label>
+    <select id="image_edge_provider">
+      <option value="comfyui">comfyui</option>
+      <option value="openai">openai</option>
+      <option value="dashscope">dashscope</option>
+      <option value="seedream">seedream</option>
+    </select>
+    <label for="image_edge_url">Base URL</label>
+    <input id="image_edge_url" placeholder="http://127.0.0.1:8188" />
+    <label for="image_edge_model">Model / ckpt</label>
+    <input id="image_edge_model" placeholder="v1-5-pruned-emaonly.safetensors" />
+    <label for="image_edge_upstream_model">upstream_model（可选）</label>
+    <input id="image_edge_upstream_model" placeholder="" />
+    <label for="image_edge_key">API Key</label>
+    <input id="image_edge_key" type="password" placeholder="留空则不修改" autocomplete="off" />
+    <label for="image_edge_workflow">workflow_file（T2I，可选）</label>
+    <input id="image_edge_workflow" placeholder="comfy-t2i-workflow.json" />
+    <label for="image_edge_workflow_i2i">workflow_file_i2i（可选）</label>
+    <input id="image_edge_workflow_i2i" placeholder="comfy-i2i-workflow.json" />
+    <label><input id="image_edge_clear" type="checkbox" /> 清除 Image Edge</label>
+  </fieldset>
+
+  <h2>文生视频 / 图生视频</h2>
+  <fieldset>
+    <legend>video_route</legend>
+    <label for="video_route">video_route（与 chat/image 独立）</label>
+    <select id="video_route">
+      <option value="auto">auto</option>
+      <option value="edge">edge</option>
+      <option value="cloud">cloud</option>
+    </select>
+    <p class="hint">auto 优先 edge；端侧忙且已配 cloud 时直接升云。</p>
+  </fieldset>
+  <fieldset>
+    <legend>Video Cloud</legend>
+    <label for="video_cloud_provider">provider</label>
+    <select id="video_cloud_provider">
+      <option value="openai">openai</option>
+      <option value="dashscope">dashscope</option>
+      <option value="seedance">seedance</option>
+      <option value="comfyui">comfyui</option>
+    </select>
+    <label for="video_cloud_url">Base URL</label>
+    <input id="video_cloud_url" placeholder="https://api.openai.com/v1" />
+    <label for="video_cloud_model">Model</label>
+    <input id="video_cloud_model" placeholder="sora-2" />
+    <label for="video_cloud_upstream_model">upstream_model（可选）</label>
+    <input id="video_cloud_upstream_model" placeholder="" />
+    <label for="video_cloud_key">API Key</label>
+    <input id="video_cloud_key" type="password" placeholder="留空则不修改" autocomplete="off" />
+    <label><input id="video_cloud_clear" type="checkbox" /> 清除 Video Cloud</label>
+  </fieldset>
+  <fieldset>
+    <legend>Video Edge</legend>
+    <label for="video_edge_provider">provider</label>
+    <select id="video_edge_provider">
+      <option value="comfyui">comfyui</option>
+      <option value="openai">openai</option>
+      <option value="dashscope">dashscope</option>
+      <option value="seedance">seedance</option>
+    </select>
+    <label for="video_edge_url">Base URL</label>
+    <input id="video_edge_url" placeholder="http://127.0.0.1:8188" />
+    <label for="video_edge_model">Model / ckpt</label>
+    <input id="video_edge_model" placeholder="your-video-ckpt.safetensors" />
+    <label for="video_edge_upstream_model">upstream_model（可选）</label>
+    <input id="video_edge_upstream_model" placeholder="" />
+    <label for="video_edge_key">API Key</label>
+    <input id="video_edge_key" type="password" placeholder="留空则不修改" autocomplete="off" />
+    <label for="video_edge_workflow">workflow_file（T2V，可选）</label>
+    <input id="video_edge_workflow" placeholder="comfy-t2v-workflow.json" />
+    <label for="video_edge_workflow_i2v">workflow_file_i2v（可选）</label>
+    <input id="video_edge_workflow_i2v" placeholder="comfy-i2v-workflow.json" />
+    <label><input id="video_edge_clear" type="checkbox" /> 清除 Video Edge</label>
+  </fieldset>
+
   <div class="row">
     <button type="button" id="load">加载当前配置</button>
-    <button type="button" id="defaults">恢复默认（cloud=auto，edge 空）</button>
+    <button type="button" id="defaults">恢复默认（LLM cloud=auto，edge 空）</button>
     <button type="button" id="save">保存</button>
   </div>
   <div id="status"></div>
@@ -233,35 +345,98 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       if (t) h['X-Token-Router-Admin-Token'] = t;
       return h;
     }
+    function val(id, fallback) {
+      const el = document.getElementById(id);
+      if (!el) return fallback;
+      return el.value;
+    }
+    function setVal(id, v) {
+      const el = document.getElementById(id);
+      if (el) el.value = v == null ? '' : v;
+    }
+    function setCheck(id, v) {
+      const el = document.getElementById(id);
+      if (el) el.checked = !!v;
+    }
+    function fillMedia(prefix, ep) {
+      const e = ep || {};
+      setVal(prefix + '_provider', e.provider || (prefix.indexOf('edge') >= 0 ? 'comfyui' : 'openai'));
+      setVal(prefix + '_url', e.base_url || '');
+      setVal(prefix + '_model', e.model || '');
+      setVal(prefix + '_upstream_model', e.upstream_model || '');
+      setVal(prefix + '_key', '');
+      setCheck(prefix + '_clear', false);
+      if (prefix === 'image_edge') {
+        setVal('image_edge_workflow', e.workflow_file || '');
+        setVal('image_edge_workflow_i2i', e.workflow_file_i2i || '');
+      }
+      if (prefix === 'video_edge') {
+        setVal('video_edge_workflow', e.workflow_file || '');
+        setVal('video_edge_workflow_i2v', e.workflow_file_i2v || '');
+      }
+    }
     function fill(view) {
       const g = view.gateway || {};
       const cloud = view.cloud || {};
       const edge = view.edge || {};
-      document.getElementById('route').value = g.route || 'auto';
-      document.getElementById('routing_mode').value = g.routing_mode || 'cascade';
-      document.getElementById('default_profile').value = g.default_profile || 'balanced';
-      document.getElementById('ctx_edge_max').value = g.ctx_edge_max_tokens || '';
-      document.getElementById('experience_enabled').checked = !!g.experience_enabled;
-      document.getElementById('experience_learning_rate').value = g.experience_learning_rate ?? '';
-      document.getElementById('experience_max_bias').value = g.experience_max_bias ?? '';
-      document.getElementById('experience_target_fallback').value = g.experience_target_fallback ?? '';
-      document.getElementById('cloud_sticky_ttl_secs').value = g.cloud_sticky_ttl_secs ?? '';
-      document.getElementById('session_persist_enabled').checked = !!g.session_persist_enabled;
-      document.getElementById('work_verify_sample_rate').value = g.work_verify_sample_rate ?? '';
-      document.getElementById('adaptive_routing_enabled').checked = !!g.adaptive_routing_enabled;
-      document.getElementById('adaptive_min_verified_samples').value = g.adaptive_min_verified_samples ?? '';
-      document.getElementById('adaptive_verify_rate_floor').value = g.adaptive_verify_rate_floor ?? '';
-      document.getElementById('adaptive_verify_rate_ceiling').value = g.adaptive_verify_rate_ceiling ?? '';
-      document.getElementById('adaptive_max_theta_shift').value = g.adaptive_max_theta_shift ?? '';
-      document.getElementById('agent_id').value = view.agent_id || '';
-      document.getElementById('cloud_token_budget').value = cloud.token_budget ?? '';
-      document.getElementById('cloud_url').value = cloud.base_url || '';
-      document.getElementById('cloud_model').value = cloud.model || 'auto';
-      document.getElementById('edge_url').value = edge.base_url || '';
-      document.getElementById('edge_model').value = edge.model || '';
-      document.getElementById('edge_clear').checked = false;
-      document.getElementById('cloud_key').value = '';
-      document.getElementById('edge_key').value = '';
+      setVal('route', g.route || 'auto');
+      setVal('routing_mode', g.routing_mode || 'cascade');
+      setVal('default_profile', g.default_profile || 'balanced');
+      setVal('ctx_edge_max', g.ctx_edge_max_tokens || '');
+      setCheck('experience_enabled', g.experience_enabled);
+      setVal('experience_learning_rate', g.experience_learning_rate ?? '');
+      setVal('experience_max_bias', g.experience_max_bias ?? '');
+      setVal('experience_target_fallback', g.experience_target_fallback ?? '');
+      setVal('cloud_sticky_ttl_secs', g.cloud_sticky_ttl_secs ?? '');
+      setCheck('session_persist_enabled', g.session_persist_enabled);
+      setVal('work_verify_sample_rate', g.work_verify_sample_rate ?? '');
+      setCheck('adaptive_routing_enabled', g.adaptive_routing_enabled);
+      setVal('adaptive_min_verified_samples', g.adaptive_min_verified_samples ?? '');
+      setVal('adaptive_verify_rate_floor', g.adaptive_verify_rate_floor ?? '');
+      setVal('adaptive_verify_rate_ceiling', g.adaptive_verify_rate_ceiling ?? '');
+      setVal('adaptive_max_theta_shift', g.adaptive_max_theta_shift ?? '');
+      setVal('image_route', g.image_route || 'auto');
+      setVal('video_route', g.video_route || 'auto');
+      setVal('agent_id', view.agent_id || '');
+      setVal('cloud_token_budget', cloud.token_budget ?? '');
+      setVal('cloud_url', cloud.base_url || '');
+      setVal('cloud_model', cloud.model || 'auto');
+      setVal('edge_url', edge.base_url || '');
+      setVal('edge_model', edge.model || '');
+      setCheck('edge_clear', false);
+      setVal('cloud_key', '');
+      setVal('edge_key', '');
+      fillMedia('image_cloud', view.image_cloud);
+      fillMedia('image_edge', view.image_edge);
+      fillMedia('video_cloud', view.video_cloud);
+      fillMedia('video_edge', view.video_edge);
+    }
+    function mediaPatch(prefix, opts) {
+      const clear = document.getElementById(prefix + '_clear').checked;
+      const url = val(prefix + '_url').trim();
+      const key = val(prefix + '_key');
+      if (!clear && !url && !key) {
+        // Skip untouched empty media slots so save does not churn config.
+        return undefined;
+      }
+      const patch = { clear: clear };
+      if (clear) return patch;
+      patch.provider = val(prefix + '_provider');
+      patch.base_url = url;
+      const model = val(prefix + '_model').trim();
+      patch.model = model === '' ? null : model;
+      const um = val(prefix + '_upstream_model').trim();
+      patch.upstream_model = um;
+      if (key) patch.api_key = key;
+      if (opts && opts.workflow) {
+        const wf = val(opts.workflow).trim();
+        patch.workflow_file = wf === '' ? null : wf;
+      }
+      if (opts && opts.workflowAlt) {
+        const wf2 = val(opts.workflowAlt).trim();
+        patch[opts.workflowAltKey] = wf2 === '' ? null : wf2;
+      }
+      return patch;
     }
     async function load() {
       status.textContent = 'Loading…';
@@ -311,6 +486,8 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
           adaptive_verify_rate_floor: num('adaptive_verify_rate_floor'),
           adaptive_verify_rate_ceiling: num('adaptive_verify_rate_ceiling'),
           adaptive_max_theta_shift: num('adaptive_max_theta_shift'),
+          image_route: document.getElementById('image_route').value,
+          video_route: document.getElementById('video_route').value,
         },
         cloud: {
           base_url: document.getElementById('cloud_url').value,
@@ -321,8 +498,24 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
           clear: document.getElementById('edge_clear').checked,
           base_url: document.getElementById('edge_url').value,
           model: document.getElementById('edge_model').value || null,
-        }
+        },
       };
+      const imageCloud = mediaPatch('image_cloud');
+      const imageEdge = mediaPatch('image_edge', {
+        workflow: 'image_edge_workflow',
+        workflowAlt: 'image_edge_workflow_i2i',
+        workflowAltKey: 'workflow_file_i2i',
+      });
+      const videoCloud = mediaPatch('video_cloud');
+      const videoEdge = mediaPatch('video_edge', {
+        workflow: 'video_edge_workflow',
+        workflowAlt: 'video_edge_workflow_i2v',
+        workflowAltKey: 'workflow_file_i2v',
+      });
+      if (imageCloud) body.image_cloud = imageCloud;
+      if (imageEdge) body.image_edge = imageEdge;
+      if (videoCloud) body.video_cloud = videoCloud;
+      if (videoEdge) body.video_edge = videoEdge;
       const ck = document.getElementById('cloud_key').value;
       const ek = document.getElementById('edge_key').value;
       if (ck) body.cloud.api_key = ck;
