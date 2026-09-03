@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use crate::gateway::config::ResolvedVideoUpstream;
 use crate::gateway::error::{AppError, AppResult};
 use crate::gateway::video::types::{
-    ImageRef, VideoCreateRequest, VideoErrorObject, VideoJob, now_unix,
+    VideoCreateRequest, VideoErrorObject, VideoJob, now_unix,
 };
 use crate::gateway::video::{
     image_ref_to_url, join_url, openai_error_message, resolve_model_name, seconds_to_u32,

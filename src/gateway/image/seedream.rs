@@ -27,7 +27,7 @@ pub async fn edit(
     if req.mask.is_some() {
         warn!("seedream image edit: mask is not supported; ignoring mask");
     }
-    let gen = ImageGenerateRequest {
+    let generate_req = ImageGenerateRequest {
         model: req.model.clone(),
         prompt: req.prompt.clone(),
         n: req.n,
@@ -37,7 +37,7 @@ pub async fn edit(
         user: req.user.clone(),
     };
     let data_url = image_to_data_url(&req.image.bytes, &req.image.mime);
-    call(http, target, &gen, Some(data_url)).await
+    call(http, target, &generate_req, Some(data_url)).await
 }
 
 async fn call(

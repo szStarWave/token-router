@@ -20,11 +20,7 @@ use crate::gateway::edge_load::{EdgeInferenceGuard, EdgeInferenceTracker};
 use crate::gateway::error::{AppError, AppResult};
 
 use self::store::VideoJobStore;
-use self::tier::VideoTier;
-use self::types::{
-    ImageRef, VideoCreateRequest, VideoJob, VideoListResponse, VideoObject, is_terminal_status,
-    new_video_id,
-};
+use self::types::{ImageRef, VideoCreateRequest, VideoJob, VideoListResponse, VideoObject, new_video_id};
 
 pub use tier::{resolve_video_tier, VideoTier};
 
@@ -371,6 +367,7 @@ pub(crate) async fn image_ref_to_url(http: &Client, reference: &ImageRef) -> App
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::video::types::is_terminal_status;
 
     #[test]
     fn size_1280x720_maps_720p_16_9() {
