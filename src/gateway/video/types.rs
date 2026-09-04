@@ -25,7 +25,7 @@ pub struct VideoCreateRequest {
     pub last_frame: Option<ImageRef>,
     /// MiniMax-H3 reference images (max 9 upstream). Mutually exclusive with first/last frame.
     pub reference_images: Vec<ImageRef>,
-    /// When `Some(true)`, MiniMax maps to `aigc_watermark`.
+    /// When `Some(true)`, mapped to vendor watermark fields (MiniMax `aigc_watermark`, DashScope/Seedance `watermark`).
     pub watermark: Option<bool>,
 }
 

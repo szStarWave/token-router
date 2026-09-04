@@ -971,6 +971,8 @@ curl -s http://127.0.0.1:11080/v1/images/edits \
 
 **Provider**：`openai` / `dashscope` / `seedance` / `minimax` / `comfyui`。
 
+网关将 OpenAI Videos 的 `prompt` / `seconds` / `size` / `input_reference` 等字段转换成各云厂商原生请求体；轮询结果再归一为 OpenAI `VideoObject`（`queued` / `in_progress` / `completed` / `failed` / `cancelled`）。成片通过 `GET /v1/videos/{id}/content` 下载，JSON 中不返回厂商 CDN URL。
+
 ```bash
 # 文生视频
 JOB=$(curl -s http://127.0.0.1:11080/v1/videos \

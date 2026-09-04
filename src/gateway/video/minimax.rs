@@ -47,7 +47,11 @@ pub async fn create(
         ));
     }
     let has_media = has_first || has_last || has_reference;
-    let resolution = normalize_resolution(req.resolution.as_deref());
+    let resolution = normalize_resolution_for_model(
+        &model,
+        req.resolution.as_deref(),
+        req.size.as_deref(),
+    );
     let ratio = normalize_ratio(size_to_ratio(req.size.as_deref()), has_media);
 
     let mut content = vec![json!({
@@ -189,58 +193,7 @@ pub async fn refresh(
         return Err(AppError::Upstream(format!("minimax query failed: {msg}")));
     }
 
-    let task_status = extract_status(&v).unwrap_or("queued");
-    let mut out = job.clone();
-    match task_status.to_ascii_lowercase().as_str() {
-        "queued" | "pending" | "preparing" => {
-            out.status = "queued".into();
-            out.progress = out.progress.max(5);
-        }
-        "running" | "processing" | "in_progress" | "generating" => {
-            out.status = "in_progress".into();
-            out.progress = out.progress.max(40).min(90);
-        }
-        "success" | "succeeded" | "finished" | "complete" | "completed" => {
-            out.status = "completed".into();
-            out.progress = 100;
-            out.result_url = extract_video_url(&v);
-            if out.result_url.is_none() {
-                if let Some(file_id) = extract_file_id(&v) {
-                    out.result_url =
-                        Some(join_url(base, &format!("v1/files/retrieve?file_id={file_id}")));
-                }
-            }
-            if out.result_url.is_none() {
-                out.status = "failed".into();
-                out.error = Some(VideoErrorObject {
-                    code: Some("missing_video_url".into()),
-                    message: Some("minimax succeeded but no video_url".into()),
-                });
-            }
-        }
-        "failed" | "fail" | "error" | "expired" => {
-            out.status = "failed".into();
-            out.error = Some(VideoErrorObject {
-                code: Some(task_status.to_string()),
-                message: Some(extract_error_message(&v).unwrap_or_else(|| {
-                    "minimax video task failed".into()
-                })),
-            });
-        }
-        other if other.starts_with("cancel") => {
-            out.status = "cancelled".into();
-            out.error = Some(VideoErrorObject {
-                code: Some(other.to_string()),
-                message: Some("minimax video task cancelled".into()),
-            });
-        }
-        _ => {
-            out.status = "in_progress".into();
-            out.progress = out.progress.max(20);
-        }
-    }
-    out.touch();
-    Ok(out)
+    Ok(apply_query_to_job(job, &v, base))
 }
 
 /// Cancel a queued MiniMax task. Upstream cannot cancel `running`.
@@ -311,7 +264,51 @@ fn clamp_duration(secs: u32) -> u32 {
     secs.clamp(4, 15)
 }
 
-/// Prefer explicit inbound `resolution`; default `768P`. Never use openai 720P/1080P labels.
+fn model_is_h3_max(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("h3-max")
+        || model.to_ascii_lowercase().contains("h3_max")
+}
+
+/// Prefer explicit inbound `resolution`; else derive from OpenAI `size` pixels.
+/// H3-Max only allows `480P` / `768P` (no `2K`).
+pub(crate) fn normalize_resolution_for_model(
+    model: &str,
+    resolution: Option<&str>,
+    size: Option<&str>,
+) -> String {
+    let mut out = if let Some(r) = resolution.map(str::trim).filter(|s| !s.is_empty()) {
+        normalize_resolution(Some(r))
+    } else if size.is_some() {
+        resolution_from_size(size)
+    } else {
+        "768P".into()
+    };
+    if model_is_h3_max(model) && out == "2K" {
+        out = "768P".into();
+    }
+    if model_is_h3_max(model) {
+        // H3-Max: only 480P / 768P.
+        match out.as_str() {
+            "480P" | "768P" => out,
+            _ => "768P".into(),
+        }
+    } else {
+        out
+    }
+}
+
+fn resolution_from_size(size: Option<&str>) -> String {
+    let (w, h) = parse_wxh(size);
+    let pixels = w.saturating_mul(h);
+    // ~1080p and above → MiniMax 2K; otherwise 768P.
+    if pixels >= 1_800_000 {
+        "2K".into()
+    } else {
+        "768P".into()
+    }
+}
+
+/// Prefer explicit inbound `resolution`; default `768P`. Never use openai 720P/1080P labels as wire values.
 pub(crate) fn normalize_resolution(resolution: Option<&str>) -> String {
     let lower = resolution
         .unwrap_or("")
@@ -321,7 +318,8 @@ pub(crate) fn normalize_resolution(resolution: Option<&str>) -> String {
         .replace(' ', "");
     match lower.as_str() {
         "2k" | "1080p" | "1080" | "2160p" | "4k" | "high" => "2K".into(),
-        "768p" | "768" | "480p" | "720p" | "low" | "medium" | "auto" | "" => "768P".into(),
+        "480p" | "480" | "low" => "480P".into(),
+        "768p" | "768" | "720p" | "medium" | "auto" | "" => "768P".into(),
         _ if resolution
             .map(|r| r.eq_ignore_ascii_case("768P"))
             .unwrap_or(false) =>
@@ -334,8 +332,97 @@ pub(crate) fn normalize_resolution(resolution: Option<&str>) -> String {
         {
             "2K".into()
         }
+        _ if resolution
+            .map(|r| r.eq_ignore_ascii_case("480P"))
+            .unwrap_or(false) =>
+        {
+            "480P".into()
+        }
         _ => "768P".into(),
     }
+}
+
+/// Fold MiniMax query JSON into an OpenAI-shaped `VideoJob`.
+pub(crate) fn apply_query_to_job(job: &VideoJob, v: &Value, base: &str) -> VideoJob {
+    let task_status = extract_status(v).unwrap_or("queued");
+    let mut out = job.clone();
+    match task_status.to_ascii_lowercase().as_str() {
+        "queued" | "pending" | "preparing" => {
+            out.status = "queued".into();
+            out.progress = out.progress.max(5);
+            out.error = None;
+        }
+        "running" | "processing" | "in_progress" | "generating" => {
+            out.status = "in_progress".into();
+            out.progress = out.progress.max(40).min(90);
+            out.error = None;
+        }
+        "success" | "succeeded" | "finished" | "complete" | "completed" => {
+            out.status = "completed".into();
+            out.progress = 100;
+            out.result_url = extract_video_url(v);
+            out.error = None;
+            if out.result_url.is_none() {
+                if let Some(file_id) = extract_file_id(v) {
+                    out.result_url =
+                        Some(join_url(base, &format!("v1/files/retrieve?file_id={file_id}")));
+                }
+            }
+            if out.seconds.is_none() {
+                let task = v.get("task").unwrap_or(v);
+                if let Some(d) = task.get("duration").and_then(|d| d.as_u64()) {
+                    out.seconds = Some(d.to_string());
+                }
+            }
+            if out.result_url.is_none() {
+                out.status = "failed".into();
+                out.error = Some(VideoErrorObject {
+                    code: Some("missing_video_url".into()),
+                    message: Some("minimax succeeded but no video_url".into()),
+                });
+            }
+        }
+        "failed" | "fail" | "error" | "expired" => {
+            out.status = "failed".into();
+            let (code, message) = extract_task_error(v, task_status);
+            out.error = Some(VideoErrorObject {
+                code: Some(code),
+                message: Some(message),
+            });
+        }
+        other if other.starts_with("cancel") => {
+            out.status = "cancelled".into();
+            out.error = Some(VideoErrorObject {
+                code: Some("cancelled".into()),
+                message: Some("minimax video task cancelled".into()),
+            });
+        }
+        _ => {
+            out.status = "in_progress".into();
+            out.progress = out.progress.max(20);
+        }
+    }
+    out.touch();
+    out
+}
+
+fn extract_task_error(v: &Value, fallback_status: &str) -> (String, String) {
+    let task = v.get("task").unwrap_or(v);
+    let code = task
+        .pointer("/error/code")
+        .or_else(|| v.pointer("/error/type"))
+        .and_then(|c| c.as_str())
+        .unwrap_or(fallback_status)
+        .to_string();
+    let message = task
+        .pointer("/error/message")
+        .or_else(|| v.pointer("/error/message"))
+        .or_else(|| v.get("message"))
+        .and_then(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("minimax video task failed")
+        .to_string();
+    (code, message)
 }
 
 pub(crate) fn size_to_ratio(size: Option<&str>) -> String {
@@ -572,15 +659,6 @@ fn extract_file_id(v: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn extract_error_message(v: &Value) -> Option<String> {
-    v.pointer("/task/error/message")
-        .or_else(|| v.pointer("/error/message"))
-        .or_else(|| v.get("message"))
-        .and_then(|m| m.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 fn openapi_or_base_error(v: &Value) -> Option<String> {
     if let Some(msg) = v.pointer("/error/message").and_then(|m| m.as_str()) {
         if !msg.is_empty() {
@@ -646,7 +724,11 @@ pub(crate) fn build_create_body_for_test(
     let mut body = json!({
         "model": req.model.as_deref().unwrap_or(DEFAULT_MODEL),
         "content": content,
-        "resolution": normalize_resolution(req.resolution.as_deref()),
+        "resolution": normalize_resolution_for_model(
+            req.model.as_deref().unwrap_or(DEFAULT_MODEL),
+            req.resolution.as_deref(),
+            req.size.as_deref(),
+        ),
         "duration": clamp_duration(seconds_to_u32(req.seconds.as_deref())),
         "ratio": normalize_ratio(size_to_ratio(req.size.as_deref()), has_media),
     });
@@ -662,11 +744,46 @@ mod tests {
 
     #[test]
     fn resolution_prefers_inbound_over_size() {
-        // size would be 2K by pixel count; inbound 768P wins.
-        assert_eq!(normalize_resolution(Some("768P")), "768P");
-        assert_eq!(normalize_resolution(Some("2K")), "2K");
-        assert_eq!(normalize_resolution(Some("1080P")), "2K");
-        assert_eq!(normalize_resolution(None), "768P");
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", Some("768P"), Some("1920x1080")),
+            "768P"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", Some("2K"), None),
+            "2K"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", Some("1080P"), None),
+            "2K"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", None, None),
+            "768P"
+        );
+    }
+
+    #[test]
+    fn resolution_from_size_when_missing() {
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", None, Some("1920x1080")),
+            "2K"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3", None, Some("1280x720")),
+            "768P"
+        );
+    }
+
+    #[test]
+    fn h3_max_caps_2k() {
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3-Max", Some("2K"), None),
+            "768P"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("MiniMax-H3-Max", Some("480P"), None),
+            "480P"
+        );
     }
 
     #[test]
@@ -758,16 +875,77 @@ mod tests {
         let query: Value = serde_json::from_str(
             r#"{
             "task": {
-                "status": "success",
-                "content": { "video_url": "https://example.com/a.mp4" }
+                "status": "succeeded",
+                "content": { "url": "https://example.com/a.mp4" }
             }
         }"#,
         )
         .unwrap();
-        assert_eq!(extract_status(&query), Some("success"));
+        assert_eq!(extract_status(&query), Some("succeeded"));
         assert_eq!(
             extract_video_url(&query).as_deref(),
             Some("https://example.com/a.mp4")
+        );
+
+        let job = VideoJob {
+            id: "video_x".into(),
+            provider: "minimax".into(),
+            tier: "cloud".into(),
+            upstream_task_id: Some("t1".into()),
+            status: "queued".into(),
+            progress: 0,
+            model: "MiniMax-H3".into(),
+            seconds: Some("5".into()),
+            size: Some("1280x720".into()),
+            prompt: Some("hi".into()),
+            error: None,
+            result_url: None,
+            local_path: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let out = apply_query_to_job(&job, &query, "https://api.minimax.io");
+        assert_eq!(out.status, "completed");
+        let ser = serde_json::to_value(crate::gateway::video::types::VideoObject::from_job(&out))
+            .unwrap();
+        assert_eq!(ser["object"], "video");
+        assert!(ser.get("result_url").is_none());
+    }
+
+    #[test]
+    fn apply_query_failed_error_object() {
+        let job = VideoJob {
+            id: "video_x".into(),
+            provider: "minimax".into(),
+            tier: "cloud".into(),
+            upstream_task_id: Some("t1".into()),
+            status: "queued".into(),
+            progress: 0,
+            model: "MiniMax-H3".into(),
+            seconds: None,
+            size: None,
+            prompt: None,
+            error: None,
+            result_url: None,
+            local_path: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let query: Value = serde_json::from_str(
+            r#"{
+            "task": {
+                "status": "failed",
+                "error": { "code": "1026", "message": "sensitive content" }
+            }
+        }"#,
+        )
+        .unwrap();
+        let out = apply_query_to_job(&job, &query, "https://api.minimax.io");
+        assert_eq!(out.status, "failed");
+        assert_eq!(out.error.as_ref().unwrap().code.as_deref(), Some("1026"));
+        assert_eq!(
+            out.error.as_ref().unwrap().message.as_deref(),
+            Some("sensitive content")
         );
     }
 

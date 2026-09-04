@@ -1,6 +1,6 @@
 [package]
 name = "token-router"
-version = "0.19.1"
+version = "0.19.2"
 edition = "2024"
 license = "MIT"
 description = "Token Router ? edge/cloud LLM routing gateway and CLI"

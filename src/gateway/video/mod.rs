@@ -200,9 +200,14 @@ impl VideoClient {
         }
 
         if let Some(url) = &job.result_url {
-            let bytes = self
-                .http
-                .get(url)
+            let mut builder = self.http.get(url);
+            // MiniMax file retrieve endpoints require Bearer auth.
+            if job.provider == "minimax" {
+                if let Some(key) = target.and_then(|t| t.api_key.as_deref()) {
+                    builder = builder.bearer_auth(key);
+                }
+            }
+            let bytes = builder
                 .send()
                 .await
                 .map_err(|e| AppError::Upstream(format!("download video url: {e}")))?
@@ -394,39 +399,66 @@ pub fn size_to_resolution_ratio(size: Option<&str>) -> (String, String) {
     } else {
         "480P"
     };
-    let gcd = gcd(w, h).max(1);
-    let rw = w / gcd;
-    let rh = h / gcd;
-    let ratio = match (rw, rh) {
-        (16, 9) => "16:9".to_string(),
-        (9, 16) => "9:16".to_string(),
-        (1, 1) => "1:1".to_string(),
-        (4, 3) => "4:3".to_string(),
-        (3, 4) => "3:4".to_string(),
-        _ => {
-            // Snap to nearest common ratio by aspect float.
-            let a = w as f32 / h as f32;
-            if (a - 16.0 / 9.0).abs() < 0.08 {
-                "16:9".into()
-            } else if (a - 9.0 / 16.0).abs() < 0.08 {
-                "9:16".into()
-            } else if (a - 1.0).abs() < 0.08 {
-                "1:1".into()
-            } else {
-                format!("{rw}:{rh}")
-            }
-        }
-    };
-    (resolution.to_string(), ratio)
+    (resolution.to_string(), snap_aspect_ratio(w, h))
 }
 
-fn gcd(mut a: u32, mut b: u32) -> u32 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
+/// Snap WxH to a common aspect-ratio string.
+pub(crate) fn snap_aspect_ratio(w: u32, h: u32) -> String {
+    let a = w as f32 / h.max(1) as f32;
+    if (a - 21.0 / 9.0).abs() < 0.08 {
+        "21:9".into()
+    } else if (a - 16.0 / 9.0).abs() < 0.08 {
+        "16:9".into()
+    } else if (a - 9.0 / 16.0).abs() < 0.08 {
+        "9:16".into()
+    } else if (a - 4.0 / 3.0).abs() < 0.08 {
+        "4:3".into()
+    } else if (a - 3.0 / 4.0).abs() < 0.08 {
+        "3:4".into()
+    } else if (a - 1.0).abs() < 0.08 {
+        "1:1".into()
+    } else {
+        "16:9".into()
     }
-    a
+}
+
+/// Snap OpenAI `WxH` to DashScope wan2.6-and-earlier `parameters.size` (`W*H`).
+pub(crate) fn openai_size_to_dashscope_size(size: Option<&str>) -> String {
+    let (w, h) = parse_wxh(size);
+    let ratio = snap_aspect_ratio(w, h);
+    let pixels = w.saturating_mul(h);
+    let tier = if pixels >= 1_800_000 {
+        "1080P"
+    } else if pixels >= 800_000 {
+        "720P"
+    } else {
+        "480P"
+    };
+    match (tier, ratio.as_str()) {
+        ("1080P", "16:9") => "1920*1080".into(),
+        ("1080P", "9:16") => "1080*1920".into(),
+        ("1080P", "1:1") => "1440*1440".into(),
+        ("1080P", "4:3") => "1632*1248".into(),
+        ("1080P", "3:4") => "1248*1632".into(),
+        ("720P", "16:9") => "1280*720".into(),
+        ("720P", "9:16") => "720*1280".into(),
+        ("720P", "1:1") => "960*960".into(),
+        ("720P", "4:3") => "1088*832".into(),
+        ("720P", "3:4") => "832*1088".into(),
+        ("480P", "16:9") => "832*480".into(),
+        ("480P", "9:16") => "480*832".into(),
+        ("480P", "1:1") => "624*624".into(),
+        _ => "1280*720".into(),
+    }
+}
+
+/// Snap ratio to DashScope wan2.7+ allowed set (no 21:9).
+pub(crate) fn snap_dashscope_ratio(ratio: &str) -> String {
+    match ratio {
+        "16:9" | "9:16" | "1:1" | "4:3" | "3:4" => ratio.to_string(),
+        "21:9" => "16:9".into(),
+        _ => "16:9".into(),
+    }
 }
 
 pub(crate) async fn image_ref_to_url(http: &Client, reference: &ImageRef) -> AppResult<String> {
@@ -457,6 +489,22 @@ mod tests {
         let (res, ratio) = size_to_resolution_ratio(Some("1920x1080"));
         assert_eq!(res, "1080P");
         assert_eq!(ratio, "16:9");
+    }
+
+    #[test]
+    fn dashscope_size_snaps() {
+        assert_eq!(
+            openai_size_to_dashscope_size(Some("1280x720")),
+            "1280*720"
+        );
+        assert_eq!(
+            openai_size_to_dashscope_size(Some("1920x1080")),
+            "1920*1080"
+        );
+        assert_eq!(
+            openai_size_to_dashscope_size(Some("720x1280")),
+            "720*1280"
+        );
     }
 
     #[test]
