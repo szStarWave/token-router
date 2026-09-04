@@ -2,6 +2,7 @@
 
 mod comfyui;
 mod dashscope;
+mod minimax;
 mod openai;
 mod seedance;
 pub mod store;
@@ -117,6 +118,53 @@ impl VideoClient {
         })
     }
 
+    pub async fn cancel(
+        &self,
+        target: Option<&ResolvedVideoUpstream>,
+        video_id: &str,
+    ) -> AppResult<VideoObject> {
+        let mut job = self.store.require(video_id)?;
+        if matches!(
+            job.status.to_ascii_lowercase().as_str(),
+            "cancelled" | "canceled"
+        ) {
+            return Ok(job.to_object());
+        }
+        if job.is_terminal() {
+            return Err(AppError::BadRequest(format!(
+                "video `{video_id}` is already terminal (status={})",
+                job.status
+            )));
+        }
+        if let Some(target) = target {
+            dispatch_cancel(&self.http, target, &job).await?;
+        }
+        job.status = "cancelled".into();
+        job.error = Some(crate::gateway::video::types::VideoErrorObject {
+            code: Some("cancelled".into()),
+            message: Some("video cancelled".into()),
+        });
+        job.touch();
+        self.store.save(&job)?;
+        self.release_edge_guard(&job.id);
+        Ok(job.to_object())
+    }
+
+    pub async fn delete(
+        &self,
+        target: Option<&ResolvedVideoUpstream>,
+        video_id: &str,
+    ) -> AppResult<()> {
+        let job = self.store.require(video_id)?;
+        if let Some(target) = target {
+            // Best-effort upstream delete/cancel; local cleanup still proceeds on soft failures.
+            let _ = dispatch_delete_upstream(&self.http, target, &job).await;
+        }
+        self.store.delete(video_id)?;
+        self.release_edge_guard(video_id);
+        Ok(())
+    }
+
     pub async fn download_content(
         &self,
         target: Option<&ResolvedVideoUpstream>,
@@ -213,6 +261,7 @@ async fn dispatch_create(
         "openai" => openai::create(http, target, req, local_id, tier).await,
         "dashscope" => dashscope::create(http, target, req, local_id, tier).await,
         "seedance" => seedance::create(http, target, req, local_id, tier).await,
+        "minimax" => minimax::create(http, target, req, local_id, tier).await,
         "comfyui" => comfyui::create(http, target, req, local_id, tier).await,
         other => Err(AppError::BadRequest(format!(
             "unsupported video provider `{other}`"
@@ -230,10 +279,37 @@ async fn dispatch_refresh(
         "openai" => openai::refresh(http, target, job).await,
         "dashscope" => dashscope::refresh(http, target, job).await,
         "seedance" => seedance::refresh(http, target, job).await,
+        "minimax" => minimax::refresh(http, target, job).await,
         "comfyui" => comfyui::refresh(http, target, job, store).await,
         other => Err(AppError::BadRequest(format!(
             "unsupported video provider `{other}`"
         ))),
+    }
+}
+
+async fn dispatch_cancel(
+    http: &Client,
+    target: &ResolvedVideoUpstream,
+    job: &VideoJob,
+) -> AppResult<()> {
+    match job.provider.as_str() {
+        "minimax" => minimax::cancel(http, target, job).await,
+        // Other providers: local cancel only (no upstream cancel API wired).
+        "openai" | "dashscope" | "seedance" | "comfyui" => Ok(()),
+        other => Err(AppError::BadRequest(format!(
+            "unsupported video provider `{other}`"
+        ))),
+    }
+}
+
+async fn dispatch_delete_upstream(
+    http: &Client,
+    target: &ResolvedVideoUpstream,
+    job: &VideoJob,
+) -> AppResult<()> {
+    match job.provider.as_str() {
+        "minimax" => minimax::delete_upstream_task(http, target, job).await,
+        _ => Ok(()),
     }
 }
 
@@ -387,6 +463,8 @@ mod tests {
     fn terminal_statuses() {
         assert!(is_terminal_status("completed"));
         assert!(is_terminal_status("failed"));
+        assert!(is_terminal_status("cancelled"));
+        assert!(is_terminal_status("canceled"));
         assert!(!is_terminal_status("queued"));
     }
 }

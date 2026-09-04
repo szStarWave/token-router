@@ -114,12 +114,13 @@ model = "auto"               # auto = 保留客户端 model，由 token-router �
 # # workflow_file_i2v = "comfy-i2v-workflow.json"
 
 # [upstream.video.cloud]
-# provider = "openai"          # openai | dashscope | seedance
+# provider = "openai"          # openai | dashscope | seedance | minimax
 # base_url = "https://api.openai.com/v1"
 # model = "sora-2"
 # api_key = "sk-..."
 # # DashScope: provider = "dashscope", base_url = "https://dashscope.aliyuncs.com/api/v1", model = "wan2.6-t2v"
 # # Seedance: provider = "seedance", base_url = "https://ark.cn-beijing.volces.com/api/v3", model = "doubao-seedance-1-0-pro-250528"
+# # MiniMax: provider = "minimax", base_url = "https://api.minimax.io", model = "MiniMax-H3"
 
 # ---------------------------------------------------------------------------
 # CLI

@@ -178,6 +178,7 @@ src/
     │   ├── openai.rs       OpenAI Videos / Sora 适配
     │   ├── dashscope.rs    百炼万相视频适配
     │   ├── seedance.rs     火山 Seedance 适配
+    │   ├── minimax.rs      MiniMax H3 视频适配
     │   └── comfyui.rs      本地 ComfyUI 视频适配
     ├── api/                HTTP 处理层
     │   ├── mod.rs          路由注册
@@ -488,7 +489,7 @@ token-router gateway restart
 
 #### 9.2 文生视频 / 图生视频（`video/` + `api/videos.rs`）
 
-对外 OpenAI Videos 异步 API：`POST/GET /v1/videos`、`GET /v1/videos/{id}`、`GET .../content`。配置 `[upstream.video.edge|cloud]` + `gateway.video_route`；非 OpenAI 上游经本地 `VideoJobStore` 映射任务生命周期。provider：openai / dashscope / seedance / comfyui。
+对外 OpenAI Videos 异步 API：`POST/GET /v1/videos`、`GET /v1/videos/{id}`、`GET .../content`。配置 `[upstream.video.edge|cloud]` + `gateway.video_route`；非 OpenAI 上游经本地 `VideoJobStore` 映射任务生命周期。provider：openai / dashscope / seedance / minimax / comfyui。
 
 #### 10. 会话管理（`session/`）
 
@@ -968,7 +969,7 @@ curl -s http://127.0.0.1:11080/v1/images/edits \
 
 **路由**：`video_route=auto` 优先 edge；端侧忙且已配 cloud 时直接升云。`video_route=edge|cloud` 固定单端。
 
-**Provider**：`openai` / `dashscope` / `seedance` / `comfyui`。
+**Provider**：`openai` / `dashscope` / `seedance` / `minimax` / `comfyui`。
 
 ```bash
 # 文生视频
@@ -1239,7 +1240,7 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 
 | 字段 | 说明 |
 |------|------|
-| `provider` | `openai` / `dashscope` / `seedance` / `comfyui` |
+| `provider` | `openai` / `dashscope` / `seedance` / `minimax` / `comfyui` |
 | `base_url` | 上游根路径（OpenAI 含 `/v1`；DashScope 含 `/api/v1`；Seedance/方舟含 `/api/v3`；ComfyUI 为根） |
 | `api_key` | 选填 |
 | `model` / `upstream_model` | 显示 id / 实际上游模型 id |

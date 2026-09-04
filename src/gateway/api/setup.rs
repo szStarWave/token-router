@@ -294,6 +294,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       <option value="openai">openai</option>
       <option value="dashscope">dashscope</option>
       <option value="seedance">seedance</option>
+      <option value="minimax">minimax</option>
       <option value="comfyui">comfyui</option>
     </select>
     <label for="video_cloud_url">Base URL</label>
@@ -314,6 +315,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       <option value="openai">openai</option>
       <option value="dashscope">dashscope</option>
       <option value="seedance">seedance</option>
+      <option value="minimax">minimax</option>
     </select>
     <label for="video_edge_url">Base URL</label>
     <input id="video_edge_url" placeholder="http://127.0.0.1:8188" />

@@ -78,6 +78,24 @@ impl VideoJobStore {
             .ok_or_else(|| AppError::NotFound(format!("video `{id}` not found")))
     }
 
+    /// Remove job JSON and any cached mp4 for `id`.
+    pub fn delete(&self, id: &str) -> AppResult<()> {
+        let _g = self
+            .lock
+            .lock()
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("video store lock poisoned")))?;
+        let path = self.job_path(id);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("delete video job: {e}")))?;
+        }
+        let media = self.local_file_path(id);
+        if media.exists() {
+            let _ = fs::remove_file(&media);
+        }
+        Ok(())
+    }
+
     /// List jobs sorted by `created_at` then `id`.
     pub fn list(
         &self,
@@ -186,6 +204,12 @@ mod tests {
         let (asc, _) = store.list(10, None, false).unwrap();
         assert_eq!(asc[0].id, "video_a");
         assert_eq!(asc[2].id, "video_c");
+
+        store.delete("video_b").unwrap();
+        assert!(store.get("video_b").unwrap().is_none());
+        let (after_del, _) = store.list(10, None, true).unwrap();
+        assert_eq!(after_del.len(), 2);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

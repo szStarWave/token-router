@@ -500,6 +500,10 @@ mod tests {
             seconds: Some("4".into()),
             size: Some("1280x720".into()),
             input_reference: None,
+            resolution: None,
+            last_frame: None,
+            reference_images: vec![],
+            watermark: None,
         };
         inject_t2v(&mut wf, &target, &req).unwrap();
         assert_eq!(wf["6"]["inputs"]["text"], json!("a cat runs"));

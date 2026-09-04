@@ -1145,9 +1145,9 @@ fn apply_video_tier_patch(
 
 fn validate_video_provider(s: &str) -> Result<(), String> {
     match s {
-        "openai" | "dashscope" | "seedance" | "comfyui" => Ok(()),
+        "openai" | "dashscope" | "seedance" | "minimax" | "comfyui" => Ok(()),
         other => Err(format!(
-            "invalid video provider `{other}` (use openai|dashscope|seedance|comfyui)"
+            "invalid video provider `{other}` (use openai|dashscope|seedance|minimax|comfyui)"
         )),
     }
 }

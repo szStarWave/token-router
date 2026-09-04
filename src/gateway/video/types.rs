@@ -17,7 +17,16 @@ pub struct VideoCreateRequest {
     pub model: Option<String>,
     pub seconds: Option<String>,
     pub size: Option<String>,
+    /// OpenAI-style first-frame reference (`image_url` / `input_reference`).
     pub input_reference: Option<ImageRef>,
+    /// MiniMax-H3 explicit resolution (`768P` / `2K`). Prefer over deriving from `size`.
+    pub resolution: Option<String>,
+    /// MiniMax-H3 last frame URL / data URI.
+    pub last_frame: Option<ImageRef>,
+    /// MiniMax-H3 reference images (max 9 upstream). Mutually exclusive with first/last frame.
+    pub reference_images: Vec<ImageRef>,
+    /// When `Some(true)`, MiniMax maps to `aigc_watermark`.
+    pub watermark: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,7 +133,10 @@ pub fn now_unix() -> i64 {
 }
 
 pub fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed")
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "canceled"
+    )
 }
 
 pub fn new_video_id() -> String {
