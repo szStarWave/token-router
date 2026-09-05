@@ -223,6 +223,11 @@ pub async fn download_content(
 }
 
 fn parse_video_json(text: &str) -> AppResult<Value> {
+    if text.trim().is_empty() {
+        return Err(AppError::Upstream(
+            "openai videos json: EOF (empty body). If base_url is Flowy …/claw/v1, use catalog outbound (/claw/video/generations/tasks), not POST {base}/videos".into(),
+        ));
+    }
     serde_json::from_str(text)
         .map_err(|e| AppError::Upstream(format!("openai videos json: {e}")))
 }
@@ -263,5 +268,13 @@ mod tests {
         let v = parse_video_json(text).unwrap();
         assert_eq!(v["id"], "video_abc");
         assert_eq!(v["status"], "queued");
+    }
+
+    #[test]
+    fn empty_body_is_explicit_eof_hint() {
+        let err = parse_video_json("").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("EOF"), "{msg}");
+        assert!(msg.contains("claw/v1") || msg.contains("catalog"), "{msg}");
     }
 }

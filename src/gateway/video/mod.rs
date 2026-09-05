@@ -2,6 +2,7 @@
 
 mod comfyui;
 mod dashscope;
+mod flowy_catalog;
 mod minimax;
 mod openai;
 mod seedance;
@@ -227,8 +228,13 @@ impl VideoClient {
             return Ok((bytes, "video/mp4"));
         }
 
-        // OpenAI: proxy content from upstream.
+        // OpenAI: proxy content from upstream (never for Flowy catalog — use result_url).
         if job.provider == "openai" {
+            if target.map(uses_flowy_catalog).unwrap_or(false) {
+                return Err(AppError::Upstream(format!(
+                    "video `{video_id}` completed without result_url on Flowy catalog"
+                )));
+            }
             let target = target.ok_or_else(|| {
                 AppError::Unavailable("openai video upstream missing for content".into())
             })?;
@@ -255,6 +261,14 @@ impl VideoClient {
     }
 }
 
+fn uses_flowy_catalog(target: &ResolvedVideoUpstream) -> bool {
+    target
+        .base_url
+        .as_deref()
+        .map(flowy_catalog::is_flowy_catalog_base)
+        .unwrap_or(false)
+}
+
 async fn dispatch_create(
     http: &Client,
     target: &ResolvedVideoUpstream,
@@ -262,6 +276,10 @@ async fn dispatch_create(
     local_id: &str,
     tier: &str,
 ) -> AppResult<VideoJob> {
+    // Flowy claw is catalog-by-model (not OpenAI Videos, not MiniMax V2 path join).
+    if uses_flowy_catalog(target) {
+        return flowy_catalog::create(http, target, req, local_id, tier).await;
+    }
     match target.provider.as_str() {
         "openai" => openai::create(http, target, req, local_id, tier).await,
         "dashscope" => dashscope::create(http, target, req, local_id, tier).await,
@@ -280,6 +298,9 @@ async fn dispatch_refresh(
     job: &VideoJob,
     store: &VideoJobStore,
 ) -> AppResult<VideoJob> {
+    if uses_flowy_catalog(target) {
+        return flowy_catalog::refresh(http, target, job).await;
+    }
     match job.provider.as_str() {
         "openai" => openai::refresh(http, target, job).await,
         "dashscope" => dashscope::refresh(http, target, job).await,
@@ -297,6 +318,9 @@ async fn dispatch_cancel(
     target: &ResolvedVideoUpstream,
     job: &VideoJob,
 ) -> AppResult<()> {
+    if uses_flowy_catalog(target) {
+        return flowy_catalog::cancel(http, target, job).await;
+    }
     match job.provider.as_str() {
         "minimax" => minimax::cancel(http, target, job).await,
         // Other providers: local cancel only (no upstream cancel API wired).
@@ -312,6 +336,9 @@ async fn dispatch_delete_upstream(
     target: &ResolvedVideoUpstream,
     job: &VideoJob,
 ) -> AppResult<()> {
+    if uses_flowy_catalog(target) {
+        return flowy_catalog::delete_upstream_task(http, target, job).await;
+    }
     match job.provider.as_str() {
         "minimax" => minimax::delete_upstream_task(http, target, job).await,
         _ => Ok(()),
