@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 
 use crate::gateway::config::ResolvedImageUpstream;
 use crate::gateway::error::{AppError, AppResult};
+use crate::gateway::flowy::maybe_normalize_flowy_model;
 use crate::gateway::image::{join_url, openai_error_message, resolve_model_name};
 use crate::gateway::image::types::{ImageData, ImageEditRequest, ImageGenerateRequest, ImagesResponse};
 
@@ -16,8 +17,11 @@ pub async fn generate(
         .as_deref()
         .ok_or_else(|| AppError::Unavailable("image openai base_url missing".into()))?;
     let url = join_url(base, "images/generations");
-    let model = resolve_model_name(target, req.model.as_deref())
-        .unwrap_or_else(|| "gpt-image-1".to_string());
+    let model = maybe_normalize_flowy_model(
+        base,
+        &resolve_model_name(target, req.model.as_deref())
+            .unwrap_or_else(|| "gpt-image-1".to_string()),
+    );
 
     let mut body = json!({
         "model": model,
@@ -69,8 +73,11 @@ pub async fn edit(
         .as_deref()
         .ok_or_else(|| AppError::Unavailable("image openai base_url missing".into()))?;
     let url = join_url(base, "images/edits");
-    let model = resolve_model_name(target, req.model.as_deref())
-        .unwrap_or_else(|| "gpt-image-1".to_string());
+    let model = maybe_normalize_flowy_model(
+        base,
+        &resolve_model_name(target, req.model.as_deref())
+            .unwrap_or_else(|| "gpt-image-1".to_string()),
+    );
 
     let mut form = reqwest::multipart::Form::new()
         .text("prompt", req.prompt.clone())

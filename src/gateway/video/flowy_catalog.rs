@@ -8,13 +8,14 @@
 //!   GET    {claw}/video/generations/tasks/{id}
 //!   DELETE {claw}/video/generations/tasks/{id}
 //!
-//! Model id (e.g. `MiniMax-H3` / `flowy/MiniMax-H3`) selects the upstream channel.
+//! Model id (e.g. `MiniMax-H3` / `AIPC-MiniMax-H3`) selects the upstream channel.
 
 use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::gateway::config::ResolvedVideoUpstream;
 use crate::gateway::error::{AppError, AppResult};
+use crate::gateway::flowy::{flowy_business_base, normalize_flowy_model};
 use crate::gateway::video::minimax::{
     normalize_ratio, normalize_resolution_for_model, size_to_ratio,
 };
@@ -25,50 +26,12 @@ use crate::gateway::video::{
     image_ref_to_url, join_url, openai_error_message, resolve_model_name, seconds_to_u32,
 };
 
+pub use crate::gateway::flowy::is_flowy_catalog_base;
+
 const CREATE_PATH: &str = "video/generations/tasks";
 const USER_AGENT: &str = "token-router-videogen/1.0";
 const MAX_REFERENCE_IMAGES: usize = 9;
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
-
-/// True when the configured video base is Flowy claw (catalog), not OpenAI / MiniMax official.
-pub fn is_flowy_catalog_base(base_url: &str) -> bool {
-    let lower = base_url.trim().to_ascii_lowercase();
-    if lower.is_empty() {
-        return false;
-    }
-    lower.contains("flowyaipc")
-        || lower.contains("/claw/")
-        || lower.ends_with("/claw")
-        || lower.contains("claw/v1")
-}
-
-/// `https://server.flowyaipc.cn/claw/v1` → `https://server.flowyaipc.cn/claw`
-pub fn flowy_business_base(configured_base: &str) -> String {
-    let base = configured_base.trim().trim_end_matches('/');
-    if let Some(stripped) = base
-        .strip_suffix("/v1")
-        .or_else(|| base.strip_suffix("/V1"))
-    {
-        return stripped.trim_end_matches('/').to_string();
-    }
-    base.to_string()
-}
-
-/// Ensure Flowy catalog model ids (`flowy/…` / list ids). Bare `MiniMax-H3` → `flowy/MiniMax-H3`.
-pub fn normalize_flowy_model(model: &str) -> String {
-    let m = model.trim();
-    if m.is_empty() {
-        return "flowy/MiniMax-H3".into();
-    }
-    let lower = m.to_ascii_lowercase();
-    if lower.starts_with("flowy/") || lower.starts_with("aipc-") {
-        return m.to_string();
-    }
-    if m.contains('/') {
-        return m.to_string();
-    }
-    format!("flowy/{m}")
-}
 
 pub async fn create(
     http: &Client,
@@ -476,7 +439,7 @@ mod tests {
 
     #[test]
     fn normalizes_catalog_model_names() {
-        assert_eq!(normalize_flowy_model("MiniMax-H3"), "flowy/MiniMax-H3");
+        assert_eq!(normalize_flowy_model("MiniMax-H3"), "AIPC-MiniMax-H3");
         assert_eq!(
             normalize_flowy_model("flowy/MiniMax-H3"),
             "flowy/MiniMax-H3"

@@ -7,6 +7,7 @@ pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod experience;
+pub mod flowy;
 pub mod image;
 pub mod video;
 pub mod logging;
