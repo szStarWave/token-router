@@ -19,6 +19,9 @@ use crate::gateway::flowy::{flowy_business_base, normalize_flowy_model};
 use crate::gateway::video::minimax::{
     normalize_ratio, normalize_resolution_for_model, size_to_ratio,
 };
+use crate::gateway::video::seedance::{
+    is_seedance_model, normalize_seedance_resolution,
+};
 use crate::gateway::video::types::{
     ImageRef, VideoCreateRequest, VideoErrorObject, VideoJob, now_unix,
 };
@@ -61,11 +64,16 @@ pub async fn create(
         ));
     }
     let has_media = has_first || has_last || has_reference;
-    let resolution = normalize_resolution_for_model(
-        &raw_model,
-        req.resolution.as_deref(),
-        req.size.as_deref(),
-    );
+    let seedance = is_seedance_model(&raw_model);
+    let resolution = if seedance {
+        normalize_seedance_resolution(req.resolution.as_deref(), req.size.as_deref())
+    } else {
+        normalize_resolution_for_model(
+            &raw_model,
+            req.resolution.as_deref(),
+            req.size.as_deref(),
+        )
+    };
     let ratio = normalize_ratio(size_to_ratio(req.size.as_deref()), has_media);
 
     let mut content = vec![json!({
@@ -98,7 +106,8 @@ pub async fn create(
         }));
     }
 
-    // MiniMax-H3 (and Flowy catalog peers that accept MiniMax V2 schema).
+    // Flowy catalog forwards by model name: MiniMax uses V2 labels (768P/2K);
+    // Seedance / Doubao use Ark labels (720p/480p/1080p) + watermark.
     let mut body = json!({
         "model": model,
         "content": content,
@@ -107,7 +116,9 @@ pub async fn create(
         "ratio": ratio,
         "app": "token-router",
     });
-    if req.watermark == Some(true) {
+    if seedance {
+        body["watermark"] = json!(req.watermark.unwrap_or(false));
+    } else if req.watermark == Some(true) {
         body["aigc_watermark"] = json!(true);
     }
 
@@ -460,6 +471,21 @@ mod tests {
         );
         assert!(!url.contains("/claw/v1/videos"));
         assert!(!url.contains("/v2/video_generation"));
+    }
+
+    #[test]
+    fn seedance_catalog_keeps_ark_resolution() {
+        assert_eq!(
+            normalize_seedance_resolution(Some("720p"), Some("1280x720")),
+            "720p"
+        );
+        // Must not become MiniMax 768P when routed through catalog.
+        assert_ne!(
+            normalize_seedance_resolution(Some("720p"), None),
+            "768P"
+        );
+        assert!(is_seedance_model("AIPC-Doubao-Seedance-2.0"));
+        assert!(!is_seedance_model("MiniMax-H3"));
     }
 
     #[test]

@@ -47,6 +47,7 @@ pub async fn create(
         first_url.as_deref(),
         last_url.as_deref(),
         req.watermark,
+        req.resolution.as_deref(),
     );
     let duration = body["duration"].as_u64().unwrap_or(5) as u32;
 
@@ -142,8 +143,9 @@ pub(crate) fn build_create_body(
     first_url: Option<&str>,
     last_url: Option<&str>,
     watermark: Option<bool>,
+    resolution: Option<&str>,
 ) -> Value {
-    let (resolution, ratio_from_size) = size_to_resolution_ratio(size);
+    let (_, ratio_from_size) = size_to_resolution_ratio(size);
     let has_media = first_url.is_some() || last_url.is_some();
     let ratio = if has_media {
         "adaptive".to_string()
@@ -181,10 +183,16 @@ pub(crate) fn build_create_body(
         "model": model,
         "content": content,
         "duration": duration,
-        "resolution": snap_seedance_resolution(&resolution),
+        "resolution": normalize_seedance_resolution(resolution, size),
         "ratio": ratio,
         "watermark": watermark.unwrap_or(false),
     })
+}
+
+/// True for Seedance / Doubao Seedance catalog or direct Ark models.
+pub(crate) fn is_seedance_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.contains("seedance") || lower.contains("doubao-seedance")
 }
 
 fn model_is_seedance_2(model: &str) -> bool {
@@ -204,10 +212,28 @@ fn clamp_duration(model: &str, secs: u32) -> u32 {
     }
 }
 
+/// Prefer explicit inbound `resolution`; else derive from OpenAI `size`.
+/// Wire values are lowercase Ark labels (`480p` / `720p` / `1080p` / `4k`).
+pub(crate) fn normalize_seedance_resolution(
+    resolution: Option<&str>,
+    size: Option<&str>,
+) -> String {
+    let raw = if let Some(r) = resolution.map(str::trim).filter(|s| !s.is_empty()) {
+        r.to_string()
+    } else {
+        size_to_resolution_ratio(size).0
+    };
+    snap_seedance_resolution(&raw)
+}
+
 fn snap_seedance_resolution(resolution: &str) -> String {
-    match resolution.to_ascii_uppercase().as_str() {
-        "1080P" | "1080" => "1080p".into(),
+    let upper = resolution.trim().to_ascii_uppercase().replace('_', "");
+    match upper.as_str() {
+        "1080P" | "1080" | "2K" => "1080p".into(),
         "480P" | "480" => "480p".into(),
+        "4K" | "2160P" | "2160" => "4k".into(),
+        // MiniMax-style 768P and OpenAI 720p both map to Seedance 720p.
+        "720P" | "720" | "768P" | "768" | "MEDIUM" | "AUTO" | "" => "720p".into(),
         _ => "720p".into(),
     }
 }
@@ -312,6 +338,7 @@ mod tests {
             Some("https://a/first.png"),
             Some("https://a/last.png"),
             Some(true),
+            Some("720p"),
         );
         assert_eq!(body["watermark"], json!(true));
         assert_eq!(body["duration"], json!(6));
@@ -324,12 +351,35 @@ mod tests {
     }
 
     #[test]
+    fn resolution_prefers_inbound_and_maps_minimax_labels() {
+        assert_eq!(
+            normalize_seedance_resolution(Some("720p"), Some("1920x1080")),
+            "720p"
+        );
+        assert_eq!(
+            normalize_seedance_resolution(Some("768P"), None),
+            "720p"
+        );
+        assert_eq!(
+            normalize_seedance_resolution(Some("2K"), None),
+            "1080p"
+        );
+        assert_eq!(
+            normalize_seedance_resolution(None, Some("1280x720")),
+            "720p"
+        );
+        assert!(is_seedance_model("AIPC-Doubao-Seedance-2.0"));
+        assert!(!is_seedance_model("AIPC-MiniMax-H3"));
+    }
+
+    #[test]
     fn duration_clamp_by_family() {
         let v1 = build_create_body(
             "doubao-seedance-1-0-pro-250528",
             "x",
             None,
             Some("99"),
+            None,
             None,
             None,
             None,
@@ -341,6 +391,7 @@ mod tests {
             "x",
             None,
             Some("1"),
+            None,
             None,
             None,
             None,
