@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::State,
-    routing::{delete, get, patch, post},
+    routing::{get, patch, post},
 };
 use serde::Serialize;
 
@@ -16,9 +16,7 @@ use crate::gateway::api::anthropic::anthropic_messages_handler;
 use crate::gateway::api::chat::chat_completions;
 use crate::gateway::api::images::{images_edits, images_generations};
 use crate::gateway::api::models::{get_model, list_models};
-use crate::gateway::api::videos::{
-    videos_cancel, videos_content, videos_create, videos_delete, videos_list, videos_retrieve,
-};
+use crate::gateway::api::videos::video_forward;
 use crate::gateway::api::responses::responses_handler;
 use crate::gateway::api::setup;
 use crate::gateway::classifier::ClassifierStore;
@@ -105,13 +103,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/images/generations", post(images_generations))
         .route("/v1/images/edits", post(images_edits))
-        .route("/v1/videos", post(videos_create).get(videos_list))
-        .route(
-            "/v1/videos/{video_id}",
-            get(videos_retrieve).delete(videos_delete),
-        )
-        .route("/v1/videos/{video_id}/content", get(videos_content))
-        .route("/v1/videos/{video_id}/cancel", post(videos_cancel))
+        .route("/v1/video/forward", post(video_forward))
         .route("/v1/models", get(list_models))
         .route("/v1/models/{model_id}", get(get_model))
         .route("/v1/responses", post(responses_handler))

@@ -170,16 +170,10 @@ src/
     │   ├── seedream.rs     火山 Seedream 适配
     │   ├── dashscope.rs    百炼万相适配
     │   └── comfyui.rs      本地 ComfyUI 适配
-    ├── video/              文生视频 / 图生视频
-    │   ├── mod.rs          VideoClient + provider 分发
-    │   ├── tier.rs         edge/cloud 选择（含端侧忙升云）
-    │   ├── store.rs        本地 VideoJobStore
-    │   ├── types.rs        OpenAI Videos 请求/响应类型
-    │   ├── openai.rs       OpenAI Videos / Sora 适配
-    │   ├── dashscope.rs    百炼万相视频适配
-    │   ├── seedance.rs     火山 Seedance 适配
-    │   ├── minimax.rs      MiniMax H3 视频适配
-    │   └── comfyui.rs      本地 ComfyUI 视频适配
+    ├── video/              文生视频 / 图生视频透传
+    │   ├── mod.rs          VideoClient
+    │   ├── forward.rs      同 host 原样转发
+    │   └── tier.rs         edge/cloud 选择（含端侧忙升云）
     ├── api/                HTTP 处理层
     │   ├── mod.rs          路由注册
     │   ├── routes.rs       路由表定义
@@ -481,7 +475,7 @@ token-router gateway restart
 
 #### 9. 端侧负载感知（`edge_load.rs`）
 
-`EdgeInferenceTracker` 使用 `AtomicU32` 追踪并发推理数。通过 RAII 守卫 `EdgeInferenceGuard`（`begin()` 返回，`drop()` 时递减），确保不会漏减计数。文生图 / 文生视频走 edge 时同样持有该守卫；`image_route=auto` / `video_route=auto` 且端侧忙时可直接升云。
+`EdgeInferenceTracker` 使用 `AtomicU32` 追踪并发推理数。通过 RAII 守卫 `EdgeInferenceGuard`（`begin()` 返回，`drop()` 时递减），确保不会漏减计数。文生图走 edge 时持有该守卫直到上游返回；视频转发走 edge 时只包住这一次 HTTP 调用。`image_route=auto` / `video_route=auto` 且端侧忙时可直接升云。
 
 #### 9.1 文生图 / 图生图（`image/` + `api/images.rs`）
 
@@ -489,7 +483,7 @@ token-router gateway restart
 
 #### 9.2 文生视频 / 图生视频（`video/` + `api/videos.rs`）
 
-对外 OpenAI Videos 异步 API：`POST/GET /v1/videos`、`GET /v1/videos/{id}`、`GET .../content`。配置 `[upstream.video.edge|cloud]` + `gateway.video_route`；非 OpenAI 上游经本地 `VideoJobStore` 映射任务生命周期。provider：openai / dashscope / seedance / minimax / comfyui。
+对外 `POST /v1/video/forward`。调用方带上上游的 method、绝对 path 和原始 body；网关按 `[upstream.video.edge|cloud]` 与 `gateway.video_route` 选择槽位，只转发到该槽 `base_url` 的同一 host，并注入该槽的 Bearer key。响应的 status、`Content-Type` 和 body 原样返回。`provider` 仍保存在配置里，供调用方决定 path 和 body。
 
 #### 10. 会话管理（`session/`）
 
@@ -921,10 +915,7 @@ token-router stats --global --lang zh # 全局累计 + 中文
 | `POST` | `/v1/messages` | Anthropic Messages API 兼容 |
 | `POST` | `/v1/images/generations` | OpenAI Images 文生图兼容 |
 | `POST` | `/v1/images/edits` | OpenAI Images 图生图/编辑兼容（multipart） |
-| `POST` | `/v1/videos` | OpenAI Videos 创建任务（文生/图生视频） |
-| `GET` | `/v1/videos` | OpenAI Videos 任务列表 |
-| `GET` | `/v1/videos/{video_id}` | OpenAI Videos 查询状态 |
-| `GET` | `/v1/videos/{video_id}/content` | OpenAI Videos 下载 MP4 |
+| `POST` | `/v1/video/forward` | 按 `X-Video-Method` / `X-Video-Path` 原样转发到视频上游 |
 
 三种 LLM API 入口共享同一路由引擎与 edge/cloud 上游配置；请求在网关内归一化为 OpenAI Chat Completions 格式后转发至 `{base_url}/chat/completions`。Agent 可按 SDK 习惯选择入口（OpenAI SDK → `/v1/chat/completions`，Codex/Responses 客户端 → `/v1/responses`，Anthropic SDK → `/v1/messages`）。`token_router_meta` 扩展字段仅出现在 OpenAI Chat Completions 响应中。
 
@@ -958,50 +949,27 @@ curl -s http://127.0.0.1:11080/v1/images/edits \
 
 ### 5.0.1 文生视频 / 图生视频
 
-对外始终使用 OpenAI Videos 异步契约；网关按 `[upstream.video.edge|cloud]` 与 `gateway.video_route` 选择本地或云端，并适配各厂商协议。非 OpenAI 上游的任务写入本地 `videos/` job store。
+`POST /v1/video/forward` 把调用方已经组好的上游请求原样转到 `[upstream.video.edge|cloud]`。网关不改写 body，也不把结果收成统一的任务对象。
 
-| 端点 | 说明 |
-|------|------|
-| `POST /v1/videos` | 创建任务；仅 `prompt` = 文生视频；带 `input_reference` / `image_url` = 图生视频 |
-| `GET /v1/videos` | 列表（`limit` / `after` / `order`）；仅本网关创建的任务 |
-| `GET /v1/videos/{id}` | 查询状态（未终态时刷新上游） |
-| `GET /v1/videos/{id}/content` | 下载 MP4（`variant=video`；thumbnail 首版 400） |
+| 请求头 | 说明 |
+|--------|------|
+| `X-Video-Method` | 上游方法：`GET` / `POST` / `PUT` / `PATCH` / `DELETE` / `HEAD` |
+| `X-Video-Path` | 上游 host 上的绝对路径，可带 query。例如 `/claw/video/generations/tasks` |
+| `X-Video-Tier` | `edge` 或 `cloud`。调用方按这个槽组 body；省略时网关自己选路 |
+| `Content-Type` / `Accept` / `X-DashScope-Async` | 原样带给上游 |
+| `Authorization` | 网关入站密钥。转发时会被换成该槽的 `api_key` |
 
-**路由**：`video_route=auto` 优先 edge；端侧忙且已配 cloud 时直接升云。`video_route=edge|cloud` 固定单端。
+Path 必须以 `/` 开头。`..`、scheme 和其他 host 会被拒绝。
 
-**Provider**：`openai` / `dashscope` / `seedance` / `minimax` / `comfyui`。
-
-网关将 OpenAI Videos 的 `prompt` / `seconds` / `size` / `input_reference` 等字段转换成各云厂商原生请求体；轮询结果再归一为 OpenAI `VideoObject`（`queued` / `in_progress` / `completed` / `failed` / `cancelled`）。成片通过 `GET /v1/videos/{id}/content` 下载，JSON 中不返回厂商 CDN URL。
+**路由**：`video_route=auto` 优先 edge；端侧忙且已配 cloud 时直接升云。`video_route=edge|cloud` 固定单端。Edge 并发守卫只包住这一次转发。
 
 ```bash
-# 文生视频
-JOB=$(curl -s http://127.0.0.1:11080/v1/videos \
+curl -s http://127.0.0.1:11080/v1/video/forward \
   -H "Authorization: Bearer $TOKEN" \
+  -H "X-Video-Method: POST" \
+  -H "X-Video-Path: /v2/video_generation" \
   -H "Content-Type: application/json" \
-  -d '{"model":"sora-2","prompt":"a cat walking on the beach","seconds":"8","size":"1280x720"}')
-echo "$JOB"
-VIDEO_ID=$(echo "$JOB" | jq -r .id)
-
-# 轮询状态
-while true; do
-  STATUS=$(curl -s http://127.0.0.1:11080/v1/videos/$VIDEO_ID \
-    -H "Authorization: Bearer $TOKEN" | jq -r .status)
-  echo "status=$STATUS"
-  [[ "$STATUS" == "completed" || "$STATUS" == "failed" ]] && break
-  sleep 10
-done
-
-# 下载
-curl -L http://127.0.0.1:11080/v1/videos/$VIDEO_ID/content \
-  -H "Authorization: Bearer $TOKEN" -o out.mp4
-
-# 图生视频（multipart）
-curl -s http://127.0.0.1:11080/v1/videos \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "model=sora-2" \
-  -F "prompt=animate this still" \
-  -F "seconds=8" \
-  -F "input_reference=@frame.png;type=image/png"
+  -d '{"model":"MiniMax-H3","content":[{"type":"text","text":"a cat walking"}]}'
 ```
 
 **响应扩展**（非流式 JSON 根上的 `token_router_meta`，Agent 可忽略；仅 `/v1/chat/completions`）：
@@ -1238,15 +1206,15 @@ curl -s -X POST http://127.0.0.1:11080/v1/admin/setup/init | jq .
 
 ### 6.4 `[upstream.video.edge]` / `[upstream.video.cloud]`
 
-与 chat / image 上游完全独立。对外 `/v1/videos*` 使用此配置。
+与 chat / image 上游完全独立。`POST /v1/video/forward` 使用此配置选择 host 和 API key。调用方按 `provider` 自己组上游 path 和 body。
 
 | 字段 | 说明 |
 |------|------|
-| `provider` | `openai` / `dashscope` / `seedance` / `minimax` / `comfyui` |
-| `base_url` | 上游根路径（OpenAI 含 `/v1`；DashScope 含 `/api/v1`；Seedance/方舟含 `/api/v3`；ComfyUI 为根） |
-| `api_key` | 选填 |
-| `model` / `upstream_model` | 显示 id / 实际上游模型 id |
-| `workflow_file` / `workflow_file_i2v` | 仅 ComfyUI：覆盖内置 T2V / I2V workflow |
+| `provider` | `openai` / `dashscope` / `seedance` / `minimax` / `comfyui`。网关不按它改写请求 |
+| `base_url` | 上游根路径。转发目标必须与它同一 host |
+| `api_key` | 选填；转发时附带 `Authorization: Bearer` |
+| `model` / `upstream_model` | 调用方使用的显示 id / 实际上游模型 id |
+| `workflow_file` / `workflow_file_i2v` | ComfyUI workflow 路径。网关不再读取；调用方自行提交 `/prompt` |
 
 ### 6.5 `[agent.<id>]`
 

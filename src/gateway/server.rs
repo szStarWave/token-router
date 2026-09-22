@@ -137,8 +137,7 @@ pub async fn run_with_options(config: AppConfig, opts: RunOptions) -> anyhow::Re
     let config_mgr = ConfigManager::new(config.clone());
     let codex_history = Arc::new(CodexChatHistoryStore::default());
     let images = crate::gateway::image::ImageClient::new(edge_load.clone());
-    let video_store = crate::gateway::video::store::VideoJobStore::open(&config.data_dir)?;
-    let videos = crate::gateway::video::VideoClient::new(edge_load.clone(), video_store);
+    let videos = crate::gateway::video::VideoClient::new(edge_load.clone());
     let state = AppState {
         config_mgr: config_mgr.clone(),
         sessions: sessions.clone(),
