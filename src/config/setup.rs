@@ -33,6 +33,7 @@ pub struct GatewayConfigView {
     pub adaptive_max_theta_shift: f32,
     pub classifier_enabled: bool,
     pub classifier_min_samples: u64,
+    pub classifier_max_weight: f32,
     pub classifier_prior_alpha: f32,
     pub classifier_decay_half_life_hours: f64,
     pub classifier_prior_from_heuristic: bool,
@@ -83,6 +84,7 @@ pub struct GatewayConfigPatch {
     pub adaptive_max_theta_shift: Option<f32>,
     pub classifier_enabled: Option<bool>,
     pub classifier_min_samples: Option<u64>,
+    pub classifier_max_weight: Option<f32>,
     pub classifier_prior_alpha: Option<f32>,
     pub classifier_decay_half_life_hours: Option<f64>,
     pub classifier_prior_from_heuristic: Option<bool>,
@@ -118,6 +120,7 @@ impl GatewayConfigPatch {
             && self.adaptive_max_theta_shift.is_none()
             && self.classifier_enabled.is_none()
             && self.classifier_min_samples.is_none()
+            && self.classifier_max_weight.is_none()
             && self.classifier_prior_alpha.is_none()
             && self.classifier_decay_half_life_hours.is_none()
             && self.classifier_prior_from_heuristic.is_none()
@@ -441,6 +444,7 @@ pub fn gateway_view_from_section(g: &GatewaySection) -> GatewayConfigView {
         adaptive_max_theta_shift: g.adaptive_max_theta_shift,
         classifier_enabled: g.classifier_enabled,
         classifier_min_samples: g.classifier_min_samples,
+        classifier_max_weight: g.classifier_max_weight,
         classifier_prior_alpha: g.classifier_prior_alpha,
         classifier_decay_half_life_hours: g.classifier_decay_half_life_hours,
         classifier_prior_from_heuristic: g.classifier_prior_from_heuristic,
@@ -821,6 +825,9 @@ fn apply_gateway_patch(g: &mut GatewaySection, patch: &GatewayConfigPatch) -> Re
     }
     if let Some(v) = patch.classifier_min_samples {
         g.classifier_min_samples = v;
+    }
+    if let Some(v) = patch.classifier_max_weight {
+        g.classifier_max_weight = clamp_range_f32(v, 0.0, 0.60, "classifier_max_weight")?;
     }
     if let Some(v) = patch.classifier_prior_alpha {
         g.classifier_prior_alpha = clamp_range_f32(v, 0.0, 100.0, "classifier_prior_alpha")?;

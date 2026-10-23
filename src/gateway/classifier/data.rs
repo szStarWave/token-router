@@ -41,6 +41,9 @@ pub struct ClassifierData {
     pub prior: LabelCounts,
     #[serde(default)]
     pub features: HashMap<String, LabelCounts>,
+    /// Observed outcomes per `step_kind` key, excluding heuristic priors.
+    #[serde(default)]
+    pub learned_step_samples: HashMap<String, u64>,
     #[serde(default)]
     pub meta: ClassifierMeta,
 }

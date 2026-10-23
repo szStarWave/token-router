@@ -86,6 +86,9 @@ pub struct GatewaySection {
     pub classifier_enabled: bool,
     #[serde(default = "default_classifier_min_samples")]
     pub classifier_min_samples: u64,
+    /// Bayes share of fused difficulty once `classifier_min_samples` is reached. Max 0.60.
+    #[serde(default = "default_classifier_max_weight")]
+    pub classifier_max_weight: f32,
     #[serde(default = "default_classifier_prior_alpha")]
     pub classifier_prior_alpha: f32,
     #[serde(default = "default_classifier_decay_half_life_hours")]
@@ -353,6 +356,10 @@ fn default_classifier_min_samples() -> u64 {
     100
 }
 
+fn default_classifier_max_weight() -> f32 {
+    0.60
+}
+
 fn default_classifier_prior_alpha() -> f32 {
     1.0
 }
@@ -421,6 +428,7 @@ impl Default for GatewaySection {
             adaptive_max_theta_shift: default_adaptive_max_theta_shift(),
             classifier_enabled: default_classifier_enabled(),
             classifier_min_samples: default_classifier_min_samples(),
+            classifier_max_weight: default_classifier_max_weight(),
             classifier_prior_alpha: default_classifier_prior_alpha(),
             classifier_decay_half_life_hours: default_classifier_decay_half_life_hours(),
             classifier_prior_from_heuristic: default_classifier_prior_from_heuristic(),
@@ -489,6 +497,7 @@ ctx_edge_max_tokens = 200000
 # adaptive_max_theta_shift = 0.05
 # classifier_enabled = true
 # classifier_min_samples = 100
+# classifier_max_weight = 0.60       # Bayes share of difficulty; capped at 0.60
 # classifier_prior_alpha = 1.0
 # classifier_decay_half_life_hours = 168
 # classifier_prior_from_heuristic = true

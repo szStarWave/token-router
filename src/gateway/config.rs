@@ -8,7 +8,7 @@ use crate::config::{
     setup::endpoint_configured,
 };
 
-use crate::gateway::classifier::ClassifierSettings;
+use crate::gateway::classifier::{ClassifierSettings, DEFAULT_CLASSIFIER_MAX_WEIGHT};
 use crate::gateway::experience::ExperienceSettings;
 use crate::gateway::routing::{Profile, RouteTier, RoutingMode, WordFreqSettings};
 
@@ -273,6 +273,10 @@ impl AppConfig {
             classifier: ClassifierSettings {
                 enabled: file.gateway.classifier_enabled,
                 min_samples: file.gateway.classifier_min_samples,
+                max_weight: file
+                    .gateway
+                    .classifier_max_weight
+                    .clamp(0.0, DEFAULT_CLASSIFIER_MAX_WEIGHT),
                 prior_alpha: file.gateway.classifier_prior_alpha.max(0.0),
                 decay_half_life_hours: file.gateway.classifier_decay_half_life_hours.max(0.0),
                 prior_from_heuristic: file.gateway.classifier_prior_from_heuristic,

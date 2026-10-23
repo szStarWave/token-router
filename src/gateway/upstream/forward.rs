@@ -184,14 +184,25 @@ impl UpstreamClient {
         let edge = self.target_edge(agent_id);
         let edge_tried = edge.base_url.is_some();
         if edge_tried {
-            if let Ok(resp) = self
+            match self
                 .call_target(req, edge, decision.tokens_in_estimate, auth_key)
                 .await
             {
-                if cascade_gate_pass(&resp) {
+                Ok(resp) if cascade_gate_pass(&resp) => {
                     self.stats.record_cascade_edge_ok();
-                    return Ok(self.finish_non_stream(req, resp, decision, "edge", false, agent_id, auth_key));
+                    return Ok(self.finish_non_stream(
+                        req, resp, decision, "edge", false, agent_id, auth_key,
+                    ));
                 }
+                Err(err)
+                    if is_context_overflow_upstream_error(&err)
+                        && self.allow_cross_tier_fallback()
+                        && self.cloud_configured() =>
+                {
+                    self.sessions
+                        .set_ctx_overflow_pin(&decision.conversation_key);
+                }
+                _ => {}
             }
             self.stats.record_cascade_fallback();
         } else {
@@ -442,7 +453,13 @@ impl UpstreamClient {
                     }
                     return Ok((stream, false));
                 }
-                Err(_) if cloud_ok => {
+                Err(err) if cloud_ok => {
+                    if is_context_overflow_upstream_error(&err)
+                        && self.allow_cross_tier_fallback()
+                    {
+                        self.sessions
+                            .set_ctx_overflow_pin(&decision.conversation_key);
+                    }
                     if count_cascade {
                         self.stats.record_cascade_fallback();
                     }
@@ -943,6 +960,8 @@ impl UpstreamClient {
                 Err(err) if is_context_overflow_upstream_error(&err)
                     && self.allow_cross_tier_fallback()
                     && self.cloud_configured() => {
+                    self.sessions
+                        .set_ctx_overflow_pin(&decision.conversation_key);
                     self.stats.record_cascade_fallback();
                 }
                 Err(err) => return Err(err),
@@ -976,6 +995,8 @@ impl UpstreamClient {
                 Err(err) if is_context_overflow_upstream_error(&err)
                     && self.allow_cross_tier_fallback()
                     && self.cloud_configured() => {
+                    self.sessions
+                        .set_ctx_overflow_pin(&decision.conversation_key);
                     self.stats.record_cascade_fallback();
                 }
                 Err(err) => return Err(err),
@@ -1266,6 +1287,7 @@ mod fixed_route_no_cross_tier_tests {
             None,
             None,
             &wordfreq,
+            0,
         )
     }
 

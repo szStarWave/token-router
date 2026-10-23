@@ -34,6 +34,8 @@ pub struct RequestSignals {
     pub risky_tool_hard_names: Vec<String>,
     pub risky_tool_soft_names: Vec<String>,
     pub intent_hard: bool,
+    /// `intent_hard` that is not only cognitive-overlap words (分析/研究/整理/比较/对比).
+    pub intent_hard_specific: bool,
     pub intent_easy: bool,
     pub intent_plan: bool,
     /// Cloud/edge tier preference within the recent user-turn window (see `resolve_recent_tier_intent`).
@@ -256,6 +258,9 @@ impl SignalExtractor<'_> {
         let intent_hard = last_user
             .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_hard_intent(&t));
+        let intent_hard_specific = last_user
+            .map(user_routing_text)
+            .is_some_and(|t| super::keywords::contains_specific_hard_intent(&t));
         let intent_easy = last_user
             .map(user_routing_text)
             .is_some_and(|t| super::keywords::contains_easy_intent(&t));
@@ -337,6 +342,7 @@ impl SignalExtractor<'_> {
             risky_tool_hard_names: tool_risk.risky_tool_hard_names,
             risky_tool_soft_names: tool_risk.risky_tool_soft_names,
             intent_hard,
+            intent_hard_specific,
             intent_easy,
             intent_plan,
             intent_cloud,
@@ -731,6 +737,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: true,
             intent_plan: false,
             intent_cloud: false,
@@ -875,6 +882,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: false,
             intent_plan: false,
             intent_cloud: false,
@@ -926,6 +934,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: true,
             intent_plan: false,
             intent_cloud: false,

@@ -128,6 +128,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: false,
             intent_plan: false,
             intent_cloud: false,

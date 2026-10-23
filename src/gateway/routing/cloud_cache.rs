@@ -22,6 +22,9 @@ pub fn cloud_cache_linear_boost(
 /// Linear weight for a prior cloud route on the same request context prefix.
 pub const REQ_ROUTE_CACHE_CLOUD_LINEAR: f32 = 0.12;
 
+/// Tool execution stays edge-first. One cloud serve should not drag the whole loop.
+pub const TOOL_STEP_CLOUD_CACHE_SCALE: f32 = 0.4;
+
 #[cfg(test)]
 mod tests {
     use super::*;

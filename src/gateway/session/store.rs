@@ -76,6 +76,16 @@ impl SessionStore {
         self.cloud_cache_state(conversation_key).anchor_unix
     }
 
+    pub fn ctx_overflow_pinned(&self, conversation_key: &str) -> bool {
+        self.get_or_load(conversation_key).ctx_overflow_pin
+    }
+
+    pub fn set_ctx_overflow_pin(&self, conversation_key: &str) {
+        self.with_mut(conversation_key, |data| {
+            data.ctx_overflow_pin = true;
+        });
+    }
+
     pub fn record_tokens(&self, conversation_key: &str, tok_in: u32) {
         self.with_mut(conversation_key, |data| {
             data.last_tok_in = tok_in;

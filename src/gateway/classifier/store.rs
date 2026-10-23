@@ -15,6 +15,8 @@ use crate::gateway::routing::{RouteTier, WorkStrategy};
 pub struct ClassifierSettings {
     pub enabled: bool,
     pub min_samples: u64,
+    /// Cap on the Bayes share of fused difficulty. Clamped to at most 0.60.
+    pub max_weight: f32,
     pub prior_alpha: f32,
     pub decay_half_life_hours: f64,
     pub prior_from_heuristic: bool,
@@ -26,6 +28,7 @@ impl Default for ClassifierSettings {
         Self {
             enabled: true,
             min_samples: 100,
+            max_weight: super::model::DEFAULT_CLASSIFIER_MAX_WEIGHT,
             prior_alpha: 1.0,
             decay_half_life_hours: 168.0,
             prior_from_heuristic: true,
@@ -75,6 +78,17 @@ impl ClassifierStore {
         *self.settings.lock().expect("classifier settings mutex") = settings;
     }
 
+    fn learned_step_samples(data: &ClassifierData, features: &FeatureVector) -> u64 {
+        features
+            .keys
+            .iter()
+            .find_map(|key| {
+                key.strip_prefix("step_kind:")
+                    .and_then(|step| data.learned_step_samples.get(step).copied())
+            })
+            .unwrap_or(0)
+    }
+
     fn settings(&self) -> ClassifierSettings {
         self.settings
             .lock()
@@ -102,10 +116,16 @@ impl ClassifierStore {
         }
 
         let data = self.inner.lock().expect("classifier mutex");
-        let total = data.total_samples();
+        let step_samples = Self::learned_step_samples(&data, features);
         let p_edge = predict(&data, features, settings.prior_alpha);
-        let (d_final, w) = fuse_difficulty(d_heuristic, p_edge, total, settings.min_samples);
-        let warmed_up = total >= settings.min_samples;
+        let (d_final, w) = fuse_difficulty(
+            d_heuristic,
+            p_edge,
+            step_samples,
+            settings.min_samples,
+            settings.max_weight,
+        );
+        let warmed_up = step_samples >= settings.min_samples;
 
         ClassifierPrediction {
             difficulty: d_final,
@@ -147,6 +167,12 @@ impl ClassifierStore {
                 match label {
                     Label::EdgeOk => entry.edge_ok += 1,
                     Label::CloudNeeded => entry.cloud_needed += 1,
+                }
+                if let Some(step) = key.strip_prefix("step_kind:") {
+                    *data
+                        .learned_step_samples
+                        .entry(step.to_string())
+                        .or_default() += 1;
                 }
             }
             data.meta.total_updates += 1;

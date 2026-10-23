@@ -40,8 +40,15 @@ impl StepKind {
 }
 
 fn cognitive_initial_plan(signals: &RequestSignals) -> bool {
-    cognitive_task_applies(signals)
-        && (signals.intent_analysis || signals.intent_decision || signals.intent_research)
+    if !cognitive_task_applies(signals) {
+        return false;
+    }
+    // Tool-using agent work: analysis/research is execution, not a planning hop.
+    // Decision (and explicit plan intent, checked by the caller) still plans.
+    if signals.tools_enabled {
+        return signals.intent_decision;
+    }
+    signals.intent_analysis || signals.intent_decision || signals.intent_research
 }
 
 pub fn resolve_step_kind(_req: &ChatCompletionRequest, signals: &RequestSignals) -> StepKind {
@@ -145,6 +152,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: false,
             intent_plan: false,
             intent_cloud: false,
@@ -222,6 +230,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: true,
             intent_plan: false,
             intent_cloud: false,

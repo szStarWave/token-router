@@ -69,6 +69,7 @@ pub async fn chat_completions_core(
 
     let routing = state.adaptive_tuner.refresh(&state.config());
     let edge_tps = state.stats.session_edge_tps();
+    let slow_edge_streak = state.stats.slow_edge_streak();
     let mut decision = crate::gateway::routing::decide(
         &state.config(),
         &req,
@@ -81,6 +82,14 @@ pub async fn chat_completions_core(
         Some(state.classifier.as_ref()),
         Some(state.routing_logs.as_ref()),
         state.wordfreq.as_ref(),
+        slow_edge_streak,
+    );
+    let cfg = state.config();
+    crate::gateway::routing::apply_forced_cloud_route(
+        &mut decision,
+        force_cloud_requested(&headers),
+        cfg.fixed_route,
+        cfg.cloud_base_url.is_some(),
     );
     // Count only after a route decision so requests_total == edge+cloud+cascade.
     state.stats.record_request(stream);
@@ -294,6 +303,14 @@ fn record_learning(
             assistant_failed_signal,
         );
     }
+}
+
+fn force_cloud_requested(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-token-router-force-route")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().eq_ignore_ascii_case("cloud"))
+        .unwrap_or(false)
 }
 
 fn apply_sse_headers(headers: &mut HeaderMap) {

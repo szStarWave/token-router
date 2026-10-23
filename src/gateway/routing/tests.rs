@@ -102,6 +102,7 @@ mod tests {
             None,
             None,
             test_wordfreq().as_ref(),
+            0,
         )
     }
 
@@ -125,6 +126,29 @@ mod tests {
             Some(classifier),
             None,
             test_wordfreq().as_ref(),
+            0,
+        )
+    }
+
+    fn decide_test_with_slow_streak(
+        config: &AppConfig,
+        req: &ChatCompletionRequest,
+        sessions: &SessionStore,
+        slow_edge_streak: u32,
+    ) -> crate::gateway::routing::RouteDecision {
+        decide(
+            config,
+            req,
+            sessions,
+            None,
+            None,
+            &EffectiveRouting::passthrough(config),
+            None,
+            None,
+            None,
+            None,
+            test_wordfreq().as_ref(),
+            slow_edge_streak,
         )
     }
 
@@ -479,6 +503,7 @@ mod tests {
             None,
             None,
             test_wordfreq().as_ref(),
+            0,
         );
         assert_eq!(
             decision.route,
@@ -656,7 +681,7 @@ mod tests {
 
     #[test]
     fn openclaw_untrusted_metadata_greeting_stays_edge() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -675,7 +700,7 @@ mod tests {
 
     #[test]
     fn openclaw_untrusted_metadata_no_lexical_rare() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -746,7 +771,7 @@ mod tests {
 
     #[test]
     fn openclaw_large_prompt_greeting_stays_edge() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -869,10 +894,7 @@ mod tests {
         assert_eq!(decision.step_kind, StepKind::MemoryCompact);
         assert_eq!(decision.route, RouteTier::Cloud);
         assert!(
-            decision
-                .reason_codes
-                .iter()
-                .any(|c| c == "GATE_OPENCLAW_COMPACT"),
+            decision.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
             "{:?}",
             decision.reason_codes
         );
@@ -880,7 +902,7 @@ mod tests {
 
     #[test]
     fn openclaw_large_prompt_daily_stays_edge_for_casual_user() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -1495,7 +1517,7 @@ mod tests {
 
     #[test]
     fn seventeen_tool_loop_emits_reason_when_over_half_budget() {
-        let cfg = test_config_with_ctx_max(true, true, 0.0, 10_000);
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 20_000);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -1513,7 +1535,7 @@ mod tests {
 
     #[test]
     fn twenty_three_tool_loop_emits_cap_tier_reason_when_over_half_budget() {
-        let cfg = test_config_with_ctx_max(true, true, 0.0, 10_000);
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 24_000);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
             &cfg,
@@ -2055,6 +2077,138 @@ mod tests {
         }
     }
 
+    fn tool_request(user_text: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some(user_text.into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "read".into(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                },
+            }],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn benchmark_prompts_with_tools_try_edge_before_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let cases = [
+            (
+                "請針對目前可購買的 14 吋商務 AI PC 做一份採購前研究。請比較規格。",
+                "RESEARCH_INTENT",
+            ),
+            (
+                "請分析桌面資料夾內的所有文件。請整理客戶需求與風險。",
+                "ANALYSIS_INTENT",
+            ),
+            (
+                "請分析桌面 Sales_Result.xlsx。",
+                "ANALYSIS_INTENT",
+            ),
+        ];
+        for (text, intent) in cases {
+            let decision = decide_test(&cfg, &tool_request(text), &sessions, None, None);
+            assert_eq!(
+                decision.step_kind,
+                StepKind::ToolSelect,
+                "{text}: {:?}",
+                decision
+            );
+            assert!(
+                !matches!(decision.route, RouteTier::Cloud),
+                "{text} should try edge before cloud: {:?}",
+                decision
+            );
+            assert!(
+                decision.reason_codes.iter().any(|c| c == intent),
+                "{text}: {:?}",
+                decision.reason_codes
+            );
+            assert!(
+                !decision
+                    .reason_codes
+                    .iter()
+                    .any(|c| c == "STEP_INITIAL_PLAN" || c.starts_with("DIFF_L:STEP_INITIAL_PLAN")),
+                "{text}: {:?}",
+                decision.reason_codes
+            );
+            assert!(
+                !decision
+                    .reason_codes
+                    .iter()
+                    .any(|c| c.starts_with("DIFF_L:INTENT_HARD:")),
+                "{text} overlap words must not add INTENT_HARD: {:?}",
+                decision.reason_codes
+            );
+        }
+    }
+
+    #[test]
+    fn research_without_tools_stays_initial_plan() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![Message {
+                    role: Role::User,
+                    content: Some("帮我研究量子计算前沿".into()),
+                    content_parts: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                }],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::InitialPlan, "{:?}", decision);
+    }
+
+    #[test]
+    fn specific_hard_intent_still_counts_on_tool_steps() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let decision = decide_test(
+            &cfg,
+            &tool_request("请排查故障并做架构设计"),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(decision.step_kind, StepKind::ToolSelect);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_L:INTENT_HARD:")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
     #[test]
     fn analysis_intent_raises_difficulty_on_first_hop() {
         let cfg = test_config(true, true);
@@ -2222,17 +2376,23 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert_eq!(decision.step_kind, StepKind::ToolSelect);
-        assert!(
-            matches!(decision.route, RouteTier::Cascade),
-            "{:?}",
+        assert_eq!(
+            decision.route,
+            RouteTier::Edge,
+            "a fitting tool step goes to edge, not cascade: {:?}",
             decision
         );
         assert!(
-            decision
+            decision.reason_codes.iter().any(|c| c == "WORK_EXEC_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision
                 .reason_codes
                 .iter()
                 .any(|c| c.starts_with("WORK_VERIFY_SAMPLE")),
-            "{:?}",
+            "edge execution is not a cascade verify sample: {:?}",
             decision.reason_codes
         );
     }
@@ -2248,9 +2408,10 @@ mod tests {
             None,
             Some(test_multimodal_store().as_ref()),
         );
-        assert!(
-            matches!(decision.route, RouteTier::Cascade),
-            "{:?}",
+        assert_eq!(
+            decision.route,
+            RouteTier::Edge,
+            "a fitting tool step goes to edge: {:?}",
             decision
         );
         assert!(
@@ -2302,11 +2463,17 @@ mod tests {
             Some(experience.as_ref()),
             Some(test_multimodal_store().as_ref()),
         );
+        let heur = |codes: &[String]| -> f32 {
+            codes
+                .iter()
+                .find_map(|c| c.strip_prefix("DIFF_HEUR:").and_then(|v| v.parse().ok()))
+                .expect("DIFF_HEUR")
+        };
         assert!(
-            with.difficulty < without.difficulty,
-            "trusted history should lower difficulty via bias: {} vs {}",
-            with.difficulty,
-            without.difficulty
+            heur(&with.reason_codes) < heur(&without.reason_codes),
+            "trusted history should lower the heuristic before the edge cap: {:?} vs {:?}",
+            with.reason_codes,
+            without.reason_codes
         );
         assert!(
             !with
@@ -2650,6 +2817,7 @@ mod tests {
             None,
             Some(logs.as_ref()),
             test_wordfreq().as_ref(),
+            0,
         );
         assert!(
             decision.reason_codes.iter().any(|c| {
@@ -2686,6 +2854,7 @@ mod tests {
             None,
             Some(logs.as_ref()),
             test_wordfreq().as_ref(),
+            0,
         );
         assert!(
             decision.reason_codes.iter().any(|c| c == "REQ_ROUTE_CACHE_EDGE"),
@@ -2721,6 +2890,7 @@ mod tests {
             None,
             None,
             test_wordfreq().as_ref(),
+            0,
         );
         assert!(
             casual_routes_edge(decision.route),
@@ -2752,6 +2922,7 @@ mod tests {
             None,
             None,
             test_wordfreq().as_ref(),
+            0,
         );
         assert!(
             matches!(decision.route, RouteTier::Cloud),
@@ -2896,7 +3067,7 @@ mod tests {
 
     #[test]
     fn openclaw_greeting_stays_edge_with_poisoned_classifier() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let classifier = ClassifierStore::new_in_memory(ClassifierSettings {
             min_samples: 5,
@@ -2936,7 +3107,7 @@ mod tests {
 
     #[test]
     fn casual_classifier_guard_caps_difficulty() {
-        let cfg = test_config_with_ctx_max(true, true, 1.0, 50_000);
+        let cfg = test_config_with_ctx_max(true, true, 1.0, 262_144);
         let sessions = SessionStore::new_in_memory();
         let classifier = ClassifierStore::new_in_memory(ClassifierSettings {
             min_samples: 5,
@@ -3157,7 +3328,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_delete_on_tool_arg_fill_not_forced_cloud() {
+    fn exec_delete_on_tool_arg_fill_stays_at_cloud_floor() {
         let cfg = test_config(true, true);
         let sessions = SessionStore::new_in_memory();
         let decision = decide_test(
@@ -3168,10 +3339,18 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert_eq!(decision.step_kind, StepKind::ToolArgFill);
-        assert!(
-            matches!(decision.route, RouteTier::Edge | RouteTier::Cascade),
-            "delete exec should not be forced to cloud: {:?}",
+        assert_eq!(
+            decision.route,
+            RouteTier::Cloud,
+            "risky tool floor must stay at cloud after fusion: {:?}",
             decision
+        );
+        let (_, theta_cloud) = Profile::Balanced.thresholds();
+        assert!(
+            decision.difficulty + f32::EPSILON >= theta_cloud,
+            "difficulty {} below theta_cloud {}",
+            decision.difficulty,
+            theta_cloud
         );
         assert!(
             decision.reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL"),
@@ -3185,6 +3364,161 @@ mod tests {
                 .any(|c| c == "GATE_RISKY_TOOL:exec"),
             "{:?}",
             decision.reason_codes
+        );
+    }
+
+    fn padded_user_request(text: &str, pad_chars: usize) -> ChatCompletionRequest {
+        let mut body = text.to_string();
+        body.push_str(&"x".repeat(pad_chars));
+        ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some(body),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: vec![],
+            stream: false,
+            tool_choice: None,
+            max_tokens: None,
+            ..Default::default()
+        }
+    }
+
+    fn test_config_fixed_route(route: &str, ctx_edge_max_tokens: u32) -> AppConfig {
+        let mut file = ConfigFile::default();
+        file.gateway.route = route.into();
+        file.gateway.ctx_edge_max_tokens = ctx_edge_max_tokens;
+        file.upstream.edge = Some(UpstreamEndpoint {
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: None,
+            model: None,
+            upstream_model: None,
+        });
+        file.upstream.cloud = Some(UpstreamEndpoint {
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: Some("test-key".into()),
+            model: None,
+            upstream_model: None,
+        });
+        AppConfig::from_file(file, std::path::PathBuf::from("/tmp/flowy-test")).unwrap()
+    }
+
+    #[test]
+    fn auto_context_over_edge_window_routes_cloud_including_heartbeat() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 1000);
+        let sessions = SessionStore::new_in_memory();
+        let work = decide_test(
+            &cfg,
+            &padded_user_request("请读取表格", 8_000),
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(work.route, RouteTier::Cloud, "{:?}", work);
+        assert!(
+            work.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            work.reason_codes
+        );
+
+        let heartbeat = decide_test(
+            &cfg,
+            &ChatCompletionRequest {
+                model: "flowy-auto".into(),
+                messages: vec![
+                    Message {
+                        role: Role::System,
+                        content: Some("x".repeat(8_000)),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some("[OpenClaw heartbeat poll]".into()),
+                        content_parts: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    },
+                ],
+                tools: vec![],
+                stream: false,
+                tool_choice: None,
+                max_tokens: None,
+                ..Default::default()
+            },
+            &sessions,
+            None,
+            None,
+        );
+        assert_eq!(heartbeat.step_kind, StepKind::HeartbeatAck, "{:?}", heartbeat);
+        assert_eq!(heartbeat.route, RouteTier::Cloud, "{:?}", heartbeat);
+        assert!(
+            heartbeat.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            heartbeat.reason_codes
+        );
+    }
+
+    #[test]
+    fn ctx_overflow_pin_sends_later_heartbeat_to_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = ChatCompletionRequest {
+            model: "flowy-auto".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Some("[OpenClaw heartbeat poll]".into()),
+                content_parts: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            tools: vec![],
+            stream: false,
+            ..Default::default()
+        };
+        let key = conversation_key(&req);
+        sessions.set_ctx_overflow_pin(&key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert_eq!(decision.step_kind, StepKind::HeartbeatAck);
+        assert_eq!(decision.route, RouteTier::Cloud, "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn fixed_edge_and_cloud_ignore_context_overflow_pin() {
+        let sessions = SessionStore::new_in_memory();
+        let req = padded_user_request("hello", 8_000);
+        let key = conversation_key(&req);
+        sessions.set_ctx_overflow_pin(&key);
+
+        let edge_cfg = test_config_fixed_route("edge", 1000);
+        let edge = decide_test(&edge_cfg, &req, &sessions, None, None);
+        assert_eq!(edge.route, RouteTier::Edge, "{:?}", edge);
+        assert!(
+            !edge.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            edge.reason_codes
+        );
+
+        let cloud_cfg = test_config_fixed_route("cloud", 1000);
+        let cloud = decide_test(&cloud_cfg, &req, &sessions, None, None);
+        assert_eq!(cloud.route, RouteTier::Cloud, "{:?}", cloud);
+        assert!(
+            !cloud.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            cloud.reason_codes
         );
     }
 
@@ -3213,12 +3547,202 @@ mod tests {
             Some(test_multimodal_store().as_ref()),
         );
         assert_eq!(decision.step_kind, StepKind::ToolArgFill);
-        assert_eq!(decision.route, RouteTier::Cloud);
+        assert_eq!(
+            decision.route,
+            RouteTier::Edge,
+            "a tool step still under the edge window stays on edge: {:?}",
+            decision
+        );
         assert!(
             decision
                 .reason_codes
                 .iter()
-                .any(|c| c == "GATE_CTX_OVERFLOW"),
+                .any(|c| c.starts_with("DIFF_D:CALIB_WORK_EXEC_EDGE:")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    fn hard_tool_arg_fill_request() -> ChatCompletionRequest {
+        let mut req = pending_tool_request("read", r#"{"path":"a.txt"}"#);
+        req.messages[0].content = Some(
+            "请优化并重构这段代码。The epistemological paradigm shift".into(),
+        );
+        req
+    }
+
+    #[test]
+    fn one_slow_edge_raises_tool_arg_fill_but_still_uses_edge() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = hard_tool_arg_fill_request();
+        let baseline = decide_test(&cfg, &req, &sessions, None, None);
+        let decision = decide_test_with_slow_streak(&cfg, &req, &sessions, 1);
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert!(
+            decision.difficulty > baseline.difficulty,
+            "slow streak should raise difficulty: {} vs {}",
+            decision.difficulty,
+            baseline.difficulty
+        );
+        assert_eq!(
+            decision.route,
+            RouteTier::Cascade,
+            "one slow sample stays on a tier that still generates on edge: {:?}",
+            decision
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "EDGE_SLOW_STREAK_1"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_D:EDGE_SLOW_STREAK:")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn three_slow_edge_samples_send_tool_arg_fill_to_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = hard_tool_arg_fill_request();
+        let decision = decide_test_with_slow_streak(&cfg, &req, &sessions, 3);
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert_eq!(decision.route, RouteTier::Cloud, "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "EDGE_SLOW_STREAK_3"),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn slow_edge_streak_does_not_apply_without_cloud() {
+        let cfg = test_config(true, false);
+        let sessions = SessionStore::new_in_memory();
+        let req = hard_tool_arg_fill_request();
+        let decision = decide_test_with_slow_streak(&cfg, &req, &sessions, 3);
+        assert_eq!(decision.route, RouteTier::Edge, "{:?}", decision);
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("EDGE_SLOW_STREAK_")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn fitting_tool_arg_fill_routes_edge_despite_hard_intent_and_cloud_cache() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let req = hard_tool_arg_fill_request();
+        let key = conversation_key(&req);
+        seed_cloud_cache(&sessions, &key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert_eq!(decision.step_kind, StepKind::ToolArgFill);
+        assert_eq!(decision.route, RouteTier::Edge, "{:?}", decision);
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_L:INTENT_HARD:")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c == "CLOUD_CACHE_BOOST"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "LEXICAL_RARE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_D:CALIB_WORK_EXEC_EDGE:")),
+            "{:?}",
+            decision.reason_codes
+        );
+    }
+
+    #[test]
+    fn tool_error_streak_keeps_execution_on_cloud() {
+        let cfg = test_config(true, true);
+        let sessions = SessionStore::new_in_memory();
+        let mut req = hard_tool_arg_fill_request();
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: Some("Error: first failure".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: Some("call_1".into()),
+            reasoning_content: None,
+        });
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: Some("Error: second failure".into()),
+            content_parts: None,
+            tool_calls: None,
+            tool_call_id: Some("call_2".into()),
+            reasoning_content: None,
+        });
+        let key = conversation_key(&req);
+        seed_cloud_cache(&sessions, &key);
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert!(
+            matches!(
+                decision.step_kind,
+                StepKind::ToolResultDigest | StepKind::ToolArgFill | StepKind::ToolSelect
+            ),
+            "{:?}",
+            decision.step_kind
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_D:CALIB_WORK_EXEC_EDGE:")),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert_eq!(decision.route, RouteTier::Cloud, "{:?}", decision);
+    }
+
+    #[test]
+    fn tool_arg_fill_over_edge_window_stays_cloud() {
+        let cfg = test_config_with_ctx_max(true, true, 0.0, 1000);
+        let sessions = SessionStore::new_in_memory();
+        let mut req = hard_tool_arg_fill_request();
+        req.messages[0].content = Some(format!(
+            "请优化并重构这段代码。{}",
+            "x".repeat(8_000)
+        ));
+        let decision = decide_test(&cfg, &req, &sessions, None, None);
+        assert_eq!(decision.route, RouteTier::Cloud, "{:?}", decision);
+        assert!(
+            decision.reason_codes.iter().any(|c| c == "CTX_OVER_EDGE"),
+            "{:?}",
+            decision.reason_codes
+        );
+        assert!(
+            !decision
+                .reason_codes
+                .iter()
+                .any(|c| c.starts_with("DIFF_D:CALIB_WORK_EXEC_EDGE:")),
             "{:?}",
             decision.reason_codes
         );

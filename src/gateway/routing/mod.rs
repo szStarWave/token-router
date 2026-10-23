@@ -21,7 +21,7 @@ mod tool_risk;
 mod upstream_availability;
 mod work;
 
-pub use keywords::response_has_uncertainty;
+pub use keywords::{response_has_uncertainty, LONG_GEN_EDGE_TPS_MIN};
 pub use adaptive::{EffectiveRouting, compute_effective_routing};
 pub use adaptive_tuner::AdaptiveTuner;
 pub use conversation::conversation_key;
@@ -29,7 +29,7 @@ pub use conversation::conversation_key;
 #[cfg(test)]
 mod tests;
 
-pub use decision::{RouteDecision, RouteTier, RoutingMode, decide};
+pub use decision::{RouteDecision, RouteTier, RoutingMode, apply_forced_cloud_route, decide};
 pub use request_hash::request_context_hash;
 pub use policy::Profile;
 pub use difficulty::DifficultyScore;

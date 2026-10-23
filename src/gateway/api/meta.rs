@@ -327,7 +327,10 @@ pub fn multimodal_strategy_name(m: MultimodalStrategy) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::routing::{RouteDecision, RouteTier, StepKind, Profile, RoutingMode, WorkStrategy};
+    use crate::gateway::routing::{
+        apply_forced_cloud_route, Profile, RouteDecision, RouteTier, RoutingMode, StepKind,
+        WorkStrategy,
+    };
     use crate::gateway::multimodal::MultimodalStrategy;
 
     fn sample_decision(route: RouteTier) -> RouteDecision {
@@ -353,6 +356,26 @@ mod tests {
             lexical_learn: Default::default(),
             routing_log_id: None,
         }
+    }
+
+    #[test]
+    fn force_cloud_header_overrides_edge_decision() {
+        let mut decision = sample_decision(RouteTier::Edge);
+        assert!(apply_forced_cloud_route(&mut decision, true, None, true));
+        assert_eq!(decision.route, RouteTier::Cloud);
+        assert!(decision.reason_codes.iter().any(|code| code == "FORCE_ROUTE_CLOUD"));
+    }
+
+    #[test]
+    fn force_cloud_header_ignored_for_fixed_edge() {
+        let mut decision = sample_decision(RouteTier::Edge);
+        assert!(!apply_forced_cloud_route(
+            &mut decision,
+            true,
+            Some(RouteTier::Edge),
+            true,
+        ));
+        assert_eq!(decision.route, RouteTier::Edge);
     }
 
     #[test]
@@ -406,7 +429,7 @@ mod tests {
             truncate_user_preview_for_log("line1\nline2"),
             "line1 line2"
         );
-        let long = "a".repeat(550);
+        let long = "a".repeat(1_500);
         let out = truncate_user_preview_for_log(&long);
         assert_eq!(out.chars().count(), LOG_USER_PREVIEW_MAX + 1);
         assert!(out.ends_with("\u{2026}"));

@@ -1,5 +1,6 @@
 pub mod data;
 pub mod db;
+mod edge_slow;
 pub mod metrics;
 pub mod tps;
 
@@ -59,6 +60,7 @@ pub struct GatewayStats {
     db: StatsDb,
     stats_json_path: PathBuf,
     pending_latency_ms: Mutex<Option<u64>>,
+    edge_slow: Mutex<edge_slow::EdgeSlowStreak>,
     session_started: Instant,
 }
 
@@ -70,6 +72,7 @@ impl GatewayStats {
             db,
             stats_json_path,
             pending_latency_ms: Mutex::new(None),
+            edge_slow: Mutex::new(edge_slow::EdgeSlowStreak::default()),
             session_started: Instant::now(),
         }))
     }
@@ -118,6 +121,9 @@ impl GatewayStats {
                 if let Err(e) = self.db.record_tps_sample(metrics.tier, tps_x1000) {
                     tracing::warn!(error = %e, "stats tps sample write failed");
                 }
+            }
+            if metrics.tier == "edge" {
+                self.note_edge_generation(tps_x1000 as f64 / 1000.0, metrics.completion_tokens);
             }
         }
         if let Some(ctx) = auth_key {
@@ -238,6 +244,21 @@ impl GatewayStats {
 
     pub fn flush(&self) -> anyhow::Result<()> {
         self.db.flush()
+    }
+
+    fn note_edge_generation(&self, tps: f64, completion_tokens: u32) {
+        self.edge_slow
+            .lock()
+            .expect("edge slow streak")
+            .observe(tps, completion_tokens, data::now_unix());
+    }
+
+    /// Consecutive slow edge generations, decayed by one level every 180s.
+    pub fn slow_edge_streak(&self) -> u32 {
+        self.edge_slow
+            .lock()
+            .expect("edge slow streak")
+            .effective(data::now_unix())
     }
 
     /// Average session edge generation TPS across edge upstream samples.
@@ -1119,6 +1140,36 @@ mod tests {
         assert_eq!(edge_model.model, "test-model");
         assert_eq!(edge_model.input, 100);
         assert_eq!(edge_model.cached, 80);
+    }
+
+    fn edge_gen_metrics(tier: &'static str, tokens: u32, gen_us: u64) -> UpstreamCallMetrics {
+        UpstreamCallMetrics {
+            tier,
+            model: "test-model".to_string(),
+            prompt_tokens: 10,
+            completion_tokens: tokens,
+            cached_tokens: 0,
+            latency_ms: gen_us / 1000,
+            ttft_ms: Some(0),
+            last_token_ms: Some(gen_us / 1000),
+            latency_us: gen_us,
+            ttft_us: Some(0),
+            last_token_us: Some(gen_us),
+            stream: true,
+        }
+    }
+
+    #[test]
+    fn edge_slow_streak_tracks_edge_generation_only() {
+        let stats = GatewayStats::new_in_memory();
+        stats.record_upstream_metrics(&edge_gen_metrics("edge", 20, 2_000_000), None);
+        assert_eq!(stats.slow_edge_streak(), 1);
+        stats.record_upstream_metrics(&edge_gen_metrics("cloud", 20, 2_000_000), None);
+        assert_eq!(stats.slow_edge_streak(), 1, "cloud samples must not change the streak");
+        stats.record_upstream_metrics(&edge_gen_metrics("edge", 8, 2_000_000), None);
+        assert_eq!(stats.slow_edge_streak(), 1, "short completions are ignored");
+        stats.record_upstream_metrics(&edge_gen_metrics("edge", 40, 500_000), None);
+        assert_eq!(stats.slow_edge_streak(), 0, "a fast edge sample clears the streak");
     }
 
     use crate::gateway::stats::metrics::tps_x1000_from_metrics;

@@ -109,7 +109,7 @@ impl DifficultyScore {
         breakdown.push("CTX_RATIO", 0.20 * ctx_ratio.min(1.0));
         breakdown.push("USER_CTX_RATIO", 0.25 * user_ctx_ratio.min(1.0));
         breakdown.push("TOOL_RATIO", 0.05 * tool_ratio.min(1.0));
-        if signals.intent_hard {
+        if intent_hard_applies(signals, step_kind) {
             breakdown.push("INTENT_HARD", 0.30);
         }
         if signals.intent_cloud {
@@ -181,6 +181,20 @@ impl DifficultyScore {
         let d = breakdown.finish();
         (Self(d), breakdown)
     }
+}
+
+fn intent_hard_applies(signals: &RequestSignals, step_kind: StepKind) -> bool {
+    if !signals.intent_hard {
+        return false;
+    }
+    if matches!(
+        step_kind,
+        StepKind::ToolSelect | StepKind::ToolArgFill | StepKind::ToolResultDigest
+    ) && !signals.intent_hard_specific
+    {
+        return false;
+    }
+    true
 }
 
 fn step_kind_code(step_kind: StepKind) -> &'static str {
@@ -336,6 +350,7 @@ mod tests {
             risky_tool_hard_names: Vec::new(),
             risky_tool_soft_names: Vec::new(),
             intent_hard: false,
+            intent_hard_specific: false,
             intent_easy: false,
             intent_plan: false,
             intent_cloud: false,

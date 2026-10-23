@@ -94,6 +94,27 @@ pub struct RouteDecision {
     pub routing_log_id: Option<i64>,
 }
 
+/// Honor a pre-request force-cloud signal from the caller.
+///
+/// Fixed `route=edge` stays on edge. The caller should refuse that case itself
+/// when the prompt does not fit the edge window.
+pub fn apply_forced_cloud_route(
+    decision: &mut RouteDecision,
+    force_cloud: bool,
+    fixed_route: Option<RouteTier>,
+    cloud_configured: bool,
+) -> bool {
+    if !force_cloud || !cloud_configured || matches!(fixed_route, Some(RouteTier::Edge)) {
+        return false;
+    }
+    if decision.route == RouteTier::Cloud {
+        return false;
+    }
+    decision.route = RouteTier::Cloud;
+    decision.reason_codes.push("FORCE_ROUTE_CLOUD".to_string());
+    true
+}
+
 pub fn decide(
     config: &AppConfig,
     req: &ChatCompletionRequest,
@@ -106,6 +127,7 @@ pub fn decide(
     classifier: Option<&ClassifierStore>,
     routing_logs: Option<&RoutingLogStore>,
     wordfreq: &super::WordFreqStore,
+    slow_edge_streak: u32,
 ) -> RouteDecision {
     let profile = config.default_profile;
     let mode = config.routing_mode;
@@ -165,6 +187,33 @@ pub fn decide(
             false,
             mm,
             work,
+            None,
+            Some(features),
+            &last_user_text,
+            config,
+        );
+    }
+
+    if config.fixed_route.is_none()
+        && cloud_configured(config)
+        && (signals.tok_total_in > config.ctx_edge_max_tokens
+            || sessions.ctx_overflow_pinned(&conv_key))
+    {
+        reason_codes.push("CTX_OVER_EDGE".to_string());
+        sessions.record_tokens(&conv_key, signals.tok_total_in);
+        return finish(
+            RouteTier::Cloud,
+            profile,
+            mode,
+            step_kind,
+            &signals,
+            reason_codes,
+            0,
+            1.0,
+            conv_key,
+            false,
+            MultimodalStrategy::None,
+            WorkStrategy::None,
             None,
             Some(features),
             &last_user_text,
@@ -242,7 +291,7 @@ pub fn decide(
     } else {
         None
     };
-    let cache_parts = cloud_cache_extra_parts(
+    let mut cache_parts = cloud_cache_extra_parts(
         cloud_cache.anchor_unix,
         cloud_cache.peak_linear,
         route_hint_route.as_deref(),
@@ -250,6 +299,14 @@ pub fn decide(
         config.cloud_cache_decay_half_life_secs,
         config.cloud_cache_boost_max,
     );
+    if matches!(
+        step_kind,
+        StepKind::ToolSelect | StepKind::ToolArgFill | StepKind::ToolResultDigest
+    ) {
+        for part in &mut cache_parts {
+            part.1 *= super::cloud_cache::TOOL_STEP_CLOUD_CACHE_SCALE;
+        }
+    }
     for (key, linear) in &cache_parts {
         if linear.abs() > f32::EPSILON && !reason_codes.iter().any(|c| c == key) {
             reason_codes.push(key.clone());
@@ -400,6 +457,12 @@ pub fn decide(
         multimodal_cloud_hint,
         &mut reason_codes,
     );
+    difficulty = apply_slow_edge_streak(
+        difficulty,
+        slow_edge_streak,
+        cloud_configured(config),
+        &mut reason_codes,
+    );
 
     if routing.enabled {
         reason_codes.push(format!(
@@ -415,6 +478,13 @@ pub fn decide(
                 reason_codes.push(r.clone());
             }
         }
+    }
+
+    if reason_codes.iter().any(|c| c == "GATE_RISKY_TOOL") && difficulty < routing.theta_cloud
+    {
+        let delta = routing.theta_cloud - difficulty;
+        reason_codes.push(format!("DIFF_D:GATE_RISKY_TOOL_FLOOR:{delta:+.4}"));
+        difficulty = routing.theta_cloud;
     }
 
     reason_codes.push(format!("DIFFICULTY_{:.2}", difficulty));
@@ -536,6 +606,37 @@ fn derive_multimodal_strategy(
     }
 }
 
+fn slow_edge_penalty(streak: u32) -> f32 {
+    match streak {
+        0 => 0.0,
+        1 => 0.08,
+        2 => 0.18,
+        _ => 0.28,
+    }
+}
+
+/// Raise difficulty after work-exec calibration so a slow edge does not stay
+/// pinned under theta_edge. One slow sample stays in the cascade band (edge
+/// still generates). Further slow samples keep raising the score.
+fn apply_slow_edge_streak(
+    difficulty: f32,
+    streak: u32,
+    cloud_configured: bool,
+    reason_codes: &mut Vec<String>,
+) -> f32 {
+    let penalty = slow_edge_penalty(streak);
+    if penalty <= f32::EPSILON || !cloud_configured {
+        return difficulty;
+    }
+    reason_codes.push(format!("EDGE_SLOW_STREAK_{streak}"));
+    let next = (difficulty + penalty).clamp(0.0, 1.0);
+    let delta = next - difficulty;
+    if delta.abs() > f32::EPSILON {
+        reason_codes.push(format!("DIFF_D:EDGE_SLOW_STREAK:{delta:+.4}"));
+    }
+    next
+}
+
 fn calibrate_difficulty(
     difficulty: f32,
     signals: &RequestSignals,
@@ -607,6 +708,27 @@ fn calibrate_difficulty(
         let next = d.min(ceiling);
         if next < d {
             reason_codes.push(format!("DIFF_D:CALIB_EDGE_INTENT:{:+.4}", next - d));
+        }
+        d = next;
+    }
+    // Tool execution that still fits the edge window should hit the edge.
+    // Hard-intent, lexical rarity, and cloud-cache stickiness belong to the
+    // planning turn; they must not keep every tool hop on cloud.
+    // A real error streak, a multimodal request, or a prompt over the window
+    // keeps the normal difficulty path (cloud / CTX_OVER_EDGE).
+    if edge_configured(config)
+        && !signals.multimodal
+        && signals.consecutive_tool_error_streak < 2
+        && signals.tok_total_in <= config.ctx_edge_max_tokens
+        && matches!(
+            step_kind,
+            StepKind::ToolSelect | StepKind::ToolArgFill | StepKind::ToolResultDigest
+        )
+    {
+        let ceiling = routing.theta_edge - f32::EPSILON;
+        let next = d.min(ceiling);
+        if next < d {
+            reason_codes.push(format!("DIFF_D:CALIB_WORK_EXEC_EDGE:{:+.4}", next - d));
         }
         d = next;
     }

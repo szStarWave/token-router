@@ -21,16 +21,21 @@ pub fn predict(data: &ClassifierData, features: &FeatureVector, alpha: f32) -> f
     softmax_edge_prob(log_edge_sum, log_cloud_sum)
 }
 
+/// Bayes share of the fused difficulty. Never replaces the rule score.
+pub const DEFAULT_CLASSIFIER_MAX_WEIGHT: f32 = 0.60;
+
 pub fn fuse_difficulty(
     d_heuristic: f32,
     p_edge_ok: f32,
-    total_samples: u64,
+    step_samples: u64,
     min_samples: u64,
+    max_weight: f32,
 ) -> (f32, f32) {
+    let max_weight = max_weight.clamp(0.0, DEFAULT_CLASSIFIER_MAX_WEIGHT);
     let w = if min_samples == 0 {
-        1.0
+        max_weight
     } else {
-        (total_samples as f32 / min_samples as f32).min(1.0)
+        (step_samples as f32 / min_samples as f32).min(1.0) * max_weight
     };
     let d_bayes = 1.0 - p_edge_ok;
     let d_final = (1.0 - w) * d_heuristic + w * d_bayes;
@@ -160,11 +165,8 @@ fn step_kind_feature_key(k: StepKind) -> &'static str {
 
 pub fn label_from_outcome(
     outcome: crate::gateway::experience::RequestOutcome,
-    tool_error_streak: u32,
+    _tool_error_streak: u32,
 ) -> Option<Label> {
-    if tool_error_streak > 0 {
-        return Some(Label::CloudNeeded);
-    }
     if outcome.edge_ok && !outcome.cascade_fallback && !outcome.upstream_error {
         Some(Label::EdgeOk)
     } else if outcome.cascade_fallback || outcome.upstream_error {
@@ -237,12 +239,20 @@ mod tests {
 
     #[test]
     fn fuse_transitions_with_sample_count() {
-        let (d, w) = fuse_difficulty(0.2, 0.9, 50, 100);
-        assert!((w - 0.5).abs() < f32::EPSILON);
-        assert!((d - 0.15).abs() < 0.01);
-        let (d_full, w_full) = fuse_difficulty(0.2, 0.9, 200, 100);
-        assert!((w_full - 1.0).abs() < f32::EPSILON);
-        assert!((d_full - 0.1).abs() < f32::EPSILON);
+        let (d, w) = fuse_difficulty(0.2, 0.9, 50, 100, DEFAULT_CLASSIFIER_MAX_WEIGHT);
+        assert!((w - 0.30).abs() < 0.001);
+        // 0.70 * 0.2 + 0.30 * 0.1
+        assert!((d - 0.17).abs() < 0.01);
+        let (d_full, w_full) = fuse_difficulty(0.2, 0.9, 200, 100, DEFAULT_CLASSIFIER_MAX_WEIGHT);
+        assert!((w_full - 0.60).abs() < 0.001);
+        // 0.40 * 0.2 + 0.60 * 0.1
+        assert!((d_full - 0.14).abs() < 0.01);
+        let (d_rules_higher, _) =
+            fuse_difficulty(0.8, 0.9, 200, 100, DEFAULT_CLASSIFIER_MAX_WEIGHT);
+        assert!(
+            d_rules_higher > d_full,
+            "rule score must still move the fused difficulty: {d_rules_higher} vs {d_full}"
+        );
     }
 
     #[test]
@@ -273,7 +283,7 @@ mod tests {
                 cascade_fallback: false,
                 upstream_error: false,
             }, 1),
-            Some(Label::CloudNeeded)
+            Some(Label::EdgeOk)
         );
     }
 

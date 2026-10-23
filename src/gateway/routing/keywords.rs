@@ -369,8 +369,49 @@ const TOOL_ERROR_KO: &[&str] = &[
 ];
 const _: () = assert!(TOOL_ERROR_KO.len() >= 64);
 
+/// How much of a tool body is scanned for error keywords.
+/// Page dumps (HTML/CSS) often contain words like "error" or "directory"
+/// far past the start; those are not tool failures.
+const TOOL_ERROR_HEAD_CHARS: usize = 256;
+
 pub fn tool_result_has_error(text: &str) -> bool {
-    matches_any_lang(text, &[&TOOL_ERROR_ZH, &TOOL_ERROR_EN, &TOOL_ERROR_YUE, &TOOL_ERROR_JA, &TOOL_ERROR_KO])
+    if structured_tool_error(text) {
+        return true;
+    }
+    let head: String = text.chars().take(TOOL_ERROR_HEAD_CHARS).collect();
+    matches_any_lang(
+        &head,
+        &[
+            &TOOL_ERROR_ZH,
+            &TOOL_ERROR_EN,
+            &TOOL_ERROR_YUE,
+            &TOOL_ERROR_JA,
+            &TOOL_ERROR_KO,
+        ],
+    )
+}
+
+/// JSON tool payloads: a top-level `"status":"error"` (or failed) or a
+/// non-empty `"error"` field. Keyword scan does not see the rest of the body.
+fn structured_tool_error(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return false;
+    };
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    if let Some(status) = obj.get("status").and_then(|v| v.as_str()) {
+        let status = status.to_ascii_lowercase();
+        if status == "error" || status == "failed" || status == "failure" {
+            return true;
+        }
+    }
+    match obj.get("error") {
+        Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) | None => false,
+        Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+        Some(serde_json::Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(_) => true,
+    }
 }
 
 // --- HARD_INTENT ---
@@ -716,6 +757,24 @@ const _: () = assert!(HARD_INTENT_KO.len() >= 64);
 
 pub fn contains_hard_intent(text: &str) -> bool {
     matches_any_lang(text, &[&HARD_INTENT_ZH, &HARD_INTENT_EN, &HARD_INTENT_YUE, &HARD_INTENT_JA, &HARD_INTENT_KO])
+}
+
+/// Broad cognitive verbs that also sit in `HARD_INTENT`. Tool steps should not
+/// take the extra `INTENT_HARD` bump when these are the only hard hits.
+const COGNITIVE_HARD_OVERLAP: &[&str] = &[
+    "分析", "研究", "整理", "比较", "对比", "比較", "對比",
+];
+
+/// Hard intent that remains after stripping cognitive-overlap words.
+pub fn contains_specific_hard_intent(text: &str) -> bool {
+    if !contains_hard_intent(text) {
+        return false;
+    }
+    let mut stripped = text.to_string();
+    for word in COGNITIVE_HARD_OVERLAP {
+        stripped = stripped.replace(word, "");
+    }
+    contains_hard_intent(&stripped)
 }
 
 // --- PLAN_INTENT ---
@@ -3752,6 +3811,19 @@ mod tests {
     fn tool_error_smoke() {
         assert!(tool_result_has_error("Error: command failed"));
         assert!(tool_result_has_error("失败: exit code 1"));
+        assert!(tool_result_has_error(r#"{"status":"error","message":"boom"}"#));
+        assert!(tool_result_has_error(r#"{"error":"connection reset"}"#));
+        let mut html = "<!DOCTYPE html><html><style>".to_string();
+        html.push_str(&"x".repeat(300));
+        html.push_str(".error{color:red}.directory{display:block}</style></html>");
+        assert!(
+            !tool_result_has_error(&html),
+            "error words past the head of an HTML dump are not a tool failure"
+        );
+        let mut exited = r#"{"status":"exited","output":""#.to_string();
+        exited.push_str(&"x".repeat(300));
+        exited.push_str(r#".error { color: red }"}"#);
+        assert!(!tool_result_has_error(&exited));
     }
 
     #[test]

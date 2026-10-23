@@ -737,6 +737,7 @@ fn classifier_snapshot_from_disk(
         ClassifierSettings {
             enabled: gw.classifier_enabled,
             min_samples: gw.classifier_min_samples,
+            max_weight: gw.classifier_max_weight.clamp(0.0, 0.60),
             prior_alpha: gw.classifier_prior_alpha,
             decay_half_life_hours: gw.classifier_decay_half_life_hours,
             prior_from_heuristic: gw.classifier_prior_from_heuristic,

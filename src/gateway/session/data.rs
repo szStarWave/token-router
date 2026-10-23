@@ -28,6 +28,9 @@ pub struct SessionData {
     pub last_step_kind: Option<String>,
     #[serde(default)]
     pub last_updated_unix: u64,
+    /// Set after a real edge context-overflow error in auto (edge+cloud) mode.
+    #[serde(default)]
+    pub ctx_overflow_pin: bool,
 }
 
 impl SessionData {
