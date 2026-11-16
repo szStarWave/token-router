@@ -67,12 +67,12 @@ fn facts(session_key: &str) -> SessionFacts {
 #[test]
 fn migrate_is_idempotent_across_reopen() {
     let temp = TempDb::new("migrate");
-    assert_eq!(temp.db().schema_version().unwrap(), 4);
+    assert_eq!(temp.db().schema_version().unwrap(), 5);
 
     let path = temp.into_path();
 
     let reopened = Db::open(&path).expect("reopen");
-    assert_eq!(reopened.schema_version().unwrap(), 4);
+    assert_eq!(reopened.schema_version().unwrap(), 5);
     drop(reopened);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
@@ -98,7 +98,7 @@ fn newer_schema_refuses_to_start() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 4
+            supported: 5
         }
     ));
 

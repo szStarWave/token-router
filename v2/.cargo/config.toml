@@ -1,2 +1,6 @@
 [alias]
 xtask = "run --package xtask --"
+
+[env]
+# ts-rs 生成 TS 类型时用 `number` 表示 i64/u64（JSON 序列化本来就是数字）。
+TS_RS_LARGE_INT = "number"

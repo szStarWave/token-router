@@ -149,6 +149,35 @@ impl Pipeline {
         Self::new(db, catalog, HttpUpstream::default())
     }
 
+    /// 共享 DB 句柄版（P4 管理面：control/server/client 共用同一个 `Arc<Db>`）。
+    pub fn from_shared(db: std::sync::Arc<Db>, catalog: Catalog) -> Self {
+        Self::new_shared(db, catalog, HttpUpstream::default())
+    }
+
+    /// 共享 DB 句柄 + 显式上游。
+    pub fn new_shared(db: std::sync::Arc<Db>, catalog: Catalog, upstream: HttpUpstream) -> Self {
+        // 判官构建失败（TLS/配置）只可能是进程级问题：降级为 off 并记录，请求仍可服务。
+        let judge = match crate::judge::JudgeRuntime::new(catalog.judge.clone()) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("judge disabled: {error}");
+                crate::judge::JudgeRuntime::new(crate::judge::JudgeSettings::default())
+                    .expect("off judge runtime")
+            }
+        };
+        let cost_gate = catalog.cost_gate;
+        let shadow_tx = spawn_shadow_writer(std::sync::Arc::clone(&db));
+        Self {
+            db,
+            catalog: std::sync::Arc::new(catalog),
+            upstream,
+            judge: std::sync::Arc::new(judge),
+            cost_gate,
+            shadow_tx,
+            warned_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        }
+    }
+
     /// 判官是否 enabled（诊断/测试）。
     pub fn judge_mode(&self) -> crate::judge::JudgeMode {
         self.judge.mode()

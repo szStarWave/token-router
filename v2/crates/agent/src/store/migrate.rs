@@ -19,6 +19,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M2_LEDGER_JUDGE,
     M3_LEDGER_CONTRIBUTIONS,
     M4_LEDGER_AUTHORITY,
+    M5_TOKENS_AUDIT,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -245,3 +246,33 @@ const M3_LEDGER_CONTRIBUTIONS: &str = "ALTER TABLE ledger ADD COLUMN contributio
 
 /// migration 4：请求授权身份入账（P0a-13；P0–P3 只填 `authority_id`）。
 const M4_LEDGER_AUTHORITY: &str = "ALTER TABLE ledger ADD COLUMN authority_json TEXT;";
+
+/// migration 5（P4-019）：scoped token store 与配置审计。
+/// 只存 sha256；`config_audit` 只存字段路径与脱敏摘要。
+const M5_TOKENS_AUDIT: &str = r#"
+CREATE TABLE tokens (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  token_sha256  TEXT NOT NULL UNIQUE,
+  prefix        TEXT NOT NULL,
+  scopes_json   TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  expires_at    INTEGER,
+  revoked_at    INTEGER
+);
+
+CREATE TABLE config_audit (
+  id            INTEGER PRIMARY KEY,
+  at            INTEGER NOT NULL,
+  actor         TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  from_revision TEXT,
+  to_revision   TEXT,
+  note          TEXT,
+  diff_json     TEXT
+);
+
+CREATE INDEX idx_ledger_authority
+  ON ledger(json_extract(authority_json, '$.authority_id'), created_at);
+"#;

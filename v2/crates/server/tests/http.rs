@@ -251,9 +251,29 @@ async fn streaming_chat_returns_sse() {
 #[tokio::test]
 async fn admin_stats_matches_ledger() {
     let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
-    let db = Db::open_in_memory().expect("db");
-    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
-    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+    let db = Arc::new(Db::open_in_memory().expect("db"));
+    let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog(&mock.base_url())));
+    // P4：stats 走 tr-control 的 /v2/admin/stats/summary（token 鉴权）。
+    let plaintext = tr_agent::store::tokens::generate_token();
+    let record = tr_agent::store::tokens::TokenRecord {
+        id: "t-stats".to_string(),
+        name: "test-admin".to_string(),
+        token_sha256: tr_agent::store::tokens::sha256_hex(&plaintext),
+        prefix: plaintext.chars().take(8).collect(),
+        scopes: vec![tr_contracts::AdminScope::AdminRead],
+        created_at: 0,
+        last_used_at: None,
+        expires_at: None,
+        revoked_at: None,
+    };
+    tr_agent::store::tokens::insert(&db, &record).expect("insert token");
+
+    let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled)).merge(
+        tr_control::router(tr_control::ControlState::new(
+            pipeline.clone(),
+            tr_control::AdminAuth::new(db, None),
+        )),
+    );
 
     let ok = app
         .clone()
@@ -265,7 +285,8 @@ async fn admin_stats_matches_ledger() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/v2/admin/stats")
+                .uri("/v2/admin/stats/summary")
+                .header("Authorization", format!("Bearer {plaintext}"))
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -277,7 +298,7 @@ async fn admin_stats_matches_ledger() {
     assert_eq!(value["requests"], 1);
     assert_eq!(value["successes"], 1);
     assert_eq!(value["success_rate"], 1.0);
-    assert!(value["answer_cost_micros"].as_i64().unwrap_or(0) > 0);
+    assert!(value["cost_micros"]["answer"].as_i64().unwrap_or(0) > 0);
 
     mock.shutdown();
 }
@@ -285,26 +306,43 @@ async fn admin_stats_matches_ledger() {
 #[tokio::test]
 async fn control_api_requires_admin_token_and_redacts_secrets() {
     let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
-    let db = Db::open_in_memory().expect("db");
-    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let db = Arc::new(Db::open_in_memory().expect("db"));
+    let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog(&mock.base_url())));
 
     // 先产生一条账本。
     let chat = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled));
     let response = chat.oneshot(post_chat(None)).await.expect("chat");
     assert_eq!(response.status(), StatusCode::OK);
 
+    // P4 管理 API：scoped token store；手工插入一个 bootstrap admin token。
+    let plaintext = tr_agent::store::tokens::generate_token();
+    let record = tr_agent::store::tokens::TokenRecord {
+        id: "t-test".to_string(),
+        name: "test-admin".to_string(),
+        token_sha256: tr_agent::store::tokens::sha256_hex(&plaintext),
+        prefix: plaintext.chars().take(8).collect(),
+        scopes: vec![
+            tr_contracts::AdminScope::AdminRead,
+            tr_contracts::AdminScope::AdminWrite,
+            tr_contracts::AdminScope::AdminApprove,
+        ],
+        created_at: 0,
+        last_used_at: None,
+        expires_at: None,
+        revoked_at: None,
+    };
+    tr_agent::store::tokens::insert(&db, &record).expect("insert token");
+    let auth = tr_control::AdminAuth::new(db.clone(), None);
+
     let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled)).merge(
-        tr_control::router(tr_control::ControlState::new(
-            pipeline,
-            Some("admin-secret".to_string()),
-        )),
+        tr_control::router(tr_control::ControlState::new(pipeline, auth)),
     );
 
     let denied = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v2/admin/config")
+                .uri("/v2/admin/status")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -312,12 +350,26 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         .expect("response");
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
 
+    // 错 token 也是 401。
+    let wrong = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/status")
+                .header("x-admin-token", "admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
     let allowed = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v2/admin/config")
-                .header("x-admin-token", "admin-secret")
+                .uri("/v2/admin/status")
+                .header("Authorization", format!("Bearer {plaintext}"))
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -325,17 +377,17 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         .expect("response");
     assert_eq!(allowed.status(), StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&body_text(allowed).await).expect("json");
+    assert_eq!(value["api_version"], 1);
     assert_eq!(value["default_virtual_model"], "auto");
-    assert!(value["candidates"][0].get("credential_ref").is_some());
-    // 配置视图里不能出现密钥值字段。
-    assert!(value["candidates"][0].get("credential").is_none());
+    assert!(value["config_digest"].is_string());
 
+    // requests 列表（新契约：items + 游标分页）。
     let ledger = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v2/admin/ledger?limit=10")
-                .header("x-admin-token", "admin-secret")
+                .uri("/v2/admin/requests?limit=10")
+                .header("Authorization", format!("Bearer {plaintext}"))
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -343,15 +395,16 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         .expect("response");
     assert_eq!(ledger.status(), StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&body_text(ledger).await).expect("json");
-    assert_eq!(value["rows"].as_array().expect("rows").len(), 1);
+    assert_eq!(value["items"].as_array().expect("items").len(), 1);
 
+    // 审批写操作需要 admin:approve。
     let approval = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/v2/admin/approvals")
-                .header("x-admin-token", "admin-secret")
+                .header("Authorization", format!("Bearer {plaintext}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -372,14 +425,14 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         .oneshot(
             Request::builder()
                 .uri("/v2/admin/approvals?limit=10")
-                .header("x-admin-token", "admin-secret")
+                .header("Authorization", format!("Bearer {plaintext}"))
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
         .expect("response");
     let value: serde_json::Value = serde_json::from_str(&body_text(approvals).await).expect("json");
-    assert_eq!(value["rows"][0]["tool_name"], "shell_exec");
+    assert_eq!(value["items"][0]["tool_name"], "shell_exec");
 
     mock.shutdown();
 }

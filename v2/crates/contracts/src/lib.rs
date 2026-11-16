@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod canonical;
 pub mod errors;
 pub mod ids;
@@ -25,6 +26,7 @@ pub mod snapshot;
 pub mod state;
 pub mod verdict;
 
+pub use admin::*;
 pub use canonical::*;
 pub use errors::*;
 pub use ids::*;

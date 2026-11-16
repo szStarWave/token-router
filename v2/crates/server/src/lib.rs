@@ -99,7 +99,6 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(responses_create))
-        .route("/v2/admin/stats", get(admin_stats))
         .with_state(state)
 }
 
@@ -135,7 +134,9 @@ async fn models(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"object": "list", "data": data}))
 }
 
-/// 账本指标（P2-10）：与账本同源，避免“日志口径”和“账本口径”分裂。
+/// 账本指标（P2-10 → P4 由 tr-control 的 `/v2/admin/stats/summary` 提供，
+/// 此处保留薄包装供嵌入式调用方使用；不再注册路由）。
+#[allow(dead_code)]
 async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if state.auth.authenticate(&headers).is_err() {
         return error_response(

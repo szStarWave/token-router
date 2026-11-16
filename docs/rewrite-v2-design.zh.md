@@ -156,7 +156,7 @@
 - 多租户、HA、云端控制面（本地单人/小团队网关）。
 - per-step（工具步间）模型切换作为默认行为。
 - 内置模型能力权威库（候选画像由使用者声明，缺证据记 unknown）。
-- P0–P3 不交付新客户端；新桌面端/CLI/管理台/Embedding 在 P4（见 §13）。
+- P0–P3 不交付新客户端；P4 交付 v2 原生客户端/CLI/管理台与 Agent onboarding；embed/媒体在其后独立评估（见 §13）。
 - **v1 内部兼容**：配置格式、管理 API、桌面端、FFI、model 别名、stats/sessions/routing_logs 数据；v2 是新产品线，不迁移。
 - 第三方 Agent 的 wire 协议不在此列：它们是外部依赖，必须继续支持。
 - 流式中途换模型（见 §10.6）。
@@ -165,10 +165,10 @@
 
 v2 是**完整产品线重写**：网关内核 + 协议面 + 自有客户端（桌面/CLI/管理台）+ Agent onboarding + Embedding/FFI。
 
-**分期边界**：本设计文档的 S0–P3（实施计划 82 个任务）是本次实施与验收范围；P4（客户端/管理台/onboarding/embed/图片视频）在 §13 中标注为 **TBD、不排期**，不属于本次交付，也不以本次的测试/门禁结果宣称完成。P4 的入口条件见实施计划 §十。
+**分期边界**：本设计文档的 S0–P3（实施计划 82 个任务）是本次实施与验收范围。P4（v2 原生客户端/管理台/onboarding）是**独立交付**：当前规划就绪、未开工，不计入本次验收，也不以本次的测试/门禁结果宣称完成。P4 不做 v1 迁移/兼容；其技术方案与开发计划见 [`p4-client-refactor-plan.zh.md`](./p4-client-refactor-plan.zh.md)、[`p4-client-development-plan.zh.md`](./p4-client-development-plan.zh.md)。embed/媒体能力仍留在 P4 之后，不在本次客户端方案内。
 
 - P0–P3：内核、server、最小 control；不做 v1 兼容，也不发布新客户端。
-- P4：新桌面端/CLI/管理台、Agent onboarding、Embedding/FFI、图片/视频。
+- P4 客户端：新桌面端/CLI/管理台、Agent onboarding；embed/FFI、图片/视频在 P4 之后作为独立工作流。
 - 外部 Agent 的 wire 协议（Chat / Responses / Anthropic）保持稳定；它们不可被重写。
 - v1 的配置、管理 API、桌面端、FFI、数据、model 别名不作为兼容约束。
 - 开发期可以用独立端口/home 做验证，但发布即 v2 新产品线，不存在“逐步替换 v1”的兼容负担。
@@ -280,7 +280,7 @@ v2 不再维护“与 v1 逐项兼容”的矩阵；按层划分交付物：
 
 - **唯一硬兼容面**：外部 Agent 的 wire 协议与模型列表；Claude Code / Codex / Hermes 不能重写。
 - v1 配置、管理 API、桌面端、FFI、数据、model 别名全部不承诺兼容。
-- P0–P3 交付内核 + server + 最小 control；P4 交付新客户端、Agent onboarding、embed 与媒体能力。
+- P0–P3 交付内核 + server + 最小 control；P4 交付 v2 原生客户端与 Agent onboarding；embed 与媒体能力在 P4 之后独立评估。
 - 没有“并行运行后替换 v1”的迁移负担；开发期可用独立端口/home 验证，发布即 v2 产品线。
 - **客户端通信边界**：新桌面/CLI/管理台只通过 `server`（Agent 流量）与 `control`（管理）HTTP API；不直接读 SQLite，不嵌入内核；`embed` 只给宿主提供进程内启动/FFI，不暴露内部 store。
 
@@ -1958,9 +1958,9 @@ pub struct ReasonCode {
 | **P1 判官与棘轮**（4 周） | `decide` + shadow + `Classify`（shadow）+ `Escalation` + `ReleaseCheck` + judge 预算/熔断 | ① `judge test` Passed + 真实流量 shadow 报告（≥N 条，一致率/延迟/预算消耗）；② 注入首选候选连错/工具循环：第 2 次同类失败后 latch；非流式当轮改强档，流式下一轮不再探弱档；③ 一好一坏交替不升级；④ 无会话键退化为每轮从零 + 一次 warn；⑤ judge off 时释放只能靠 `strong_max_calls`（v2 设计；Switchyard 无此行为） |
 | **P2 成本闸与评测**（4 周） | 成本闸（先 shadow）+ `Classify` active + `CompetenceGuard`（可选）+ 评测集 + profile 版本化 + 指标/追踪 | ① 固定任务集三列对照表（成功率/等价成本/首 token 延迟）落盘；② `SWITCH_DENIED_*` 占比与原因可解释；③ 缺价格/缺缓存数据的行为符合 §9.4；④ 判官成本进入账本；⑤ CompetenceGuard 在任务变化时抑制；⑥ 成本闸校准达到 MAPE ≤ 25%、false deny ≤ 5% |
 | **P3 多模型/虚拟模型与审批**（4–6 周） | 多 slot Plan 全量 + 虚拟模型目录 + 每虚拟模型策略 + 审批复用 + 信任度放量（可选） | ① 新增物理候选只改配置/控制面，`core` diff 为 0；② 新增虚拟模型只改配置，`core` diff 为 0；③ Selection / Dispatch 分离且账本记录；④ 每虚拟模型策略与 state 独立；⑤ 审批与路由共享类型/配置，但预算池独立 |
-| **P4 产品交付**（TBD，范围外） | 新桌面端/CLI/管理台、虚拟模型编辑器、Agent onboarding、embed/FFI、图片视频 | 本次不验收；启动前提见实施计划 §十（≥4 周 dogfood、真实客户端无回归、管理面可定位坏决策） |
+| **P4 产品交付**（独立交付，规划中、未开工） | v2 原生桌面端/CLI/管理台、虚拟模型编辑器、Agent onboarding；客户端方案见 [`p4-client-refactor-plan.zh.md`](./p4-client-refactor-plan.zh.md)，开发计划见 [`p4-client-development-plan.zh.md`](./p4-client-development-plan.zh.md) | 不纳入 S0–P3 验收；方案/计划评审通过后按 M0–M7 阶段验收；不做 v1 迁移/兼容 |
 
-> P0–P3 是**独立开发/验证**，不承诺与 v1 并行或替换；S0 不通过不进入 P0a；P4 作为 v2 产品正式发布，按 §11.5 的评测结论决定放量。**P4 不属于本次实施与验收范围。**
+> P0–P3 是**独立开发/验证**，不承诺与 v1 并行或替换；S0 不通过不进入 P0a；P4 作为独立的 v2 产品交付，按自己的 M0–M7 阶段验收与 §11.5 的评测结论决定放量。**P4 不属于本次 S0–P3 实施与验收范围。**
 
 ---
 
@@ -2008,7 +2008,8 @@ pub struct ReasonCode {
 | `policy.rs` θ 枚举分支 | **丢弃** | profile 配置化阈值 + 候选 strength |
 | `cloud_sticky_until_unix` | **丢弃** | 事件型 latch + CacheAnchor |
 | `stats/db.rs` 决策写入耦合 | **丢弃** | `ledger` 单一写路径 |
-| 图片 / 视频 / agent_setup / WSL / OTA | **延后** | P4 独立工作流 |
+| 图片 / 视频 / embed | **延后** | P4 之后的独立工作流；不进入 P4 客户端方案 |
+| agent_setup / WSL / OTA | **迁移到 P4** | P4 客户端的 `tr-onboard` 与打包章节 |
 
 ### 15.2 StepKind 收敛映射
 

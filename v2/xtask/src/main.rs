@@ -50,6 +50,8 @@ const ALLOWED: &[(&str, &[&str])] = &[
         "tr-cli",
         &["tr-contracts", "tr-proto", "tr-core", "tr-agent"],
     ),
+    ("tr-client", &["tr-contracts"]),
+    ("tr-onboard", &[]),
     ("mock-upstream", &[]),
     ("xtask", &["tr-proto", "tr-agent"]),
 ];
@@ -58,7 +60,8 @@ const ALLOWED: &[(&str, &[&str])] = &[
 const CORE_FORBIDDEN_DEPS: &[&str] = &["tokio", "reqwest", "rusqlite", "axum", "tower", "hyper"];
 
 /// `tr-contracts` 允许的外部依赖：保持纯类型。
-const CONTRACTS_ALLOWED_DEPS: &[&str] = &["serde", "serde_json", "sha2", "uuid", "thiserror"];
+const CONTRACTS_ALLOWED_DEPS: &[&str] =
+    &["serde", "serde_json", "sha2", "uuid", "thiserror", "ts-rs"];
 
 fn main() {
     let task = std::env::args()
@@ -68,6 +71,7 @@ fn main() {
         "check-deps" => check_deps(),
         "fixtures-check" => fixtures_check(),
         "config-only-check" => config_only_check(),
+        "contract-check" => contract_check(),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -88,6 +92,7 @@ fn print_help() {
          \x20 fixtures-check  S0 协议覆盖 + 流式事件门禁（默认阈值 95%）\n\
          \x20                 --fixtures <dir> --report <path> --min-coverage <0..1>\n\
          \x20 config-only-check  P3-18：只改 TOML 新增候选/虚拟模型，core diff = 0\n\
+         \x20 contract-check   P4-003：契约 DTO → TS 类型生成物无 diff\n\
          \x20 help            显示本帮助"
     );
 }
@@ -440,6 +445,111 @@ fn write_gap_report(
 }
 
 /// P3-18：证明“新增候选/虚拟模型只改 TOML，`core` diff = 0”。
+/// P4-003：契约生成门禁。
+///
+/// 重新生成 `tr-contracts` 的 TS 绑定并与仓库中的生成物比较：
+/// 任何人改了 admin DTO 但没有重新导出类型，此门禁立即失败。
+/// 生成的临时目录与仓库内 `bindings/` 逐一对比，不污染工作区。
+fn contract_check() -> i32 {
+    let root = workspace_root();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+
+    let temp = match std::env::temp_dir().join("tr-contract-check").to_str() {
+        Some(path) => path.to_string(),
+        None => {
+            eprintln!("cannot create temp path");
+            return 2;
+        }
+    };
+    let _ = std::fs::remove_dir_all(&temp);
+
+    // 在临时目录重新导出（TS_RS_EXPORT_DIR 控制导出位置）。
+    let output = match Command::new(&cargo)
+        .args(["test", "-p", "tr-contracts", "--lib", "export_bindings"])
+        .env("TS_RS_EXPORT_DIR", &temp)
+        .env("TS_RS_LARGE_INT", "number")
+        .current_dir(&root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("failed to run `cargo test`: {err}");
+            return 2;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "binding export failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return 1;
+    }
+
+    let committed = root.join("crates/contracts/bindings");
+    let status = diff_trees(&committed, Path::new(&temp));
+    if status.is_empty() {
+        println!("contract-check OK: TS bindings up to date");
+        0
+    } else {
+        eprintln!(
+            "contract-check FAILED: TS bindings out of date ({} file(s)):",
+            status.len()
+        );
+        for entry in &status {
+            eprintln!("  {entry}");
+        }
+        eprintln!(
+            "运行 `cargo test -p tr-contracts --lib export_bindings` 并提交 crates/contracts/bindings"
+        );
+        1
+    }
+}
+
+/// 递归比较两个目录；返回差异描述列表（缺失/多余/内容不同）。
+fn diff_trees(left: &Path, right: &Path) -> Vec<String> {
+    let mut diffs = Vec::new();
+    let left_files = collect_binding_files(left);
+    let right_files = collect_binding_files(right);
+    for path in &left_files {
+        let relative = path.strip_prefix(left).unwrap_or(path);
+        let counter = right.join(relative);
+        if !counter.exists() {
+            diffs.push(format!("missing in regenerated: {}", relative.display()));
+        } else if std::fs::read(path).unwrap_or_default()
+            != std::fs::read(&counter).unwrap_or_default()
+        {
+            diffs.push(format!("content differs: {}", relative.display()));
+        }
+    }
+    for path in &right_files {
+        let relative = path.strip_prefix(right).unwrap_or(path);
+        if !left.join(relative).exists() {
+            diffs.push(format!("unexpected new file: {}", relative.display()));
+        }
+    }
+    diffs.sort();
+    diffs
+}
+
+fn collect_binding_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 ///
 /// 做法：
 /// 1. 对 `crates/core/src` 与 `crates/contracts/src` 取内容指纹；

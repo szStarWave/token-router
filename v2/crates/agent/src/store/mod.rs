@@ -5,7 +5,9 @@
 //!
 //! 仓储函数全部是显式传参的纯 DB 操作，不做策略判断；`agent::pipeline` 负责串联。
 
+pub mod admin_query;
 pub mod approvals;
+pub mod config_audit;
 pub mod health;
 pub mod judge;
 pub mod ledger;
@@ -14,6 +16,7 @@ pub mod protocol;
 pub mod sessions;
 pub mod stats;
 pub mod strategy;
+pub mod tokens;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,6 +39,8 @@ pub enum StoreError {
     ChecksumMismatch { version: i64 },
     #[error("database schema version {found} is newer than supported {supported}")]
     SchemaTooNew { found: i64, supported: i64 },
+    #[error("invalid query: {0}")]
+    Invalid(String),
 }
 
 /// 数据库句柄。

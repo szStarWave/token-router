@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
-
 [workspace.package]
 version = "0.20.0"
 edition = "2024"
@@ -11,12 +10,13 @@ rust-version = "1.85"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ts-rs = { version = "12", features = ["serde-compat", "serde-json-impl"] }
 sha2 = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 thiserror = "2"
 toml = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "query"] }
 futures-util = "0.3"
 async-stream = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }

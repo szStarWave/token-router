@@ -2,14 +2,19 @@
 //!
 //! 配置加载失败、schema 版本不符、端口占用都直接退出并打印原因；
 //! 不做“带病启动”（否则用户会以为路由在正常工作）。
+//!
+//! P4：管理 API 走 scoped token store（`admin.token` bootstrap）；
+//! `POST /v2/admin/shutdown` 触发优雅关闭；内存 ring 记录最近 2000 行日志。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tr_agent::config;
 use tr_agent::pipeline::Pipeline;
 use tr_agent::store::Db;
+use tr_control::{AdminAuth, ControlState, LogRing, LogTail};
 use tr_server::{AppState, AuthMode};
 
 #[derive(Debug, Parser)]
@@ -36,8 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let catalog = config::load(&args.config)?;
     let db_path = args
         .db
+        .clone()
         .unwrap_or_else(|| args.config.with_file_name("token-router-v2.db"));
-    let db = Db::open(&db_path)?;
+    // 共享句柄：pipeline 与管理面（token store/config audit）用同一个 Arc<Db>。
+    let db = Arc::new(Db::open(&db_path)?);
 
     let listen = args.listen.unwrap_or_else(|| catalog.server.listen.clone());
     let addr: SocketAddr = listen
@@ -49,18 +56,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         AuthMode::Disabled
     };
-    let admin_token = if catalog.server.admin_token.is_empty() {
-        None
-    } else {
-        Some(catalog.server.admin_token.clone())
-    };
 
-    let pipeline = std::sync::Arc::new(Pipeline::from_catalog(db, catalog));
-    let app = tr_server::router(AppState::new_shared(pipeline.clone(), auth)).merge(
-        tr_control::router(tr_control::ControlState::new(pipeline, admin_token)),
-    );
+    let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog));
+
+    // 管理面鉴权：scoped token store + admin.token bootstrap。
+    let data_dir = args
+        .config
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_default();
+    let admin_auth = AdminAuth::new(db.clone(), Some(data_dir.join("admin.token")));
+    if admin_auth.bootstrap_if_empty()?.is_some() {
+        println!(
+            "admin token written to {}",
+            data_dir.join("admin.token").display()
+        );
+    }
+
+    // 内存日志 ring（契约 §4.10：最近 2000 行）。
+    let logs = LogTail::new(LogRing::new());
+
+    let control_state = ControlState::new(pipeline.clone(), admin_auth)
+        .with_config_path(args.config.clone())
+        .with_logs(logs);
+
+    let app = tr_server::router(AppState::new_shared(pipeline.clone(), auth))
+        .merge(tr_control::router(control_state.clone()));
 
     println!("token-router v2 listening on http://{addr}");
+
+    // 优雅关闭：管理面 `/v2/admin/shutdown` 置位后轮询退出。
+    let shutdown_state = control_state.clone();
+    tokio::spawn(async move {
+        loop {
+            if shutdown_state.shutdown_requested() {
+                println!("shutdown requested; exiting");
+                std::process::exit(0);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
+
     tr_server::serve_router(app, addr).await?;
     Ok(())
 }
