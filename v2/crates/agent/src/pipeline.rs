@@ -1436,7 +1436,7 @@ fn persist_shadow(db: &Db, prepared: &Prepared, request_id: Uuid) {
         ),
         effective_source: Some(shadow.effective_source.clone()),
         judge_latency_ms: Some(shadow.latency_ms),
-        judge_cost_micros: None,
+        judge_cost_micros: prepared.routing_cost.as_ref().map(|cost| cost.micros),
         snapshot_digest: shadow.snapshot_digest.clone(),
         created_at: prepared.now_unix,
     };

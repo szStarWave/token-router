@@ -283,6 +283,36 @@ fn stats_count_rejections_and_judge_budget_denials() {
 }
 
 #[test]
+fn shadow_summary_includes_p95_and_cost() {
+    let temp = TempDb::new("shadow-summary");
+    let db = temp.db();
+    for (index, latency) in [10u32, 20, 30, 40, 50].into_iter().enumerate() {
+        tr_agent::store::judge::insert_shadow(
+            db,
+            &tr_agent::store::judge::ShadowRecord {
+                request_id: uuid::Uuid::new_v4(),
+                selection_model: "auto".to_string(),
+                kernel_choice: "a".to_string(),
+                judge_question_id: Some(format!("q{index}")),
+                judge_value: None,
+                agreement: Some(true),
+                effective_source: Some("heuristic".to_string()),
+                judge_latency_ms: Some(latency),
+                judge_cost_micros: Some(3),
+                snapshot_digest: "digest".to_string(),
+                created_at: 1_700_000_000 + index as u64,
+            },
+        )
+        .unwrap();
+    }
+    let summary = tr_agent::store::judge::shadow_summary(db).unwrap();
+    assert_eq!(summary.total, 5);
+    assert_eq!(summary.agreed, 5);
+    assert_eq!(summary.p95_latency_ms, Some(50.0));
+    assert_eq!(summary.total_cost_micros, 15);
+}
+
+#[test]
 fn breaker_round_trip() {
     let temp = TempDb::new("breaker");
     let db = temp.db();

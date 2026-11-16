@@ -132,6 +132,10 @@ pub struct ShadowSummary {
     pub disagreed: i64,
     pub unknown: i64,
     pub avg_latency_ms: Option<f64>,
+    /// P95 延迟（毫秒）；样本为空时为 `None`。
+    pub p95_latency_ms: Option<f64>,
+    /// 影子期间判官成本合计（micros，来自 `routing_cost`），用于预算消耗评估。
+    pub total_cost_micros: i64,
 }
 
 impl ShadowSummary {
@@ -142,17 +146,29 @@ impl ShadowSummary {
     }
 }
 
+fn percentile_95(latencies: &mut [i64]) -> Option<f64> {
+    if latencies.is_empty() {
+        return None;
+    }
+    latencies.sort_unstable();
+    // 最近秩法：ceil(0.95 * n) - 1。
+    let rank = ((latencies.len() as f64) * 0.95).ceil() as usize;
+    let index = rank.saturating_sub(1).min(latencies.len() - 1);
+    Some(latencies[index] as f64)
+}
+
 /// 聚合 shadow 记录。
 pub fn shadow_summary(db: &Db) -> Result<ShadowSummary, StoreError> {
     let connection = db.read();
-    let (total, agreed, disagreed, unknown, avg): (i64, i64, i64, i64, Option<f64>) = connection
-        .query_row(
+    let (total, agreed, disagreed, unknown, avg, cost): (i64, i64, i64, i64, Option<f64>, i64) =
+        connection.query_row(
             "SELECT COUNT(*),
-                    COALESCE(SUM(CASE agreement WHEN 1 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE agreement WHEN 0 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN agreement IS NULL THEN 1 ELSE 0 END), 0),
-                    AVG(judge_latency_ms)
-               FROM shadow_records",
+                COALESCE(SUM(CASE agreement WHEN 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE agreement WHEN 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN agreement IS NULL THEN 1 ELSE 0 END), 0),
+                AVG(judge_latency_ms),
+                COALESCE(SUM(judge_cost_micros), 0)
+           FROM shadow_records",
             [],
             |row| {
                 Ok((
@@ -161,14 +177,28 @@ pub fn shadow_summary(db: &Db) -> Result<ShadowSummary, StoreError> {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )?;
+
+    let mut latencies: Vec<i64> = {
+        let mut statement = connection.prepare(
+            "SELECT judge_latency_ms FROM shadow_records WHERE judge_latency_ms IS NOT NULL",
+        )?;
+        statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?
+    };
+    let p95 = percentile_95(&mut latencies);
+
     Ok(ShadowSummary {
         total,
         agreed,
         disagreed,
         unknown,
         avg_latency_ms: avg,
+        p95_latency_ms: p95,
+        total_cost_micros: cost,
     })
 }

@@ -1,44 +1,207 @@
 {
+  "version": 2,
+  "notes": "P2-7 固定任务集：成功由 checker 判定（文本包含或指定工具调用），不用 LLM 判成功。difficulty ∈ simple|medium|hard|tool。",
   "tasks": [
     {
       "id": "short-answer",
+      "difficulty": "simple",
       "prompt": "Reply with exactly: router",
       "expect": { "contains": "router" }
     },
     {
-      "id": "tool-selection",
-      "prompt": "List files in the current directory using a tool.",
-      "expect": { "contains": "list" }
-    },
-    {
-      "id": "long-context",
-      "prompt": "Summarize the following in one line: the quick brown fox jumps over the lazy dog.",
-      "expect": { "contains": "fox" }
+      "id": "cheap-route",
+      "difficulty": "simple",
+      "prompt": "Say hi.",
+      "expect": { "contains": "hi" }
     },
     {
       "id": "json-output",
+      "difficulty": "simple",
       "prompt": "Return JSON with keys ok and model.",
       "expect": { "contains": "ok" }
     },
     {
+      "id": "simple-capital",
+      "difficulty": "simple",
+      "prompt": "What is the capital of France? Answer with the city name only.",
+      "expect": { "contains": "Paris" }
+    },
+    {
+      "id": "simple-arithmetic",
+      "difficulty": "simple",
+      "prompt": "Compute 17 * 3 + 9. Answer with the number only.",
+      "expect": { "contains": "60" }
+    },
+    {
+      "id": "simple-unit",
+      "difficulty": "simple",
+      "prompt": "Convert 3.5 kilometers to meters. Answer with the number and unit.",
+      "expect": { "contains": "3500" }
+    },
+    {
+      "id": "simple-definition",
+      "difficulty": "simple",
+      "prompt": "In one sentence, define what an HTTP 404 status code means.",
+      "expect": { "contains": "not found" }
+    },
+    {
+      "id": "simple-translate",
+      "difficulty": "simple",
+      "prompt": "Translate 'good morning' into Spanish. Answer with the phrase only.",
+      "expect": { "contains": "buenos" }
+    },
+
+    {
+      "id": "long-context",
+      "difficulty": "medium",
+      "prompt": "Summarize the following in one line: the quick brown fox jumps over the lazy dog.",
+      "expect": { "contains": "fox" }
+    },
+    {
       "id": "refusal-safe",
+      "difficulty": "medium",
       "prompt": "Explain why you cannot share secrets.",
       "expect": { "contains": "secret" }
     },
     {
       "id": "code-edit",
+      "difficulty": "medium",
       "prompt": "Rename the function hello to greet in src/lib.rs.",
       "expect": { "contains": "greet" }
     },
     {
+      "id": "medium-fizzbuzz",
+      "difficulty": "medium",
+      "prompt": "Write a Python function fizzbuzz(n) that returns a list of strings for 1..n with Fizz/Buzz rules. Output only the code.",
+      "expect": { "contains": "def fizzbuzz" }
+    },
+    {
+      "id": "medium-sql",
+      "difficulty": "medium",
+      "prompt": "Write a SQL query returning the top 5 customers by total order amount from tables customers(id, name) and orders(customer_id, amount). Output only SQL.",
+      "expect": { "contains": "SELECT" }
+    },
+    {
+      "id": "medium-regex",
+      "difficulty": "medium",
+      "prompt": "Give a regex that matches ISO dates YYYY-MM-DD. Output the regex only.",
+      "expect": { "contains": "[0-9]" }
+    },
+    {
+      "id": "medium-json-schema",
+      "difficulty": "medium",
+      "prompt": "Write a JSON Schema for an object with required string fields id and email. Output only the schema.",
+      "expect": { "contains": "required" }
+    },
+    {
+      "id": "medium-bugfix",
+      "difficulty": "medium",
+      "prompt": "This Rust code fails to compile: `let s: i32 = v.iter().sum();` where v: Vec<i32>. Explain the fix in one line.",
+      "expect": { "contains": "iter" }
+    },
+    {
+      "id": "medium-explain-error",
+      "difficulty": "medium",
+      "prompt": "Explain why `docker run -v /data:/data` can silently shadow files inside the image. Two sentences max.",
+      "expect": { "contains": "mount" }
+    },
+    {
+      "id": "medium-refactor",
+      "difficulty": "medium",
+      "prompt": "Refactor this into a Rust iterator chain: `let mut out = vec![]; for x in xs { if x > 0 { out.push(x * 2); } }`. Output only code.",
+      "expect": { "contains": "filter" }
+    },
+    {
+      "id": "medium-git",
+      "difficulty": "medium",
+      "prompt": "Give the git command to undo the most recent local commit while keeping changes staged. Output only the command.",
+      "expect": { "contains": "reset" }
+    },
+
+    {
       "id": "multi-step",
-      "prompt": "First read a.txt, then write its length to b.txt.",
+      "difficulty": "hard",
+      "prompt": "First read a.txt, then write its length to b.txt. Describe both tool calls in order.",
       "expect": { "contains": "length" }
     },
     {
-      "id": "cheap-route",
-      "prompt": "Say hi.",
-      "expect": { "contains": "hi" }
+      "id": "hard-lru",
+      "difficulty": "hard",
+      "prompt": "Design an LRU cache with O(1) get and put in Rust. Describe the data structures and the update sequence for a hit and a miss.",
+      "expect": { "contains": "HashMap" }
+    },
+    {
+      "id": "hard-deadlock",
+      "difficulty": "hard",
+      "prompt": "Two threads lock mutexes A then B and B then A. Explain the deadlock and give a lock-ordering fix.",
+      "expect": { "contains": "order" }
+    },
+    {
+      "id": "hard-consistency",
+      "difficulty": "hard",
+      "prompt": "Explain how a write-ahead log plus fsync gives crash consistency for a B-tree update. Mention redo and checkpoint.",
+      "expect": { "contains": "redo" }
+    },
+    {
+      "id": "hard-perf",
+      "difficulty": "hard",
+      "prompt": "A service has p99 latency 2s while p50 is 20ms. List three likely causes and one measurement for each.",
+      "expect": { "contains": "p99" }
+    },
+    {
+      "id": "hard-security",
+      "difficulty": "hard",
+      "prompt": "Review a login flow that returns distinct errors for unknown user vs wrong password. Explain the risk and the fix.",
+      "expect": { "contains": "enumerat" }
+    },
+    {
+      "id": "hard-migration",
+      "difficulty": "hard",
+      "prompt": "Plan a zero-downtime migration from a single Postgres primary to a sharded schema. Give three phases with rollback points.",
+      "expect": { "contains": "rollback" }
+    },
+    {
+      "id": "hard-proof",
+      "difficulty": "hard",
+      "prompt": "Prove that the sum of the first n odd numbers is n squared, using induction.",
+      "expect": { "contains": "induction" }
+    },
+
+    {
+      "id": "tool-selection",
+      "difficulty": "tool",
+      "prompt": "List files in /tmp/project using the list_files tool.",
+      "expect": { "tool": "list_files" }
+    },
+    {
+      "id": "tool-read-file",
+      "difficulty": "tool",
+      "prompt": "Use the read_file tool to read /tmp/report.txt and then summarize its first line.",
+      "expect": { "tool": "read_file" }
+    },
+    {
+      "id": "tool-search",
+      "difficulty": "tool",
+      "prompt": "Use the search tool to find TODO markers under /tmp/project/src.",
+      "expect": { "tool": "search" }
+    },
+    {
+      "id": "tool-write-file",
+      "difficulty": "tool",
+      "prompt": "Use the write_file tool to create /tmp/out.txt containing the text hello.",
+      "expect": { "tool": "write_file" }
+    },
+    {
+      "id": "tool-shell",
+      "difficulty": "tool",
+      "prompt": "Use the shell_exec tool to run `uname -s` and report the output.",
+      "expect": { "tool": "shell_exec" }
+    },
+    {
+      "id": "tool-http",
+      "difficulty": "tool",
+      "prompt": "Use the http_fetch tool to fetch https://example.com and report the HTTP status.",
+      "expect": { "tool": "http_fetch" }
     }
   ]
 }

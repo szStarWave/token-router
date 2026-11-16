@@ -164,6 +164,8 @@ async fn shadow(State(state): State<ControlState>, headers: HeaderMap) -> Respon
             "unknown": summary.unknown,
             "agreement_rate": summary.agreement_rate(),
             "avg_latency_ms": summary.avg_latency_ms,
+            "p95_latency_ms": summary.p95_latency_ms,
+            "total_cost_micros": summary.total_cost_micros,
         }))
         .into_response(),
         Err(error) => {

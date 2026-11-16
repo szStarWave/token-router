@@ -137,6 +137,24 @@ pub fn cost_equiv_of(db: &Db, request_id: &str) -> Result<Option<Cost>, StoreErr
     }))
 }
 
+/// 按 `plan_id` 读取等价成本（流式评测在后台提交后回查）。
+///
+/// `plan_id` 每个请求唯一；找不到返回 `None`，调用方不得把缺失当 0。
+pub fn cost_for_plan(db: &Db, plan_id: &str) -> Result<Option<i64>, StoreError> {
+    let connection = db.read();
+    let mut statement = connection.prepare(
+        "SELECT answer_cost_micros, routing_cost_micros FROM ledger
+          WHERE plan_id = ?1 ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = statement.query(params![plan_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let answer: Option<i64> = row.get(0)?;
+    let routing: Option<i64> = row.get(1)?;
+    Ok(Some(answer.unwrap_or(0) + routing.unwrap_or(0)))
+}
+
 /// 最近账本行（控制面查询）。
 pub fn recent(db: &Db, limit: u32) -> Result<Vec<serde_json::Value>, StoreError> {
     let connection = db.read();

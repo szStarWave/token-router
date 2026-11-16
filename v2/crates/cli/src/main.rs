@@ -30,13 +30,19 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
-    /// shadow 记录聚合（一致率/延迟）
+    /// shadow 记录聚合（一致率/延迟/P95/预算）
     ShadowReport {
         #[arg(long)]
         db: PathBuf,
         /// JSON 输出
         #[arg(long)]
         json: bool,
+        /// active 门槛：最少样本数（P1-13 要求 ≥500）
+        #[arg(long, default_value_t = 0)]
+        min_samples: i64,
+        /// 样本不足时以非零码退出（用于 dogfood 门禁）
+        #[arg(long)]
+        require: bool,
     },
     /// 判官自检（按配置构造运行时，跑一次固定问题）
     JudgeTest {
@@ -81,6 +87,15 @@ enum Command {
         /// 指定账本库（默认临时库）
         #[arg(long)]
         db: Option<PathBuf>,
+        /// 把三列对照表写入 markdown（P2-8）
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// 单模型/基线配置；提供后同任务集跑两遍做对照
+        #[arg(long)]
+        baseline_config: Option<PathBuf>,
+        /// 关闭流式（默认流式，才能测首 token 延迟）
+        #[arg(long)]
+        no_stream: bool,
     },
 }
 
@@ -127,9 +142,15 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
-        Command::ShadowReport { db, json } => {
+        Command::ShadowReport {
+            db,
+            json,
+            min_samples,
+            require,
+        } => {
             let db = tr_agent::store::Db::open(&db)?;
             let summary = tr_agent::store::judge::shadow_summary(&db)?;
+            let enough = summary.total >= min_samples;
             if json {
                 println!(
                     "{}",
@@ -140,18 +161,37 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         "unknown": summary.unknown,
                         "agreement_rate": summary.agreement_rate(),
                         "avg_latency_ms": summary.avg_latency_ms,
+                        "p95_latency_ms": summary.p95_latency_ms,
+                        "total_cost_micros": summary.total_cost_micros,
+                        "min_samples": min_samples,
+                        "enough_samples": enough,
                     }))?
                 );
             } else {
                 println!(
-                    "shadow: total={} agreed={} disagreed={} unknown={} rate={:?} avg_latency_ms={:?}",
+                    "shadow: total={} agreed={} disagreed={} unknown={} rate={:?} avg_latency_ms={:?} p95_latency_ms={:?} cost_micros={}",
                     summary.total,
                     summary.agreed,
                     summary.disagreed,
                     summary.unknown,
                     summary.agreement_rate(),
-                    summary.avg_latency_ms
+                    summary.avg_latency_ms,
+                    summary.p95_latency_ms,
+                    summary.total_cost_micros
                 );
+                if !enough {
+                    println!(
+                        "  samples below minimum: {} < {} (judge must stay shadow/off)",
+                        summary.total, min_samples
+                    );
+                }
+            }
+            if require && !enough {
+                return Err(format!(
+                    "shadow samples {} below required {}",
+                    summary.total, min_samples
+                )
+                .into());
             }
             Ok(())
         }
@@ -199,13 +239,16 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             tasks,
             json,
             db,
+            out,
+            baseline_config,
+            no_stream,
         } => {
             if mode.as_deref() == Some("calibrate") {
                 let path = observations.ok_or("eval calibrate 需要 --observations <path>")?;
                 return run_calibrate(&path, mape_max, false_deny_max, min_samples, json);
             }
             let config = config.ok_or("eval 需要 --config <path>")?;
-            run_eval(config, tasks, json, db)
+            run_eval(config, tasks, json, db, out, baseline_config, !no_stream)
         }
     }
 }
@@ -345,16 +388,68 @@ fn run_doctor(
     Ok(())
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct EvalTask {
     id: String,
+    /// `simple` | `medium` | `hard` | `tool`（P2-7 覆盖要求）。
+    #[serde(default)]
+    difficulty: Option<String>,
     prompt: String,
     expect: EvalExpect,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 struct EvalExpect {
-    contains: String,
+    /// 文本包含即通过。
+    #[serde(default)]
+    contains: Option<String>,
+    /// 响应中出现指定工具调用即通过（tool 类任务）。
+    #[serde(default)]
+    tool: Option<String>,
+}
+
+impl EvalExpect {
+    fn matched(&self, text: &str, tool_names: &[String]) -> bool {
+        let text_ok = self
+            .contains
+            .as_deref()
+            .is_some_and(|needle| text.contains(needle));
+        let tool_ok = self
+            .tool
+            .as_deref()
+            .is_some_and(|needle| tool_names.iter().any(|name| name == needle));
+        text_ok || tool_ok
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EvalRun {
+    name: String,
+    tasks: usize,
+    passed: usize,
+    total_cost_micros: i64,
+    avg_ttft_ms: Option<f64>,
+    avg_duration_ms: Option<f64>,
+    results: Vec<serde_json::Value>,
+}
+
+impl EvalRun {
+    fn success_rate(&self) -> Option<f64> {
+        (self.tasks > 0).then(|| self.passed as f64 / self.tasks as f64)
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name,
+            "tasks": self.tasks,
+            "passed": self.passed,
+            "success_rate": self.success_rate(),
+            "total_cost_micros": self.total_cost_micros,
+            "avg_ttft_ms": self.avg_ttft_ms,
+            "avg_duration_ms": self.avg_duration_ms,
+            "results": self.results,
+        })
+    }
 }
 
 fn run_eval(
@@ -362,8 +457,10 @@ fn run_eval(
     tasks_path: PathBuf,
     json: bool,
     db_path: Option<PathBuf>,
+    out: Option<PathBuf>,
+    baseline_config: Option<PathBuf>,
+    stream: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let catalog = tr_agent::config::load(&config)?;
     let tasks_text = std::fs::read_to_string(&tasks_path)?;
     let tasks: Vec<EvalTask> = serde_json::from_str::<serde_json::Value>(&tasks_text)?
         .get("tasks")
@@ -372,9 +469,108 @@ fn run_eval(
         .transpose()?
         .ok_or("tasks file 缺少 tasks 数组")?;
 
+    let mut runs = vec![evaluate_catalog(
+        "router",
+        &config,
+        &tasks,
+        db_path.clone(),
+        stream,
+    )?];
+    if let Some(baseline) = &baseline_config {
+        runs.push(evaluate_catalog(
+            "baseline", baseline, &tasks, None, stream,
+        )?);
+    } else {
+        eprintln!("note: 未声明 --baseline-config；按 §11.5 不能据此比较成本/质量收益");
+    }
+
+    let table = render_eval_table(&runs);
+    if let Some(path) = &out {
+        let baseline = baseline_config
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "未声明".to_string());
+        let document = format!(
+            "# P2 评测对照\n\n\
+             - 任务集: `{}`\n\
+             - 任务数: {}\n\
+             - 基线: `{}`\n\
+             - 模式: {}\n\n\
+             {}\n\n\
+             > 每行是同一任务集的一次完整运行；成功率由 checker 判定，等价成本 = answer + routing，首 token 延迟取流式首个事件。\n",
+            tasks_path.display(),
+            tasks.len(),
+            baseline,
+            if stream { "stream" } else { "non-stream" },
+            table
+        );
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, document)?;
+    }
+
+    if json {
+        let summary = serde_json::json!({
+            "tasks_path": tasks_path.display().to_string(),
+            "stream": stream,
+            "runs": runs.iter().map(EvalRun::to_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!("{table}");
+        for run in &runs {
+            for result in &run.results {
+                println!(
+                    "  [{}] {} passed={} served={} cost={:?} ttft={:?}",
+                    run.name,
+                    result["id"],
+                    result["passed"],
+                    result["served_model"],
+                    result["cost_micros"],
+                    result["ttft_ms"]
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_eval_table(runs: &[EvalRun]) -> String {
+    let mut out = String::from(
+        "| 配置 | 成功率 | 等价成本 (micros) | 首 token 延迟 (ms) |\n\
+         |---|---|---|---|\n",
+    );
+    for run in runs {
+        let rate = run
+            .success_rate()
+            .map(|rate| format!("{:.1}%", rate * 100.0))
+            .unwrap_or_else(|| "—".to_string());
+        let ttft = run
+            .avg_ttft_ms
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "—".to_string());
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            run.name, rate, run.total_cost_micros, ttft
+        ));
+    }
+    out
+}
+
+fn evaluate_catalog(
+    name: &str,
+    config: &std::path::Path,
+    tasks: &[EvalTask],
+    db_path: Option<PathBuf>,
+    stream: bool,
+) -> Result<EvalRun, Box<dyn std::error::Error>> {
+    let catalog = tr_agent::config::load(config)?;
     let db_path = db_path.unwrap_or_else(|| {
         std::env::temp_dir().join(format!(
-            "tr-eval-{}.db",
+            "tr-eval-{name}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_millis())
@@ -388,7 +584,10 @@ fn run_eval(
         .build()?;
 
     let mut results = Vec::new();
-    for task in &tasks {
+    let mut ttfts: Vec<f64> = Vec::new();
+    let mut durations: Vec<f64> = Vec::new();
+
+    for task in tasks {
         let request = tr_contracts::CanonicalRequest {
             messages: vec![tr_contracts::CanonicalMessage {
                 role: tr_contracts::CanonicalRole::User,
@@ -401,34 +600,112 @@ fn run_eval(
             ..tr_contracts::CanonicalRequest::default()
         };
 
-        let outcome = runtime
-            .block_on(pipeline.handle(request, tr_agent::pipeline::RequestContext::default()));
-        match outcome {
-            Ok(result) => {
-                let text: String = result
-                    .response
-                    .blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        tr_contracts::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let passed = text.contains(&task.expect.contains);
-                results.push(serde_json::json!({
-                    "id": task.id,
-                    "passed": passed,
-                    "served_model": result.headers.served_model,
-                    "cost_micros": result.ledger.cost_equiv.as_ref().map(|cost| cost.micros),
-                    "duration_ms": result.ledger.duration_ms,
-                }));
+        if stream {
+            let mut streaming = match runtime.block_on(
+                pipeline.handle_stream(request, tr_agent::pipeline::RequestContext::default()),
+            ) {
+                Ok(streaming) => streaming,
+                Err(error) => {
+                    results.push(serde_json::json!({
+                        "id": task.id,
+                        "difficulty": task.difficulty,
+                        "passed": false,
+                        "error": error.to_string(),
+                    }));
+                    continue;
+                }
+            };
+
+            let started = std::time::Instant::now();
+            let mut text = String::new();
+            let mut tool_names: Vec<String> = Vec::new();
+            let mut ttft_ms: Option<u64> = None;
+            let mut failed: Option<String> = None;
+
+            while let Some(chunk) = runtime.block_on(streaming.events.recv()) {
+                match chunk {
+                    tr_agent::pipeline::StreamChunk::Event(event) => {
+                        if ttft_ms.is_none() {
+                            ttft_ms = Some(started.elapsed().as_millis() as u64);
+                        }
+                        match event {
+                            tr_contracts::CanonicalStreamEvent::ContentDelta { text: delta } => {
+                                text.push_str(&delta);
+                            }
+                            tr_contracts::CanonicalStreamEvent::ToolCallDelta {
+                                name: Some(name),
+                                ..
+                            } => tool_names.push(name),
+                            tr_contracts::CanonicalStreamEvent::Error { message } => {
+                                failed = Some(message);
+                            }
+                            _ => {}
+                        }
+                    }
+                    tr_agent::pipeline::StreamChunk::Done => break,
+                    tr_agent::pipeline::StreamChunk::Error { message } => {
+                        failed = Some(message);
+                        break;
+                    }
+                }
             }
-            Err(error) => {
-                results.push(serde_json::json!({
-                    "id": task.id,
-                    "passed": false,
-                    "error": error.to_string(),
-                }));
+            let duration_ms = started.elapsed().as_millis() as f64;
+            let served_model = streaming.headers.served_model.clone();
+            let plan_id = streaming.headers.plan_id.clone();
+            let cost_micros = wait_for_eval_cost(&runtime, &pipeline, &plan_id);
+            let passed = failed.is_none() && task.expect.matched(&text, &tool_names);
+
+            if let Some(ttft) = ttft_ms {
+                ttfts.push(ttft as f64);
+            }
+            durations.push(duration_ms);
+            results.push(serde_json::json!({
+                "id": task.id,
+                "difficulty": task.difficulty,
+                "passed": passed,
+                "served_model": served_model,
+                "cost_micros": cost_micros,
+                "ttft_ms": ttft_ms,
+                "duration_ms": duration_ms as u64,
+                "error": failed,
+            }));
+        } else {
+            match runtime
+                .block_on(pipeline.handle(request, tr_agent::pipeline::RequestContext::default()))
+            {
+                Ok(result) => {
+                    let mut text = String::new();
+                    let mut tool_names = Vec::new();
+                    for block in &result.response.blocks {
+                        match block {
+                            tr_contracts::ContentBlock::Text { text: chunk, .. } => {
+                                text.push_str(chunk);
+                            }
+                            tr_contracts::ContentBlock::ToolUse { name, .. } => {
+                                tool_names.push(name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    durations.push(result.ledger.duration_ms as f64);
+                    results.push(serde_json::json!({
+                        "id": task.id,
+                        "difficulty": task.difficulty,
+                        "passed": task.expect.matched(&text, &tool_names),
+                        "served_model": result.headers.served_model,
+                        "cost_micros": result.ledger.cost_equiv.as_ref().map(|cost| cost.micros),
+                        "ttft_ms": result.ledger.ttft_ms,
+                        "duration_ms": result.ledger.duration_ms,
+                    }));
+                }
+                Err(error) => {
+                    results.push(serde_json::json!({
+                        "id": task.id,
+                        "difficulty": task.difficulty,
+                        "passed": false,
+                        "error": error.to_string(),
+                    }));
+                }
             }
         }
     }
@@ -438,39 +715,41 @@ fn run_eval(
         .iter()
         .filter(|result| result["passed"] == serde_json::Value::Bool(true))
         .count();
-    let cost: i64 = results
+    let total_cost_micros = results
         .iter()
         .filter_map(|result| result["cost_micros"].as_i64())
         .sum();
-    let duration: i64 = results
-        .iter()
-        .filter_map(|result| result["duration_ms"].as_i64())
-        .sum();
 
-    let summary = serde_json::json!({
-        "tasks": total,
-        "passed": passed,
-        "success_rate": if total > 0 { Some(passed as f64 / total as f64) } else { None },
-        "total_cost_micros": cost,
-        "avg_duration_ms": if total > 0 { Some(duration as f64 / total as f64) } else { None },
-        "results": results,
-    });
+    Ok(EvalRun {
+        name: name.to_string(),
+        tasks: total,
+        passed,
+        total_cost_micros,
+        avg_ttft_ms: average(&ttfts),
+        avg_duration_ms: average(&durations),
+        results,
+    })
+}
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        println!(
-            "eval: {passed}/{total} passed, cost={cost} micros, avg_duration={:.1}ms",
-            summary["avg_duration_ms"].as_f64().unwrap_or(0.0)
-        );
-        for result in summary["results"].as_array().into_iter().flatten() {
-            println!(
-                "  {} passed={} served={} cost={:?}",
-                result["id"], result["passed"], result["served_model"], result["cost_micros"]
-            );
+fn average(values: &[f64]) -> Option<f64> {
+    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+}
+
+/// 流式账本在后台提交；给最多 2s，拿不到就返回 `None`（不虚构成本）。
+fn wait_for_eval_cost(
+    runtime: &tokio::runtime::Runtime,
+    pipeline: &tr_agent::pipeline::Pipeline,
+    plan_id: &str,
+) -> Option<i64> {
+    for _ in 0..200 {
+        match tr_agent::store::ledger::cost_for_plan(pipeline.db(), plan_id) {
+            Ok(Some(cost)) => return Some(cost),
+            Ok(None) => {}
+            Err(_) => return None,
         }
+        runtime.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
     }
-    Ok(())
+    None
 }
 
 /// 成本闸校准观测（P2-9）。单位统一为 micros，币种由调用方保证一致。
@@ -676,5 +955,77 @@ mod tests {
         let report = calibrate(&observations, 0.25, 0.05, 1);
         assert_eq!(report.mape, None);
         assert!(!report.passed, "no comparable samples cannot calibrate");
+    }
+
+    #[test]
+    fn expect_matches_text_or_tool() {
+        let text_expect = EvalExpect {
+            contains: Some("Paris".to_string()),
+            tool: None,
+        };
+        assert!(text_expect.matched("the capital is Paris", &[]));
+        assert!(!text_expect.matched("Lyon", &[]));
+
+        let tool_expect = EvalExpect {
+            contains: None,
+            tool: Some("read_file".to_string()),
+        };
+        assert!(tool_expect.matched("", &["read_file".to_string()]));
+        assert!(!tool_expect.matched("", &["list_files".to_string()]));
+
+        assert!(!EvalExpect::default().matched("anything", &[]));
+    }
+
+    #[test]
+    fn eval_table_has_three_metric_columns() {
+        let runs = vec![
+            EvalRun {
+                name: "router".to_string(),
+                tasks: 30,
+                passed: 27,
+                total_cost_micros: 1234,
+                avg_ttft_ms: Some(120.5),
+                avg_duration_ms: Some(900.0),
+                results: Vec::new(),
+            },
+            EvalRun {
+                name: "baseline".to_string(),
+                tasks: 30,
+                passed: 24,
+                total_cost_micros: 2000,
+                avg_ttft_ms: Some(90.0),
+                avg_duration_ms: Some(700.0),
+                results: Vec::new(),
+            },
+        ];
+        let table = render_eval_table(&runs);
+        assert!(table.contains("| 配置 | 成功率 | 等价成本 (micros) | 首 token 延迟 (ms) |"));
+        assert!(table.contains("| router | 90.0% | 1234 | 120.5 |"));
+        assert!(table.contains("| baseline | 80.0% | 2000 | 90.0 |"));
+    }
+
+    #[test]
+    fn eval_task_set_meets_p2_7_acceptance() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/eval/tasks.json");
+        let text = std::fs::read_to_string(&path).expect("tasks.json");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let tasks = value["tasks"].as_array().expect("tasks").clone();
+        assert!(tasks.len() >= 30, "P2-7 requires >= 30 tasks");
+        let mut difficulties = std::collections::BTreeSet::new();
+        for task in &tasks {
+            let difficulty = task["difficulty"].as_str().unwrap_or("missing");
+            assert!(
+                matches!(difficulty, "simple" | "medium" | "hard" | "tool"),
+                "unexpected difficulty `{difficulty}`"
+            );
+            difficulties.insert(difficulty.to_string());
+        }
+        for required in ["simple", "medium", "hard", "tool"] {
+            assert!(
+                difficulties.contains(required),
+                "missing difficulty coverage: {required}"
+            );
+        }
     }
 }

@@ -1866,6 +1866,7 @@ pub struct ReasonCode {
 
 - **回放**：`cli replay <snapshot-file>` 直接调用 `core::decide(&DecisionSnapshot)`，比较决策投影（§4.7），输出 diff。Switchyard 无 decision replay；HiRoute 只有阈值反事实 replay；v2 的通用快照回放是新增能力。
 - **影子**：shadow 模式记录“判官建议 vs 内核结论”、延迟、预算消耗、输入指纹；开 `active` 前必须有一份真实流量的影子报告。
+- 已实现：`tr-cli shadow-report` 输出一致率、平均延迟、P95、判官成本合计；`--min-samples 500 --require` 把“样本不足”变成非零退出码，可直接作为 dogfood 门禁。
 - **捕获**分两种：
   - `capture --raw --encrypt`：本地加密保存，用于回放与回归；不默认开启。密钥从环境变量或系统 keyring 读取，不与 capture 文件同目录保存。
   - `capture --redacted`：默认模式，用于共享/评测；脱敏会改变词法/判官输入，**不能用它做逐字段回放**。
@@ -1876,6 +1877,8 @@ pub struct ReasonCode {
 - **会话（session）**：一段对话。**任务（task）**：从一条 user 消息开始，到一条终止 assistant 消息（无 pending tool_call）或显式结束标记为止。
 - `task_id` 由 `agent` 生成并写入账本；latch 作用域默认 `(session_key, task_id)`。
 - **离线评测**：任务集自带 checker（测试通过、期望输出、外部脚本），成功由 checker 判定；这是 G6 的唯一口径。
+- 已实现：`v2/tests/eval/tasks.json` 33 个任务，覆盖 simple/medium/hard/tool；checker 支持文本包含与指定工具调用（不用 LLM 判成功）。
+- 三列对照由 `tr-cli eval --out <md>` 生成（成功率 / 等价成本 micros / 首 token 延迟），`--baseline-config` 对同一任务集再跑单模型基线；未声明基线时明确提示不可比较。
 - **在线代理指标**（仅诊断，不用于验收）：工具无错误、无用户否定、出现终止回答、上游无错误。
 - 不用 LLM 判官给“任务是否成功”打分，避免与路由判官循环。
 
@@ -2039,6 +2042,7 @@ v2 固定 7 种步态（见 §4.3 的 `StepKind`）：
 | D-8 | 多模型 strength 语义 | profile 声明 `strength_order`；策略只认 strength；edge/cloud 只是标签 | P3 | 已定 |
 | D-9 | 虚拟模型语义 | Selection = 虚拟模型；Dispatch = 物理模型；每虚拟模型独立 profile/strategies/candidate_pool/state；禁止虚拟→虚拟 | P3 | 已定 |
 | D-10 | StickyDispatch vs ContextHold | Sticky 硬复用（Retry/Continuation）；ContextHold 软亲和（User/兜底）；优先级见 §4.9.1 | P3 | 已定 |
+| D-11 | `CompetenceGuard` 实现时机 | P0–P3 不实现：它需要逐轮 competence score，而默认判官预算为 1 次/轮；先由 Escalation latch 覆盖低质量场景，P4 再评估独立评分器 | `core`、判官预算 | 已定（P4 可选） |
 
 ---
 

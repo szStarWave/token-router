@@ -545,12 +545,12 @@ cargo xtask fixture-probe
 | P1-5 判官审计 | 完成 | `judge_calls` 只存结构化字段，不存 prompt |
 | P1-6 shadow 记录 | 完成 | `shadow_records` + `tr-cli shadow-report` |
 | P1-7 Classify shadow | 完成 | `mode=shadow` 下 Plan 不变，只写 `Note` 理由 + `shadow_records`；不需要独立 suggestion 表 |
-| P1-8 shadow 报告 | 完成 | 一致率/延迟/样本数 |
+| P1-8 shadow 报告 | 完成 | 一致率/平均延迟/P95/判官成本；`--min-samples N --require` 可直接作为 dogfood 门禁 |
 | P1-9 Escalation 状态机 | 完成 | 四态 + 强档计数 + 硬上限 + 冷却 |
 | P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
 | P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
 | P1-12 无会话键退化 | 完成 | `Fallback` + `collision_suspect` 落账；同键只 warn 一次 |
-| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条），属环境依赖 |
+| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条）；`tr-cli shadow-report --min-samples 500 --require` 已就绪 |
 | P1-14 预算熔断观测 | 完成 | `/v2/admin/stats` 增加 `judge_calls`/`judge_budget_denied`/`judge_failed`/`judge_cost_micros`，与 `judge_calls` 同源 |
 | P1-15 D-1 决策 | **待数据** | 按设计保持默认 off，shadow 达标后再评估 active |
 
@@ -567,9 +567,9 @@ cargo xtask fixture-probe
 | P2-3 answer/routing 分账 | 完成 | 判官适配器解析 `usage`；按 `[judge.service]` 价格折算 `routing_cost`；`judge_calls` 同源 |
 | P2-4 成本闸方向规则 | 完成 | `core::gate` + `agent::gate::evaluate`；质量升级未知价格放行、成本降级拒绝 |
 | P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
-| P2-6 CompetenceGuard | 未做 | 设计里标为可选 |
-| P2-7 评测集与 checker | 完成（底座） | `v2/tests/eval/tasks.json` + `tr-cli eval`；checker 为 contains，非 LLM 判成功 |
-| P2-8 三列对照表 | **未产出** | 需要真实上游；mock 上游的对照没有意义 |
+| P2-6 CompetenceGuard | 未做（可选） | 设计标为可选；P0–P3 没有 competence score 生产器（逐轮判官评分会突破默认预算），留 P4 |
+| P2-7 评测集与 checker | 完成 | 33 个任务，覆盖 simple/medium/hard/tool；checker 为文本包含或指定工具调用，不用 LLM 判成功 |
+| P2-8 三列对照表 | 部分 | `tr-cli eval --out <md>` 生成“成功率/等价成本/首 token 延迟”表，支持 `--baseline-config` 双跑；真实上游数据未接入 |
 | P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
 | P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
@@ -620,7 +620,25 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 三列对照、P2-9 真实观测集校准（工具已就绪）；P2-6 `CompetenceGuard` 为设计可选；P4 入口条件未满足。
+**仍未完成（全部为环境/数据依赖或可选）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 真实数据的三列表、P2-9 真实观测集校准（工具已就绪）；P2-6 `CompetenceGuard` 为设计可选且缺评分生产器；P4 入口条件未满足。
+
+### 2026-11-16：P1-8/P2-7/P2-8 证据链补齐
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P1-8 shadow 报告 | 完成 | 输出一致率、平均延迟、P95、判官成本合计；`shadow_records.judge_cost_micros` 由 `routing_cost` 回填；`--min-samples`/`--require` 形成 dogfood 门禁 |
+| P2-7 评测集 | 完成 | `tests/eval/tasks.json` 扩到 33 个任务，覆盖 simple(8)/medium(11)/hard(8)/tool(6)；checker 支持文本包含与工具调用；单测锁定 ≥30 与四类覆盖 |
+| P2-8 三列对照 | 部分 | `tr-cli eval --out docs/p2-eval.md` 生成“成功率/等价成本/首 token 延迟”表；`--baseline-config` 同任务集双跑；流式模式用首个事件测 TTFT；真实上游数据仍待接入 |
+
+**用法**：
+```bash
+# shadow 门禁（样本不足直接失败）
+tr-cli shadow-report --db token-router-v2.db --min-samples 500 --require --json
+
+# 三列对照（单模型基线 + 路由器）
+tr-cli eval --config config/router.toml --baseline-config config/single.toml \
+  --tasks tests/eval/tasks.json --out docs/p2-eval.md
+```
 
 ### 总体状态（截至本次收口）
 
@@ -630,8 +648,8 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 | P0a | 通过 | e2e 用 mock 上游，非真实 Hermes |
 | P0b | 通过 | 真实客户端流式冒烟待补 |
 | P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
-| P2 | 部分 | 三列对照与成本闸校准未执行（保持 shadow）；`CompetenceGuard` 为可选未做 |
+| P2 | 部分 | 评测集（33 任务）与三列表/校准工具已就绪，真实上游数据未接入（闸保持 shadow）；`CompetenceGuard` 可选未做 |
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：201 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：205 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
