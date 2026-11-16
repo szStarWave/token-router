@@ -1922,6 +1922,7 @@ pub struct ReasonCode {
 - `enforce + fail_closed`：返回 `428 approval_required` 或 `403 approval_denied`（带 `x-token-router-approval` / `x-token-router-tool` 与 `request_id`），写账本 `outcome = rejected`，不访问上游；首次拦截记一条 `pending` 审批，便于控制面接力；
 - 审批判定无网络调用、无等待，**不进入判官 deadline**；审批成本不写入 `routing_cost`；
 - `fail_closed = false` 只用于灰度排查：仍记 reason code，但放行。
+- P3 的实现是**规则路径**：工具名分级 + TTL 审批记录，不调用 LLM 判官，因此审批延迟恒为 0、也不占判官预算。用 `DecisionModel` 做风险分类/自动放行是 P4 的扩展点；届时仍必须使用独立预算池。
 
 ---
 

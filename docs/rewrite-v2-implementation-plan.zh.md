@@ -594,7 +594,7 @@ cargo xtask fixture-probe
 | P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
 | P3-9 每 VM state | 完成 | `agent::route_state` 成功后写 `virtual_model_states`；`x-token-router-branch` 驱动真实 fork 隔离；历史 16 条 compaction，`last_served`/`generation` 保留；外来 route state 不覆盖 |
 | P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
-| P3-12/13 审批 | 完成 | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待 |
+| P3-12/13 审批 | 完成（规则路径） | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待。`DecisionModel` 驱动的风险分类留作 P4 扩展点 |
 | P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals,trust-tiers}`，admin token + 常量时间比较 |
 | P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval；`capture` 属设计 §11.3 附加项，未做 |
@@ -631,7 +631,7 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 | P0b | 通过 | 真实客户端流式冒烟待补 |
 | P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
 | P2 | 部分 | 三列对照与成本闸校准未执行（保持 shadow）；`CompetenceGuard` 为可选未做 |
-| P3 | 完成 | 审批实时拦截、VM route state、信任别名、CI 断言均已落地；待真实流量 dogfood |
+| P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
 测试规模：201 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
