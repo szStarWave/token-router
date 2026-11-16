@@ -61,8 +61,13 @@ pub fn router(state: AppState) -> Router {
 
 /// 启动服务。
 pub async fn serve(state: AppState, addr: SocketAddr) -> std::io::Result<()> {
+    serve_router(router(state), addr).await
+}
+
+/// 用已有 Router 启动（服务端会 merge 控制面路由）。
+pub async fn serve_router(app: Router, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(state)).await
+    axum::serve(listener, app).await
 }
 
 async fn health() -> Json<Value> {

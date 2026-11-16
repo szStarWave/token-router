@@ -10,7 +10,7 @@ use clap::Parser;
 use tr_agent::config;
 use tr_agent::pipeline::Pipeline;
 use tr_agent::store::Db;
-use tr_server::{AppState, AuthMode, serve};
+use tr_server::{AppState, AuthMode};
 
 #[derive(Debug, Parser)]
 #[command(name = "token-router-v2", version, about = "Token Router v2 gateway")]
@@ -48,10 +48,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         AuthMode::Disabled
     };
+    let admin_token = if catalog.server.admin_token.is_empty() {
+        None
+    } else {
+        Some(catalog.server.admin_token.clone())
+    };
 
-    let pipeline = Pipeline::from_catalog(db, catalog);
+    let pipeline = std::sync::Arc::new(Pipeline::from_catalog(db, catalog));
+    let app = tr_server::router(AppState::new_shared(pipeline.clone(), auth)).merge(
+        tr_control::router(tr_control::ControlState::new(pipeline, admin_token)),
+    );
+
     println!("token-router v2 listening on http://{addr}");
-
-    serve(AppState::new(pipeline, auth), addr).await?;
+    tr_server::serve_router(app, addr).await?;
     Ok(())
 }

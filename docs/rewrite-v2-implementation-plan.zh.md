@@ -579,3 +579,42 @@ cargo xtask fixture-probe
 迁移新增 migration 2：`ledger.judge_json`（判官 trace 入账，指标同源）。
 
 下一步：P3（虚拟模型、sticky/hold、控制面、审批）。
+
+### 2026-11-16：P3 收口（虚拟模型、派发融合、控制面）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P3-1 虚拟模型目录 | 完成 | 配置校验：profile/池存在、禁止虚拟→虚拟、默认模型解析 |
+| P3-2 每虚拟模型策略 | 完成 | `virtual_models[].strategies` 非空时只启用列出的策略 |
+| P3-3 Selection/Dispatch | 完成 | 两者入账与响应头；thinking level 按物理候选 clamp |
+| P3-4 多 slot Plan | 完成 | preference/failover 分离；Single 多候选仅接力 |
+| P3-5 RequestReason | 完成 | 协议形状推断 + `x-token-router-request-reason` 覆盖 |
+| P3-6 StickyDispatch | 完成（部分） | Continuation/Retry 复用 previous；`failed` 未跨请求持久化，Retry 只能回退 previous |
+| P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹 |
+| P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
+| P3-9 每 VM state | 部分 | 存储/读取就绪；无 route 插件，内核不写 `virtual_model_states` |
+| P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
+| P3-12/13 审批 | 部分 | 风险分级 + `approvals` 表 + 控制面记录；**未做实时拦截** |
+| P3-14 信任档位别名 | 未做 | P4 UI 层映射（trial/familiar/trusted） |
+| P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals}`，admin token + 常量时间比较 |
+| P3-16 CLI | 部分 | config/replay/shadow-report/judge-test/eval；`doctor`/`capture` 未做 |
+| P3-18 新模型只改配置 | 结构成立 | 候选/虚拟模型均为配置驱动；未建 CI 断言 |
+
+**G5 结论**：虚拟模型、sticky/hold、控制面、审批记录完成；审批实时拦截、VM route state 写入、CI 的“core diff = 0”断言未做。
+P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
+
+---
+
+### 总体状态（截至本次收口）
+
+| 阶段 | 状态 | 主要缺口 |
+|---|---|---|
+| S0 | 条件通过 | 三客户端真实冒烟未执行 |
+| P0a | 通过 | e2e 用 mock 上游，非真实 Hermes |
+| P0b | 通过 | 真实客户端流式冒烟待补 |
+| P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据 |
+| P2 | 部分 | 三列对照表与成本闸校准未执行（保持 shadow） |
+| P3 | 部分 | 审批实时拦截、VM route state、信任别名、CI 断言 |
+| P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
+
+测试规模：176 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿。

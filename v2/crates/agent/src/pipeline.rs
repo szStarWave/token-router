@@ -97,7 +97,6 @@ pub struct Pipeline {
     catalog: std::sync::Arc<Catalog>,
     upstream: HttpUpstream,
     judge: std::sync::Arc<crate::judge::JudgeRuntime>,
-    strategies: Vec<Box<dyn tr_core::strategy::Strategy>>,
     cost_gate: crate::gate::CostGateMode,
 }
 
@@ -118,7 +117,6 @@ impl Pipeline {
             catalog: std::sync::Arc::new(catalog),
             upstream,
             judge: std::sync::Arc::new(judge),
-            strategies: tr_core::default_strategies(),
             cost_gate,
         }
     }
@@ -148,11 +146,35 @@ impl Pipeline {
     ) -> Result<Prepared, PipelineError> {
         let now_unix = now_secs();
 
-        let virtual_model_id = request
-            .meta
-            .virtual_model
-            .clone()
-            .unwrap_or_else(|| self.catalog.default_virtual_model.clone());
+        let branch_id = "main".to_string();
+        let task_id = String::new();
+
+        let session_input = session::build_input(&request, context.server_session_id.clone());
+        let derived = session::derive(&session_input);
+
+        let facts =
+            store::sessions::load(&self.db, &derived.key, &branch_id)?.unwrap_or_else(|| {
+                SessionFacts {
+                    session_key: derived.key.clone(),
+                    branch_id: branch_id.clone(),
+                    ..SessionFacts::default()
+                }
+            });
+
+        // 会话恢复：未指定虚拟模型时优先沿用上次选择；存储的选择已不存在 → 回退默认并记 reason。
+        let stored_selection = facts.selected_virtual_model.clone();
+        let mut virtual_model_missing = false;
+        let virtual_model_id = match request.meta.virtual_model.clone() {
+            Some(id) => id,
+            None => match stored_selection {
+                Some(id) if self.catalog.virtual_models.contains_key(&id) => id,
+                Some(_) => {
+                    virtual_model_missing = true;
+                    self.catalog.default_virtual_model.clone()
+                }
+                None => self.catalog.default_virtual_model.clone(),
+            },
+        };
         let virtual_model = self
             .catalog
             .virtual_model(&virtual_model_id)
@@ -171,21 +193,6 @@ impl Pipeline {
             .clone()
             .filter(|level| !level.is_empty())
             .unwrap_or_else(|| "off".to_string());
-
-        let branch_id = "main".to_string();
-        let task_id = String::new();
-
-        let session_input = session::build_input(&request, context.server_session_id.clone());
-        let derived = session::derive(&session_input);
-
-        let facts =
-            store::sessions::load(&self.db, &derived.key, &branch_id)?.unwrap_or_else(|| {
-                SessionFacts {
-                    session_key: derived.key.clone(),
-                    branch_id: branch_id.clone(),
-                    ..SessionFacts::default()
-                }
-            });
         let strategy_states = store::strategy::load_strategy_states(
             &self.db,
             &derived.key,
@@ -246,7 +253,10 @@ impl Pipeline {
         };
 
         // 两阶段：draft 产出 Plan 与判官请求；active 模式下 refine 覆盖 Plan。
-        let (mut plan, requests) = tr_core::decide_and_collect(&snapshot, &self.strategies);
+        let group_digest = group_digest(&virtual_model, &profile);
+        let plan_revision = plan_revision(&group_digest);
+        let strategies = strategy_set(&virtual_model);
+        let (mut plan, requests) = tr_core::decide_and_collect(&snapshot, &strategies);
         let plan_uuid = Uuid::new_v4().simple().to_string();
         let plan_id = format!("plan-{}", &plan_uuid[..12]);
 
@@ -262,8 +272,7 @@ impl Pipeline {
             }
 
             if self.judge.is_active() && !outcome.verdicts.is_empty() {
-                plan =
-                    tr_core::decide_with_verdicts(&snapshot, &self.strategies, &outcome.verdicts);
+                plan = tr_core::decide_with_verdicts(&snapshot, &strategies, &outcome.verdicts);
             }
 
             if let Some(trace) = outcome.traces.first().cloned() {
@@ -299,6 +308,41 @@ impl Pipeline {
                     eprintln!("judge_calls insert failed: {error}");
                 }
             }
+        }
+
+        // 会话恢复时虚拟模型已不存在：已回退默认模型，这里补审计理由。
+        if virtual_model_missing {
+            plan.reason_codes
+                .push(ReasonCode::new(ReasonCodeKind::VirtualModelMissing));
+        }
+
+        // Sticky / ContextHold：硬复用（Retry/Continuation）与软亲和（User）。
+        //
+        // 例外：Escalation latch 是权威状态。latch 生效时必须跳过 sticky，
+        // 否则 agent 工具续接（Continuation）会把强档拉回弱档，latch 永远无法落地。
+        let latched = plan
+            .reason_codes
+            .iter()
+            .any(|reason| reason.code == ReasonCodeKind::EscalationLatched);
+        if !latched {
+            let resolution = crate::dispatch::resolve(&crate::dispatch::DispatchContext {
+                reason: request_reason,
+                previous: snapshot.previous.as_ref(),
+                hold: snapshot.context_hold.as_ref(),
+                candidates: &candidates,
+                health: &snapshot.health,
+                now_unix,
+                prompt_tokens: tr_core::signals::estimate_input_tokens(&request),
+                required_input: required_input(&request),
+                virtual_model_id: &virtual_model.id,
+                profile_id: &profile.id,
+                ingress_protocol: request.meta.ingress_protocol.as_str(),
+                identity_digest: &derived.key,
+                group_digest: &group_digest,
+                plan_revision,
+                direct_opts_into_sticky: false,
+            });
+            apply_dispatch(&mut plan, resolution);
         }
 
         // 成本闸：P2 默认 shadow（只记录）；active 时拒绝无收益的切换。
@@ -363,6 +407,8 @@ impl Pipeline {
             protocol_state_missing,
             strategy_states,
             shadow,
+            group_digest,
+            plan_revision,
         })
     }
 
@@ -763,6 +809,8 @@ struct Prepared {
     strategy_states:
         std::collections::BTreeMap<tr_contracts::StrategyId, tr_contracts::StrategyState>,
     shadow: Option<ShadowInfo>,
+    group_digest: String,
+    plan_revision: u64,
 }
 
 /// shadow 模式记录：判官建议 vs 内核结论。
@@ -842,6 +890,20 @@ impl Prepared {
             prompt_tokens: u64::from(usage.input_tokens),
             updated_at: self.now_unix,
         });
+        facts.context_holds.insert(
+            self.virtual_model.id.clone(),
+            tr_contracts::ContextHold {
+                candidate_id: candidate.id.clone(),
+                virtual_model_id: self.virtual_model.id.clone(),
+                group_digest: self.group_digest.clone(),
+                plan_revision: self.plan_revision,
+                profile_id: self.profile.id.clone(),
+                ingress_protocol: self.canonical.meta.ingress_protocol.as_str().to_string(),
+                identity_digest: self.session_key.clone(),
+                updated_at: self.now_unix,
+                expires_at: self.now_unix + 3600,
+            },
+        );
         facts.updated_at = self.now_unix;
         facts
     }
@@ -1306,4 +1368,105 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+/// 候选组指纹：池 + profile 版本。ContextHold 只认这个，不认价格变化。
+fn group_digest(virtual_model: &VirtualModel, profile: &tr_contracts::ProfileConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let material = format!(
+        "{}|{}|{}",
+        virtual_model.id,
+        profile.revision,
+        virtual_model.candidate_pool.join(",")
+    );
+    let digest = Sha256::digest(material.as_bytes());
+    let mut out = String::with_capacity(32);
+    for byte in &digest[..8] {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn plan_revision(group_digest: &str) -> u64 {
+    u64::from_str_radix(group_digest, 16).unwrap_or(0)
+}
+
+/// 请求需要的输入模态（文本视为所有候选都支持）。
+fn required_input(request: &CanonicalRequest) -> Vec<tr_contracts::InputModality> {
+    let mut modalities = vec![tr_contracts::InputModality::Text];
+    let has_image = request.messages.iter().any(|message| {
+        message
+            .blocks
+            .iter()
+            .any(|block| matches!(block, tr_contracts::ContentBlock::Image { .. }))
+    });
+    let has_audio = request.messages.iter().any(|message| {
+        message
+            .blocks
+            .iter()
+            .any(|block| matches!(block, tr_contracts::ContentBlock::Audio { .. }))
+    });
+    if has_image {
+        modalities.push(tr_contracts::InputModality::Image);
+    }
+    if has_audio {
+        modalities.push(tr_contracts::InputModality::Audio);
+    }
+    modalities
+}
+
+/// 虚拟模型可用的策略集：`virtual_models[].strategies` 非空时只启用列出的策略。
+fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::Strategy>> {
+    use tr_core::strategy::{Baseline, Classify, Escalation, Failover, Strategy};
+
+    if virtual_model.strategies.is_empty() {
+        return tr_core::default_strategies();
+    }
+
+    let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
+    for id in &virtual_model.strategies {
+        match id.as_str() {
+            "baseline" => strategies.push(Box::new(Baseline)),
+            "failover" => strategies.push(Box::new(Failover)),
+            "escalation" => strategies.push(Box::new(Escalation)),
+            "classify" => strategies.push(Box::new(Classify)),
+            // 未知策略由配置校验负责报错；运行时静默忽略并保持可用。
+            _ => {}
+        }
+    }
+    if strategies.is_empty() {
+        tr_core::default_strategies()
+    } else {
+        strategies
+    }
+}
+
+/// 把 Sticky/ContextHold 的结论落到 Plan 顺序上。
+fn apply_dispatch(plan: &mut Plan, resolution: crate::dispatch::Resolution) {
+    if let Some(candidate) = resolution.candidate {
+        if let Some(position) = plan
+            .preference
+            .iter()
+            .position(|slot| slot.candidate_id == candidate)
+        {
+            let slot = plan.preference.remove(position);
+            plan.preference.insert(0, slot);
+            if let Some(position) = plan
+                .failover
+                .iter()
+                .position(|slot| slot.candidate_id == candidate)
+            {
+                let slot = plan.failover.remove(position);
+                plan.failover.insert(0, slot);
+            }
+            plan.dispatch_source = resolution.source;
+        } else {
+            plan.reason_codes.push(ReasonCode::with_detail(
+                ReasonCodeKind::StickyTargetUnavailable,
+                candidate,
+            ));
+        }
+    }
+    plan.reason_codes.extend(resolution.reasons);
 }

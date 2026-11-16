@@ -277,6 +277,108 @@ async fn admin_stats_matches_ledger() {
 }
 
 #[tokio::test]
+async fn control_api_requires_admin_token_and_redacts_secrets() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+
+    // 先产生一条账本。
+    let chat = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled));
+    let response = chat.oneshot(post_chat(None)).await.expect("chat");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled)).merge(
+        tr_control::router(tr_control::ControlState::new(
+            pipeline,
+            Some("admin-secret".to_string()),
+        )),
+    );
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/config")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let allowed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/config")
+                .header("x-admin-token", "admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&body_text(allowed).await).expect("json");
+    assert_eq!(value["default_virtual_model"], "auto");
+    assert!(value["candidates"][0].get("credential_ref").is_some());
+    // 配置视图里不能出现密钥值字段。
+    assert!(value["candidates"][0].get("credential").is_none());
+
+    let ledger = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/ledger?limit=10")
+                .header("x-admin-token", "admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(ledger.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&body_text(ledger).await).expect("json");
+    assert_eq!(value["rows"].as_array().expect("rows").len(), 1);
+
+    let approval = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v2/admin/approvals")
+                .header("x-admin-token", "admin-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "request_id": "req-1",
+                        "tool_name": "shell_exec",
+                        "risk_class": "high",
+                        "decision": "deny"
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(approval.status(), StatusCode::OK);
+
+    let approvals = app
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/approvals?limit=10")
+                .header("x-admin-token", "admin-secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let value: serde_json::Value = serde_json::from_str(&body_text(approvals).await).expect("json");
+    assert_eq!(value["rows"][0]["tool_name"], "shell_exec");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
 async fn anthropic_endpoint_round_trips() {
     let mock = MockUpstream::start(vec![Reply::ok("hello anthropic")]).await;
     let db = Db::open_in_memory().expect("db");

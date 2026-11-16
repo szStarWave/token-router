@@ -134,3 +134,32 @@ pub fn cost_equiv_of(db: &Db, request_id: &str) -> Result<Option<Cost>, StoreErr
         currency: String::new(),
     }))
 }
+
+/// 最近账本行（控制面查询）。
+pub fn recent(db: &Db, limit: u32) -> Result<Vec<serde_json::Value>, StoreError> {
+    let connection = db.read();
+    let mut statement = connection.prepare(
+        "SELECT request_id, plan_id, selection_model, dispatch_model, dispatch_source,
+                outcome, answer_cost_micros, routing_cost_micros, reason_codes_json,
+                duration_ms, created_at
+           FROM ledger ORDER BY id DESC LIMIT ?1",
+    )?;
+    let mut rows = statement.query(params![i64::from(limit)])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(serde_json::json!({
+            "request_id": row.get::<_, String>(0)?,
+            "plan_id": row.get::<_, String>(1)?,
+            "selection_model": row.get::<_, String>(2)?,
+            "dispatch_model": row.get::<_, Option<String>>(3)?,
+            "dispatch_source": row.get::<_, Option<String>>(4)?,
+            "outcome": row.get::<_, String>(5)?,
+            "answer_cost_micros": row.get::<_, Option<i64>>(6)?,
+            "routing_cost_micros": row.get::<_, Option<i64>>(7)?,
+            "reason_codes": row.get::<_, String>(8)?,
+            "duration_ms": row.get::<_, i64>(9)?,
+            "created_at": row.get::<_, i64>(10)?,
+        }));
+    }
+    Ok(out)
+}

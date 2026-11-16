@@ -37,7 +37,13 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ),
     (
         "tr-server",
-        &["tr-contracts", "tr-proto", "tr-agent", "mock-upstream"],
+        &[
+            "tr-contracts",
+            "tr-proto",
+            "tr-agent",
+            "tr-control",
+            "mock-upstream",
+        ],
     ),
     ("tr-control", &["tr-contracts", "tr-agent"]),
     (

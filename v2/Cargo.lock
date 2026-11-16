@@ -1472,7 +1472,10 @@ dependencies = [
 name = "tr-control"
 version = "0.20.0"
 dependencies = [
+ "axum",
+ "serde",
  "serde_json",
+ "tokio",
  "tr-agent",
  "tr-contracts",
 ]
@@ -1520,6 +1523,7 @@ dependencies = [
  "tower",
  "tr-agent",
  "tr-contracts",
+ "tr-control",
  "tr-proto",
 ]
 
