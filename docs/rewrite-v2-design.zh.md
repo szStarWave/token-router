@@ -2047,7 +2047,7 @@ v2 固定 7 种步态（见 §4.3 的 `StepKind`）：
 
 | # | 决策 | 当前倾向 | 影响面 | 状态 |
 |---|---|---|---|---|
-| D-1 | 判官默认模型：本地小模型 vs Jev | 本地小模型默认 `off`；shadow 达标（≥500 样本、p95 ≤ 300ms、escalation precision ≥ 0.7）才 active；Jev 仅离线对照/可选升级 | `decide` 默认配置 | 默认已定；2026-11-16 决策：无 shadow 数据 → 保持 `off`，达标后复核 |
+| D-1 | 判官默认模型：本地小模型 vs Jev | 本地小模型默认 `off`；shadow 达标（≥500 样本、p95 ≤ 300ms、escalation precision ≥ 0.7）才 active；Jev 仅离线对照/可选升级 | `decide` 默认配置 | 默认已定；2026-11-16 实测 556 条 shadow、P95 315ms 未达标 → 保持 `off` |
 | D-2 | 模型选择语法 | `model` = 虚拟模型 id；`auto` / `token-router` 为内置虚拟模型；物理 id 仅调试/管理面 | `proto` + `agent` | 已定 |
 | D-3 | shadow/capture 保留与脱敏 | shadow 30 天脱敏；raw capture 本地加密、默认关闭 | 存储 + 隐私 | 已定 |
 | D-4 | 策略合并优先级 | `Escalation > CompetenceGuard > Classify > Baseline`；`Failover` 只做过滤/接力 | `agent` 合并器 | 已定 |

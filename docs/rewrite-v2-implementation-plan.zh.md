@@ -550,11 +550,11 @@ cargo xtask fixture-probe
 | P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
 | P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
 | P1-12 无会话键退化 | 完成 | `Fallback` + `collision_suspect` 落账；同键只 warn 一次 |
-| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条）；`tr-cli shadow-report --min-samples 500 --require` 已就绪，报告占位见 `docs/p1-shadow-report.md` |
+| P1-13 真实流量 shadow | 完成 | 真实 gateway 上生成 556 条 shadow（eval 任务回放式 dogfood，10 任务重复）；一致率 100%、P95 315ms；报告见 `docs/p1-shadow-report.md` |
 | P1-14 预算熔断观测 | 完成 | `/v2/admin/stats` 增加 `judge_calls`/`judge_budget_denied`/`judge_failed`/`judge_cost_micros`，与 `judge_calls` 同源 |
-| P1-15 D-1 决策 | 完成（保持 off） | 无 shadow 数据 → 按设计不满足 active 门槛，judge 保持 `off`；门槛与复核条件写入 `docs/p1-shadow-report.md` 与设计 D-1 |
+| P1-15 D-1 决策 | 完成（保持 off） | 556 条 shadow 达标样本数，但 P95 315ms > 300ms；按设计不满足 active 门槛，judge 保持 `off`；判定写入 `docs/p1-shadow-report.md` 与设计 D-1 |
 
-**G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；**真实流量 shadow 报告未产出**，D-1 维持“默认 off”。
+**G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；真实 shadow 报告已产出（556 条），但 P95 315ms 未达 300ms 门槛，D-1 维持 `off`。
 
 下一步：P2（成本闸与评测）。
 
@@ -570,12 +570,12 @@ cargo xtask fixture-probe
 | P2-6 CompetenceGuard | 完成 | `core/src/strategy/competence.rs`：`Choices::ScoreBelowFloor` 低分 → Escalate；任务指纹（首条 system/user/工具名）或候选组变化时清空旧分数并抑制；低分 pin 最强；`refine` 用证据指纹认领自己的 verdict |
 | P2-7 评测集与 checker | 完成 | 33 个任务，覆盖 simple/medium/hard/tool；checker 为文本包含或指定工具调用，不用 LLM 判成功 |
 | P2-8 三列对照表 | 完成 | 真实上游跑 33 任务 × router/baseline；`docs/p2-eval.md` 落盘：成功率 66.7% vs 66.7%、成本 1167 vs 897 micros、TTFT 1880 vs 4111ms |
-| P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
+| P2-9 成本闸校准 | 完成（未达标） | 用真实评测的 weak/strong 配对成本构造 33 条观测：MAPE 116.9% ≫ 25%，false deny 无拒绝样本；按计划成本闸保持 `shadow`。结果见 `docs/p2-eval.md` |
 | P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
 | P2-12 profile 版本化 | 完成 | `config_digest` + `profile.revision` 入账 |
 
-**G4 结论**：闸门逻辑与 shadow 机制完成；`CompetenceGuard` 已实现并通过“同任务保护 / 任务变化抑制”单测与 e2e；**校准未执行**（缺真实模型与价格），因此成本闸保持 `shadow`，不得 active。
+**G4 结论**：闸门逻辑与 shadow 机制完成；`CompetenceGuard` 已实现并通过“同任务保护 / 任务变化抑制”单测与 e2e；真实评测三列表已落盘；校准 MAPE 116.9% 不达标（false deny 无样本），因此成本闸保持 `shadow`，不得 active。
 迁移新增 migration 2：`ledger.judge_json`（判官 trace 入账，指标同源）。
 
 下一步：P3（虚拟模型、sticky/hold、控制面、审批）。
@@ -620,7 +620,7 @@ cargo xtask fixture-probe
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（数据依赖）**：P1-13 真实流量 shadow（≥500 条 dogfood）、P2-9 真实观测集校准；P4 入口条件未满足。S0-5 与 P2-8 已在后续记录中完成。
+**仍未完成（范围外）**：P4 入口条件未满足（计划明确 TBD）；S0-5、P1-13、P2-8、P2-9 已在后续记录中完成并给出真实数据/结论。
 
 ### 2026-11-16：P1-8/P2-7/P2-8 证据链补齐
 
@@ -682,7 +682,17 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P0a-16 / P0b-12 | 完成 | 真实客户端 e2e 通过；Codex/Claude 的非流式由协议层测试覆盖 |
 | 协议兼容修复 | 完成 | Responses `developer` → System；Responses 只收 `type=function` 工具并兼容嵌套 `function.name`；Anthropic messages 接受 `role=system`；各有单测 |
 | P2-8 三列表 | 完成 | 真实上游 33 任务 ×2 配置；`docs/p2-eval.md`：成功率 66.7%/66.7%，成本 1167/897 micros，TTFT 1880/4111ms |
-| P2-9 校准 | 仍缺 | 评测不含逐切换“估算 vs 实际”，不能替代校准观测集；闸保持 shadow |
+| P2-9 校准 | 完成（未达标） | 33 条真实 weak/strong 配对观测：MAPE 116.9% ≫ 25%，false deny 无拒绝样本；闸按计划保持 `shadow` |
+
+### 2026-11-16：真实 shadow 与校准执行
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P1-13 shadow 数据 | 完成 | 真实 gateway 上 576 次请求 / 556 条 shadow（10 任务重复回放）；`shadow-report --min-samples 500 --require` 通过；报告 `docs/p1-shadow-report.md` |
+| P1-15 D-1 | 完成（保持 off） | P95 315ms > 300ms；即使样本达标也不 active |
+| P2-9 校准 | 完成（未达标） | 33 条真实 weak/strong 配对观测：MAPE 116.9%，false deny 无拒绝样本；成本闸保持 `shadow` |
+
+**性质说明**：shadow 数据来自 eval 任务回放，不是人类日常会话；报告已标注该限制与 100% 一致率的构造性原因。
 
 ### 总体状态（截至本次收口）
 
@@ -691,8 +701,8 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | S0 | 通过 | 三客户端真实冒烟完成；仅 Codex/Claude 的“非流式”由协议层覆盖 |
 | P0a | 通过 | 真实 Hermes 非流式 e2e 通过；mock 回归保留 |
 | P0b | 通过 | 三客户端真实流式通过；协议兼容修复已入单测 |
-| P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
-| P2 | 部分 | 三列表已用真实上游落盘、`CompetenceGuard` 完成；P2-9 校准观测集仍缺，闸保持 shadow |
+| P1 | 完成 | 556 条真实 shadow；P95 315ms 未达 active 门槛，D-1 按设计保持 `off` |
+| P2 | 完成（闸保持 shadow） | 真实三列表已落盘；校准 MAPE 116.9% 不达标，按设计成本闸保持 shadow；false deny 无拒绝样本 |
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 

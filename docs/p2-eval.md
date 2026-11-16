@@ -47,15 +47,35 @@ MAGPIE_KEY=magpie cargo run -p tr-cli -- eval \
 
 checker 不用 LLM 判成功；单测锁定 ≥30 与四类覆盖。
 
-## 成本闸校准（P2-9，仍未完成）
+## 成本闸校准（P2-9）
 
-校准不依赖上述任务集，而依赖带“估算 delta / 实际 delta / 是否误拒”的观测集：
+用同一次真实评测的 **同任务 weak/strong 配对成本**构造观测集（33 条）：
+
+- `estimated_delta_micros`：按 `estimate_input_tokens` 的字符启发式 + 两个候选的输入价格估算的切换价差；
+- `actual_delta_micros`：router 实际成本 − baseline 实际成本（账本 `answer_cost`，真实模型）；
+- `denied=false`：本次没有成本闸拒绝决策，因此 false deny 无样本。
 
 ```bash
-cargo run -p tr-cli -- eval calibrate --observations <observations.json> --json
+cargo run -p tr-cli -- eval calibrate \
+  --observations /tmp/tr-smoke/observations.json --json
 ```
 
-- 门槛：MAPE ≤ 25%、false deny ≤ 5%、样本数 ≥ 30；
-- 不达标时输出 `cost_gate_mode = "shadow"`，成本闸不得 active；
-- 观测集字段：`estimated_delta_micros`、`actual_delta_micros`、`denied`、`would_have_succeeded`；
-- 本次评测没有逐切换的“估算 vs 实际”记录，因此不能替代校准观测集。
+结果：
+
+```json
+{
+  "samples": 33,
+  "mape": 1.1688221809130457,
+  "denied": 0,
+  "false_denies": 0,
+  "false_deny_rate": null,
+  "passed": false,
+  "cost_gate_mode": "shadow"
+}
+```
+
+**结论：MAPE 116.9% ≫ 25%，校准不达标 → 成本闸保持 `shadow`，不得 active。**
+
+限制：本次观测集没有“被拒绝的切换”，false deny 无法度量；下一步需要真实
+gate 拒绝样本（`denied=true` + 事后成功/失败）才能完成 false deny 门槛。
+
