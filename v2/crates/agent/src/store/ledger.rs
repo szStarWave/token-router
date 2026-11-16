@@ -29,6 +29,7 @@ pub(crate) fn insert_with(
         .map(serde_json::to_string)
         .transpose()?;
     let contributions_json = serde_json::to_string(&record.contributions)?;
+    let authority_json = serde_json::to_string(&record.authority)?;
 
     connection.execute(
         "INSERT INTO ledger (
@@ -41,7 +42,7 @@ pub(crate) fn insert_with(
             input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
             answer_cost_micros, routing_cost_micros, facts_completeness,
             profile_revision, config_digest, ttft_ms, duration_ms, created_at,
-            judge_json, contributions_json
+            judge_json, contributions_json, authority_json
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8,
@@ -52,7 +53,7 @@ pub(crate) fn insert_with(
             ?23, ?24, ?25, ?26,
             ?27, ?28, ?29,
             ?30, ?31, ?32, ?33, ?34,
-            ?35, ?36
+            ?35, ?36, ?37
          )",
         params![
             record.request_id.to_string(),
@@ -90,7 +91,8 @@ pub(crate) fn insert_with(
             record.duration_ms as i64,
             record.created_at as i64,
             judge_json,
-            contributions_json
+            contributions_json,
+            authority_json
         ],
     )?;
     Ok(())

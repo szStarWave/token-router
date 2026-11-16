@@ -705,6 +705,34 @@ async fn route_state_is_branch_scoped() {
     mock.shutdown();
 }
 
+#[tokio::test]
+async fn authority_is_written_to_ledger_and_session() {
+    let mock = MockUpstream::start(vec![Reply::ok("ok")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let context = RequestContext {
+        server_session_id: Some("sess-authority".to_string()),
+        authority: Some(tr_contracts::RequestAuthority {
+            authority_id: "inbound_key".to_string(),
+            ..tr_contracts::RequestAuthority::default()
+        }),
+        ..RequestContext::default()
+    };
+    let result = pipeline
+        .handle(chat_request("hi"), context)
+        .await
+        .expect("handle");
+    assert_eq!(result.ledger.authority.authority_id, "inbound_key");
+
+    let facts = store::sessions::load(pipeline.db(), &result.ledger.session_key, "main")
+        .expect("load")
+        .expect("session");
+    assert_eq!(facts.authority.authority_id, "inbound_key");
+
+    mock.shutdown();
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

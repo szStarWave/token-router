@@ -13,7 +13,7 @@ use crate::ids::{
 use crate::judge::JudgeTrace;
 use crate::reason::ReasonCode;
 use crate::routing::{Cost, DispatchSource, PlanContributionRecord, PlanMode, RequestReason};
-use crate::state::{OutcomeKind, SessionKeySource, SlotRef};
+use crate::state::{OutcomeKind, RequestAuthority, SessionKeySource, SlotRef};
 
 /// 账本事实完整度。部分覆盖不得当作完整和（§9.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -62,6 +62,8 @@ pub struct LedgerRecord {
     pub session_key_source: SessionKeySource,
     pub collision_suspect: bool,
     pub ingress_protocol: IngressProtocol,
+    /// 请求授权身份（P0–P3 只填 `authority_id`，见 §8.5）。
+    pub authority: RequestAuthority,
     pub selected_virtual_model: Option<VirtualModelId>,
     pub selected_thinking_level: Option<ThinkingLevel>,
     pub request_reason: RequestReason,

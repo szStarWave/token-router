@@ -16,7 +16,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use tr_agent::pipeline::{DecisionHeaders, Pipeline, PipelineError, RequestContext};
-use tr_contracts::IngressProtocol;
+use tr_contracts::{IngressProtocol, RequestAuthority};
 use tr_proto::chat;
 
 /// 鉴权方式（P0 只有入站 key）。
@@ -24,6 +24,50 @@ use tr_proto::chat;
 pub enum AuthMode {
     Disabled,
     InboundKey(String),
+}
+
+/// 鉴权失败（不携带原因，避免把“哪里不对”回显给客户端）。
+#[derive(Debug)]
+pub struct AuthError;
+
+/// 鉴权扩展点（§3.4）：P4 的 grant 校验实现同一 trait，不改 handler。
+pub trait Authenticator: Send + Sync {
+    fn authenticate(&self, headers: &HeaderMap) -> Result<RequestAuthority, AuthError>;
+}
+
+impl Authenticator for AuthMode {
+    fn authenticate(&self, headers: &HeaderMap) -> Result<RequestAuthority, AuthError> {
+        match self {
+            Self::Disabled => Ok(RequestAuthority {
+                authority_id: "anonymous".to_string(),
+                ..RequestAuthority::default()
+            }),
+            Self::InboundKey(expected) => {
+                if expected.is_empty() {
+                    return Err(AuthError);
+                }
+                let provided = headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .or_else(|| {
+                        headers
+                            .get("x-api-key")
+                            .and_then(|value| value.to_str().ok())
+                    });
+                if provided.is_some_and(|provided| {
+                    constant_time_eq(provided.as_bytes(), expected.as_bytes())
+                }) {
+                    Ok(RequestAuthority {
+                        authority_id: "inbound_key".to_string(),
+                        ..RequestAuthority::default()
+                    })
+                } else {
+                    Err(AuthError)
+                }
+            }
+        }
+    }
 }
 
 /// HTTP 应用状态。
@@ -93,7 +137,7 @@ async fn models(State(state): State<AppState>) -> Json<Value> {
 
 /// 账本指标（P2-10）：与账本同源，避免“日志口径”和“账本口径”分裂。
 async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !authorized(&state.auth, &headers) {
+    if state.auth.authenticate(&headers).is_err() {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
@@ -161,13 +205,16 @@ async fn handle_ingress(
     body: Value,
     protocol: IngressProtocol,
 ) -> Response {
-    if !authorized(&state.auth, &headers) {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "invalid or missing inbound key",
-        );
-    }
+    let authority = match state.auth.authenticate(&headers) {
+        Ok(authority) => authority,
+        Err(_) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                "invalid or missing inbound key",
+            );
+        }
+    };
 
     let mut request = match decode(protocol, &body) {
         Ok(request) => request,
@@ -188,6 +235,7 @@ async fn handle_ingress(
             .as_deref()
             .and_then(tr_agent::reason::parse_header),
         branch_id: header_string(&headers, "x-token-router-branch"),
+        authority: Some(authority),
     };
     // 信任档位别名（P3-14）：header → meta，只影响 profile 解析。
     request.meta.trust_tier = header_string(&headers, "x-token-router-trust");
@@ -421,27 +469,6 @@ fn apply_decision_headers(headers: &mut HeaderMap, decision: &DecisionHeaders) {
     }
 }
 
-fn authorized(auth: &AuthMode, headers: &HeaderMap) -> bool {
-    let AuthMode::InboundKey(expected) = auth else {
-        return true;
-    };
-    if expected.is_empty() {
-        return false;
-    }
-
-    let provided = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .or_else(|| {
-            headers
-                .get("x-api-key")
-                .and_then(|value| value.to_str().ok())
-        });
-
-    provided.is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
-}
-
 /// 常数时间比较，避免按字节提前返回泄漏密钥前缀。
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
@@ -482,7 +509,10 @@ mod tests {
     #[test]
     fn auth_disabled_allows_anything() {
         let headers = HeaderMap::new();
-        assert!(authorized(&AuthMode::Disabled, &headers));
+        let authority = AuthMode::Disabled
+            .authenticate(&headers)
+            .expect("disabled auth");
+        assert_eq!(authority.authority_id, "anonymous");
     }
 
     #[test]
@@ -492,16 +522,24 @@ mod tests {
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer secret"),
         );
-        assert!(authorized(&AuthMode::InboundKey("secret".into()), &headers));
+        let authority = AuthMode::InboundKey("secret".into())
+            .authenticate(&headers)
+            .expect("bearer");
+        assert_eq!(authority.authority_id, "inbound_key");
 
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("secret"));
-        assert!(authorized(&AuthMode::InboundKey("secret".into()), &headers));
+        assert!(
+            AuthMode::InboundKey("secret".into())
+                .authenticate(&headers)
+                .is_ok()
+        );
 
         let headers = HeaderMap::new();
-        assert!(!authorized(
-            &AuthMode::InboundKey("secret".into()),
-            &headers
-        ));
+        assert!(
+            AuthMode::InboundKey("secret".into())
+                .authenticate(&headers)
+                .is_err()
+        );
     }
 }

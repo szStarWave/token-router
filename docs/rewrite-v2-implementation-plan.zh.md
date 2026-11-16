@@ -489,12 +489,12 @@ cargo xtask fixture-probe
 | P0a-1/2 契约与快照投影 | 完成 | `contracts` 11 个模块；`DecisionSnapshot::view()` + `projection_digest()` |
 | P0a-3/4/5 Signals + Baseline/Failover + decide | 完成 | `core` 零 IO；token 估算为字符启发式（P0a 末换 tokenizers） |
 | P0a-6 `cli replay` | 完成 | `tr-cli replay --snapshot --digest` |
-| P0a-7/8 迁移 + 仓储 + CAS | 完成 | migration 1 全部 10 张表；sessions/ledger/breakers/strategy/vm_state |
+| P0a-7/8 迁移 + 仓储 + CAS | 完成 | migration 1 全部 10 张表；sessions/ledger/breakers/strategy/vm_state；并发写测试（8×10）无 `SQLITE_BUSY` |
 | P0a-9 upstream 非流式 | 完成 | OpenAI 兼容；`ErrorClass` 归一化；credential `env:`/`file:` |
-| P0a-10 熔断 | 完成 | 按 §18.4.2 权重计数；`InvalidRequest`/`Auth`/`Quota` 不计数 |
+| P0a-10 熔断 | 完成 | 按 §18.4.2 权重计数；`InvalidRequest`/`Auth`/`Quota` 不计数；half-open 单探针（30s 窗口，原子认领） |
 | P0a-11 编排 + 事务提交 | 完成 | 会话 CAS + 熔断 + 账本同事务；失败也写账本 |
 | P0a-12 Chat 编解码 | 完成 | fixture 往返无损；`passthrough` 保留未知字段 |
-| P0a-13/14/15 端点/鉴权/头 | 完成 | `/v1/chat/completions`、`/v1/models`、`/health`；常数时间 key 比较 |
+| P0a-13/14/15 端点/鉴权/头 | 完成 | `/v1/chat/completions`、`/v1/models`、`/health`；`Authenticator` + `RequestAuthority` 写入 `SessionFacts`/账本（migration 4）；常数时间 key 比较 |
 | P0a-16 e2e | 完成（mock） | `mock-upstream` + axum `oneshot`；**未用真实 Hermes** |
 | P0a-17 CI | 完成 | 三个门禁 + `cargo test --workspace`（84 tests） |
 
@@ -543,16 +543,16 @@ cargo xtask fixture-probe
 | P1-3 LLM adapter | 完成 | 动态 JSON schema / json_mode / tool_call；`uncertain` 保留字校验 |
 | P1-4 本地兜底 + `judge test` | 完成 | `tr-cli judge-test` 对 local 后端 Passed |
 | P1-5 判官审计 | 完成 | `judge_calls` 只存结构化字段，不存 prompt |
-| P1-6 shadow 记录 | 完成 | `shadow_records` + `tr-cli shadow-report` |
+| P1-6 shadow 记录 | 完成 | `shadow_records` + `tr-cli shadow-report`；独立线程批量写入，请求路径只入队（不阻塞主路径） |
 | P1-7 Classify shadow | 完成 | `mode=shadow` 下 Plan 不变，只写 `Note` 理由 + `shadow_records`；不需要独立 suggestion 表 |
 | P1-8 shadow 报告 | 完成 | 一致率/平均延迟/P95/判官成本；`--min-samples N --require` 可直接作为 dogfood 门禁 |
 | P1-9 Escalation 状态机 | 完成 | 四态 + 强档计数 + 硬上限 + 冷却 |
 | P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
 | P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
 | P1-12 无会话键退化 | 完成 | `Fallback` + `collision_suspect` 落账；同键只 warn 一次 |
-| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条）；`tr-cli shadow-report --min-samples 500 --require` 已就绪 |
+| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条）；`tr-cli shadow-report --min-samples 500 --require` 已就绪，报告占位见 `docs/p1-shadow-report.md` |
 | P1-14 预算熔断观测 | 完成 | `/v2/admin/stats` 增加 `judge_calls`/`judge_budget_denied`/`judge_failed`/`judge_cost_micros`，与 `judge_calls` 同源 |
-| P1-15 D-1 决策 | **待数据** | 按设计保持默认 off，shadow 达标后再评估 active |
+| P1-15 D-1 决策 | 完成（保持 off） | 无 shadow 数据 → 按设计不满足 active 门槛，judge 保持 `off`；门槛与复核条件写入 `docs/p1-shadow-report.md` 与设计 D-1 |
 
 **G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；**真实流量 shadow 报告未产出**，D-1 维持“默认 off”。
 
@@ -569,7 +569,7 @@ cargo xtask fixture-probe
 | P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
 | P2-6 CompetenceGuard | 未做（可选） | 设计标为可选；P0–P3 没有 competence score 生产器（逐轮判官评分会突破默认预算），留 P4 |
 | P2-7 评测集与 checker | 完成 | 33 个任务，覆盖 simple/medium/hard/tool；checker 为文本包含或指定工具调用，不用 LLM 判成功 |
-| P2-8 三列对照表 | 部分 | `tr-cli eval --out <md>` 生成“成功率/等价成本/首 token 延迟”表，支持 `--baseline-config` 双跑；真实上游数据未接入 |
+| P2-8 三列对照表 | 部分 | `tr-cli eval --out <md>` 生成“成功率/等价成本/首 token 延迟”表，支持 `--baseline-config` 双跑；真实上游数据未接入，占位与运行方式见 `docs/p2-eval.md` |
 | P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
 | P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
@@ -640,6 +640,15 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
   --tasks tests/eval/tasks.json --out docs/p2-eval.md
 ```
 
+### 2026-11-16：P0a-8/10/13 与 P1-6 验收补齐
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P0a-8 并发写 | 完成 | 8 线程 × 10 次账本写入测试，单写连接 + busy_timeout 下无 `SQLITE_BUSY` |
+| P0a-10 熔断 half-open | 完成 | `acquire_half_open_probe` 原子认领 `half_open_since`；30s 内只放一个探针，窗口后重新允许；单测覆盖 |
+| P0a-13 RequestAuthority | 完成 | `server::Authenticator` trait + `AuthMode` 实现；`SessionFacts.authority` 与账本 `authority_json`（migration 4）同源；e2e 断言 |
+| P1-6 shadow 异步写 | 完成 | 独立 writer 线程按批写 `shadow_records`；请求路径只入队，写失败只记日志 |
+
 ### 总体状态（截至本次收口）
 
 | 阶段 | 状态 | 主要缺口 |
@@ -652,4 +661,4 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：205 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：208 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

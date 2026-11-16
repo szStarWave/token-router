@@ -67,12 +67,12 @@ fn facts(session_key: &str) -> SessionFacts {
 #[test]
 fn migrate_is_idempotent_across_reopen() {
     let temp = TempDb::new("migrate");
-    assert_eq!(temp.db().schema_version().unwrap(), 3);
+    assert_eq!(temp.db().schema_version().unwrap(), 4);
 
     let path = temp.into_path();
 
     let reopened = Db::open(&path).expect("reopen");
-    assert_eq!(reopened.schema_version().unwrap(), 3);
+    assert_eq!(reopened.schema_version().unwrap(), 4);
     drop(reopened);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
@@ -98,7 +98,7 @@ fn newer_schema_refuses_to_start() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 3
+            supported: 4
         }
     ));
 
@@ -155,6 +155,10 @@ fn ledger_record() -> LedgerRecord {
         session_key_source: SessionKeySource::Content,
         collision_suspect: false,
         ingress_protocol: IngressProtocol::ChatCompletions,
+        authority: tr_contracts::RequestAuthority {
+            authority_id: "inbound_key".to_string(),
+            ..tr_contracts::RequestAuthority::default()
+        },
         selected_virtual_model: Some("auto".to_string()),
         selected_thinking_level: Some("off".to_string()),
         request_reason: RequestReason::User,
@@ -283,6 +287,24 @@ fn stats_count_rejections_and_judge_budget_denials() {
 }
 
 #[test]
+fn concurrent_writes_do_not_busy() {
+    let temp = TempDb::new("concurrent");
+    let db = temp.db();
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(move || {
+                for _ in 0..10 {
+                    ledger::insert(db, &ledger_record()).expect("concurrent insert");
+                }
+            });
+        }
+    });
+
+    assert_eq!(ledger::count(db).unwrap(), 80);
+}
+
+#[test]
 fn shadow_summary_includes_p95_and_cost() {
     let temp = TempDb::new("shadow-summary");
     let db = temp.db();
@@ -310,6 +332,42 @@ fn shadow_summary_includes_p95_and_cost() {
     assert_eq!(summary.agreed, 5);
     assert_eq!(summary.p95_latency_ms, Some(50.0));
     assert_eq!(summary.total_cost_micros, 15);
+}
+
+#[test]
+fn half_open_probe_is_single_flight() {
+    let temp = TempDb::new("half-open");
+    let db = temp.db();
+
+    // 从未打开：直接放行。
+    assert!(health::acquire_half_open_probe(db, "a", 100).unwrap());
+
+    health::upsert(
+        db,
+        "a",
+        &BreakerState {
+            consecutive_failures: 3,
+            open_until: Some(50),
+            half_open_since: None,
+            updated_at: 40,
+            ..BreakerState::default()
+        },
+    )
+    .unwrap();
+
+    // 冷却已结束：第一个请求认领探针。
+    assert!(health::acquire_half_open_probe(db, "a", 60).unwrap());
+    // 窗口内第二个请求被拒绝。
+    assert!(!health::acquire_half_open_probe(db, "a", 61).unwrap());
+    // 窗口过后重新允许探针。
+    assert!(
+        health::acquire_half_open_probe(
+            db,
+            "a",
+            60 + tr_agent::store::health::HALF_OPEN_PROBE_WINDOW_SECS + 1
+        )
+        .unwrap()
+    );
 }
 
 #[test]

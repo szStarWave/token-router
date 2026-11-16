@@ -49,6 +49,8 @@
 | 34 | P3-9 落地：`agent` 作为默认 route 写 `virtual_model_states`（`route-state/v1`，compaction 保留 last_served/generation，外来 state 不覆盖） | §7.2 |
 | 35 | P3-12/13 落地：`[approvals]` 配置与实时拦截；新增 `OutcomeKind::Rejected`、`APPROVAL_REQUIRED`/`APPROVAL_DENIED`；`pending` 审批记录 | §12、§18.2 |
 | 36 | P3-14/P3-18 落地：`[trust_tiers]` 别名只映射 profile；`cargo xtask config-only-check`（CI 记录 core diff = 0） | §4.9、§18.2 |
+| 37 | P1-8/P2-7/P2-8 落地：shadow 报告含 P95/成本与 500 样本门禁；评测集 33 任务；`tr-cli eval --out --baseline-config` 生成三列表；`CompetenceGuard` 记为 P4 可选（D-11） | §11.3、§11.4、§16.2 |
+| 38 | P0a-13 落地：`Authenticator` trait + `RequestAuthority` 写入 `SessionFacts`/账本；migration 4 `ledger.authority_json` | §8.5、§18.4.1 |
 
 ---
 
@@ -1004,6 +1006,7 @@ stateDiagram-v2
 
 - 健康度分两级：候选绑定（binding）与凭据（credential）。凭据/配额失败先换 key，再换候选。
 - 状态：`Active | CoolingDown { until } | Disabled`；`CoolingDown` 到期后允许一个半开探测请求（probe lease），成功回 Active，失败继续冷却。
+- 已实现：probe lease 用 `circuit_breakers.half_open_since` 原子认领；窗口 30s，窗口内其他请求直接跳过该候选（`health::acquire_half_open_probe`）。成功提交清空 `half_open_since` 并归零失败计数。
 - 默认：binding 冷却 15s，credential/quota 冷却 60s，瞬态退避 2/4/8/16/30s；单次 attempt 超时 10min；单请求 attempt 上限 6。
 - 软失败（普通 5xx/超时）默认 request-local，不污染其他请求的健康；只有凭据/配额失败跨请求共享。
 - 全部候选冷却 → 本地 503 + `Retry-After`，reason `CANDIDATES_COOLING_DOWN`。
@@ -1546,6 +1549,7 @@ pub struct RequestAuthority {
 ```
 
 - `RequestAuthority` 写入 `SessionFacts` / `LedgerRecord`；P0 阶段字段为空。
+- 已实现（P0–P3）：`server::Authenticator` 由 `AuthMode` 实现；`Disabled` → `authority_id = "anonymous"`，入站 key 通过 → `"inbound_key"`；`epoch`/`allowed_routes`/`grant_generation` 保持空。账本列 `authority_json`（migration 4），`SessionFacts.authority` 与账本同源。
 - P4 最小 grant：`grants(id, token_sha256, generation, plan_allowlist, enabled)`；常数时间比较 token hash；generation 失配拒绝；按 route/plan allowlist 授权。
 - 不复制 HiRoute 的 publication/LKG/attestation；那是多 Agent 产品的完整发布体系，v2 单用户本地网关不需要。
 
@@ -1867,6 +1871,7 @@ pub struct ReasonCode {
 - **回放**：`cli replay <snapshot-file>` 直接调用 `core::decide(&DecisionSnapshot)`，比较决策投影（§4.7），输出 diff。Switchyard 无 decision replay；HiRoute 只有阈值反事实 replay；v2 的通用快照回放是新增能力。
 - **影子**：shadow 模式记录“判官建议 vs 内核结论”、延迟、预算消耗、输入指纹；开 `active` 前必须有一份真实流量的影子报告。
 - 已实现：`tr-cli shadow-report` 输出一致率、平均延迟、P95、判官成本合计；`--min-samples 500 --require` 把“样本不足”变成非零退出码，可直接作为 dogfood 门禁。
+- 写路径（P1-6）：shadow 记录进入独立后台线程，按批（≤64 条）drain 后写 `shadow_records`；请求只做内存入队，写失败只记日志。
 - **捕获**分两种：
   - `capture --raw --encrypt`：本地加密保存，用于回放与回归；不默认开启。密钥从环境变量或系统 keyring 读取，不与 capture 文件同目录保存。
   - `capture --redacted`：默认模式，用于共享/评测；脱敏会改变词法/判官输入，**不能用它做逐字段回放**。
@@ -2032,7 +2037,7 @@ v2 固定 7 种步态（见 §4.3 的 `StepKind`）：
 
 | # | 决策 | 当前倾向 | 影响面 | 状态 |
 |---|---|---|---|---|
-| D-1 | 判官默认模型：本地小模型 vs Jev | 本地小模型默认 `off`；shadow 达标（p95 ≤ 300ms、escalation precision ≥ 0.7）才 active；Jev 仅离线对照/可选升级 | `decide` 默认配置 | 默认已定；active 待 P1 数据 |
+| D-1 | 判官默认模型：本地小模型 vs Jev | 本地小模型默认 `off`；shadow 达标（≥500 样本、p95 ≤ 300ms、escalation precision ≥ 0.7）才 active；Jev 仅离线对照/可选升级 | `decide` 默认配置 | 默认已定；2026-11-16 决策：无 shadow 数据 → 保持 `off`，达标后复核 |
 | D-2 | 模型选择语法 | `model` = 虚拟模型 id；`auto` / `token-router` 为内置虚拟模型；物理 id 仅调试/管理面 | `proto` + `agent` | 已定 |
 | D-3 | shadow/capture 保留与脱敏 | shadow 30 天脱敏；raw capture 本地加密、默认关闭 | 存储 + 隐私 | 已定 |
 | D-4 | 策略合并优先级 | `Escalation > CompetenceGuard > Classify > Baseline`；`Failover` 只做过滤/接力 | `agent` 合并器 | 已定 |
@@ -2483,7 +2488,8 @@ CREATE TABLE approvals (
 
 ```rust
 const MIGRATIONS: &[&str] = &[M1_BASELINE];   // index + 1 == version
-// 已落地：M2 = ledger.judge_json（判官 trace）；M3 = ledger.contributions_json（策略贡献，P2-11）。
+// 已落地：M2 = ledger.judge_json（判官 trace）；M3 = ledger.contributions_json（策略贡献，P2-11）；
+// M4 = ledger.authority_json（RequestAuthority，P0a-13）。
 ```
 
 1. 启动时读 `schema_migrations`，逐版本在单事务内应用，应用前校验 `checksum`（sha256）；不一致拒绝启动。

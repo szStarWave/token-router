@@ -5,10 +5,57 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use tr_contracts::{BreakerState, CandidateHealth};
 
 use crate::store::{Db, StoreError};
+
+/// half-open 探针占用窗口：窗口内只允许一个请求探测，避免雪崩式试探。
+pub const HALF_OPEN_PROBE_WINDOW_SECS: u64 = 30;
+
+/// 认领一次 half-open 探针（P0a-10）。
+///
+/// - 从未打开（`open_until = None`）→ 放行；
+/// - 冷却未结束 → 拒绝；
+/// - 冷却已结束且窗口内无人认领 → 原子写入 `half_open_since` 并放行；
+/// - 窗口内已有探针 → 拒绝，等它结束。
+pub fn acquire_half_open_probe(
+    db: &Db,
+    candidate_id: &str,
+    now_unix: u64,
+) -> Result<bool, StoreError> {
+    let connection = db.write();
+    let state: Option<(Option<i64>, Option<i64>)> = connection
+        .query_row(
+            "SELECT open_until, half_open_since FROM circuit_breakers WHERE candidate_id = ?1",
+            params![candidate_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((open_until, half_open_since)) = state else {
+        return Ok(true);
+    };
+    let Some(open_until) = open_until else {
+        return Ok(true);
+    };
+    let open_until = open_until.max(0) as u64;
+    if open_until > now_unix {
+        return Ok(false);
+    }
+
+    let window_start = now_unix.saturating_sub(HALF_OPEN_PROBE_WINDOW_SECS);
+    if half_open_since.is_some_and(|since| since.max(0) as u64 > window_start) {
+        return Ok(false);
+    }
+
+    let updated = connection.execute(
+        "UPDATE circuit_breakers SET half_open_since = ?2
+          WHERE candidate_id = ?1
+            AND (half_open_since IS NULL OR half_open_since <= ?3)",
+        params![candidate_id, now_unix as i64, window_start as i64],
+    )?;
+    Ok(updated == 1)
+}
 
 /// 读取全部熔断状态。
 pub fn load(db: &Db) -> Result<CandidateHealth, StoreError> {

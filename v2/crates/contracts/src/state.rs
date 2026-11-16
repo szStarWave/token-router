@@ -50,12 +50,25 @@ impl SessionKeySource {
     }
 }
 
+/// 请求授权身份（§3.4、§8.5）：P0–P3 只填 `authority_id`，其余字段为 P4 grant 预留。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequestAuthority {
+    pub authority_id: String,
+    pub epoch: u64,
+    /// `None` = 不限制路由；P4 grant 才使用。
+    pub allowed_routes: Option<Vec<String>>,
+    pub grant_generation: Option<u64>,
+}
+
 /// 会话级事实。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionFacts {
     pub session_key: SessionKey,
     pub branch_id: BranchId,
+    /// 最近一次请求的授权身份；用于审计“谁触发了这次路由”。
+    pub authority: RequestAuthority,
     pub selected_virtual_model: Option<VirtualModelId>,
     pub selected_thinking_level: Option<ThinkingLevel>,
     /// 最近一次成功响应的派发（`Continuation` 的 StickyDispatch previous）。

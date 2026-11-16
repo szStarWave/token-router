@@ -13,11 +13,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 use tr_contracts::{
-    AttemptRecord, BreakerState, CacheAnchor, Candidate, CandidateId, CanonicalRequest,
-    CanonicalResponse, CanonicalStreamEvent, Cost, DecisionSnapshot, Dispatch, DispatchSource,
-    ErrorClass, FactsCompleteness, IngressProtocol, LedgerRecord, OutcomeKind, Plan, PlanMode,
-    ReasonCode, ReasonCodeKind, RequestReason, Selection, SessionFacts, SessionKeySource, Slot,
-    SlotRef, Usage, VirtualModel,
+    AttemptRecord, BreakerState, CacheAnchor, Candidate, CandidateHealth, CandidateId,
+    CanonicalRequest, CanonicalResponse, CanonicalStreamEvent, Cost, DecisionSnapshot, Dispatch,
+    DispatchSource, ErrorClass, FactsCompleteness, IngressProtocol, LedgerRecord, OutcomeKind,
+    Plan, PlanMode, ReasonCode, ReasonCodeKind, RequestReason, Selection, SessionFacts,
+    SessionKeySource, Slot, SlotRef, Usage, VirtualModel,
 };
 use tr_upstream::{AttemptFailure, HttpUpstream, StreamItem};
 use uuid::Uuid;
@@ -34,6 +34,8 @@ pub struct RequestContext {
     pub request_reason: Option<RequestReason>,
     /// 分支 id（fork/`/tree`）；默认 `main`。状态与账本都按它隔离。
     pub branch_id: Option<String>,
+    /// 授权身份（§8.5）；P0–P3 只填 `authority_id`。
+    pub authority: Option<tr_contracts::RequestAuthority>,
 }
 
 /// 决策解释头（§11.1）。
@@ -112,6 +114,8 @@ pub struct Pipeline {
     upstream: HttpUpstream,
     judge: std::sync::Arc<crate::judge::JudgeRuntime>,
     cost_gate: crate::gate::CostGateMode,
+    /// shadow 记录异步写入队列（P1-6：不阻塞主路径）。
+    shadow_tx: std::sync::mpsc::Sender<store::judge::ShadowRecord>,
     /// 会话键退化告警去重：每个键只 warn 一次（§8.1）。
     warned_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
@@ -128,12 +132,15 @@ impl Pipeline {
             }
         };
         let cost_gate = catalog.cost_gate;
+        let db = std::sync::Arc::new(db);
+        let shadow_tx = spawn_shadow_writer(std::sync::Arc::clone(&db));
         Self {
-            db: std::sync::Arc::new(db),
+            db,
             catalog: std::sync::Arc::new(catalog),
             upstream,
             judge: std::sync::Arc::new(judge),
             cost_gate,
+            shadow_tx,
             warned_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
@@ -187,7 +194,7 @@ impl Pipeline {
             }
         }
 
-        let facts =
+        let mut facts =
             store::sessions::load(&self.db, &derived.key, &branch_id)?.unwrap_or_else(|| {
                 SessionFacts {
                     session_key: derived.key.clone(),
@@ -195,6 +202,8 @@ impl Pipeline {
                     ..SessionFacts::default()
                 }
             });
+        // 授权身份随请求更新；账本与 SessionFacts 同源（§8.5）。
+        facts.authority = context.authority.clone().unwrap_or_default();
 
         // 会话恢复：未指定虚拟模型时优先沿用上次选择；存储的选择已不存在 → 回退默认并记 reason。
         let stored_selection = facts.selected_virtual_model.clone();
@@ -406,6 +415,7 @@ impl Pipeline {
                     session_key_source: derived.source,
                     collision_suspect: derived.collision_suspect,
                     ingress_protocol: request.meta.ingress_protocol,
+                    authority: facts.authority.clone(),
                     virtual_model_id: virtual_model.id.clone(),
                     thinking_level: thinking_level.clone(),
                     request_reason,
@@ -478,6 +488,7 @@ impl Pipeline {
                     session_key_source: derived.source,
                     collision_suspect: derived.collision_suspect,
                     ingress_protocol: request.meta.ingress_protocol,
+                    authority: facts.authority.clone(),
                     virtual_model_id: virtual_model.id.clone(),
                     thinking_level: thinking_level.clone(),
                     request_reason,
@@ -670,6 +681,9 @@ impl Pipeline {
             let Some(candidate) = self.catalog.candidate(&slot.candidate_id).cloned() else {
                 continue;
             };
+            if !probe_allowed(&self.db, &health, &candidate.id, prepared.now_unix)? {
+                continue;
+            }
 
             let outcome = self.upstream.execute(&candidate, &prepared.canonical).await;
             attempts.push(AttemptRecord {
@@ -768,7 +782,7 @@ impl Pipeline {
 
         persist_protocol_state(&self.db, &prepared, &response);
         persist_state_updates(&self.db, &prepared);
-        persist_shadow(&self.db, &prepared, ledger.request_id);
+        enqueue_shadow(&self.shadow_tx, &prepared, ledger.request_id);
         tracing::info!(
             parent: &span,
             outcome = "success",
@@ -810,6 +824,9 @@ impl Pipeline {
             let Some(candidate) = self.catalog.candidate(&slot.candidate_id).cloned() else {
                 continue;
             };
+            if !probe_allowed(&self.db, &health, &candidate.id, prepared.now_unix)? {
+                continue;
+            }
 
             let attempt = match self
                 .upstream
@@ -881,6 +898,7 @@ impl Pipeline {
                     let task_slot = slot.clone();
                     let task_attempts = attempts;
                     let task_breakers = breakers;
+                    let task_shadow_tx = self.shadow_tx.clone();
 
                     tokio::spawn(async move {
                         forward_stream(
@@ -895,6 +913,7 @@ impl Pipeline {
                             tx,
                             ttft_ms,
                             started,
+                            task_shadow_tx,
                         )
                         .await;
                     });
@@ -1030,6 +1049,7 @@ impl Prepared {
             session_key_source: self.session_key_source,
             collision_suspect: self.collision_suspect,
             ingress_protocol: self.canonical.meta.ingress_protocol,
+            authority: self.facts.authority.clone(),
             virtual_model_id: self.virtual_model.id.clone(),
             thinking_level: self.thinking_level.clone(),
             request_reason: self.request_reason,
@@ -1203,6 +1223,7 @@ async fn forward_stream(
     tx: mpsc::Sender<StreamChunk>,
     ttft_ms: u64,
     started: Instant,
+    shadow_tx: std::sync::mpsc::Sender<store::judge::ShadowRecord>,
 ) {
     let mut usage: Option<Usage> = None;
     let mut outcome = OutcomeKind::Success;
@@ -1323,7 +1344,7 @@ async fn forward_stream(
         );
     }
     persist_state_updates(&db, &prepared);
-    persist_shadow(&db, &prepared, ledger.request_id);
+    enqueue_shadow(&shadow_tx, &prepared, ledger.request_id);
 
     if outcome != OutcomeKind::Success
         && let Some(message) = error_message
@@ -1420,11 +1441,23 @@ fn merge_patch(target: serde_json::Value, patch: serde_json::Value) -> serde_jso
     }
 }
 
-fn persist_shadow(db: &Db, prepared: &Prepared, request_id: Uuid) {
-    let Some(shadow) = &prepared.shadow else {
+/// 把 shadow 记录投入后台写队列（P1-6）：请求路径只做内存入队，不等 SQLite。
+fn enqueue_shadow(
+    tx: &std::sync::mpsc::Sender<store::judge::ShadowRecord>,
+    prepared: &Prepared,
+    request_id: Uuid,
+) {
+    let Some(record) = shadow_record(prepared, request_id) else {
         return;
     };
-    let record = store::judge::ShadowRecord {
+    if tx.send(record).is_err() {
+        eprintln!("shadow writer stopped; dropping shadow record");
+    }
+}
+
+fn shadow_record(prepared: &Prepared, request_id: Uuid) -> Option<store::judge::ShadowRecord> {
+    let shadow = prepared.shadow.as_ref()?;
+    Some(store::judge::ShadowRecord {
         request_id,
         selection_model: prepared.virtual_model.id.clone(),
         kernel_choice: shadow.kernel_choice.clone(),
@@ -1439,10 +1472,36 @@ fn persist_shadow(db: &Db, prepared: &Prepared, request_id: Uuid) {
         judge_cost_micros: prepared.routing_cost.as_ref().map(|cost| cost.micros),
         snapshot_digest: shadow.snapshot_digest.clone(),
         created_at: prepared.now_unix,
-    };
-    if let Err(error) = store::judge::insert_shadow(db, &record) {
-        eprintln!("shadow record insert failed: {error}");
+    })
+}
+
+/// 启动 shadow 写入线程：按批 drain 队列，失败只记日志（影子不进入用户错误路径）。
+fn spawn_shadow_writer(
+    db: std::sync::Arc<Db>,
+) -> std::sync::mpsc::Sender<store::judge::ShadowRecord> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("tr-shadow-writer".to_string())
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut batch = vec![first];
+                while let Ok(next) = rx.try_recv() {
+                    batch.push(next);
+                    if batch.len() >= 64 {
+                        break;
+                    }
+                }
+                for record in batch {
+                    if let Err(error) = store::judge::insert_shadow(&db, &record) {
+                        eprintln!("shadow record insert failed: {error}");
+                    }
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("shadow writer thread failed to start: {error}");
     }
+    tx
 }
 
 struct LedgerInput {
@@ -1453,6 +1512,7 @@ struct LedgerInput {
     session_key_source: SessionKeySource,
     collision_suspect: bool,
     ingress_protocol: IngressProtocol,
+    authority: tr_contracts::RequestAuthority,
     virtual_model_id: String,
     thinking_level: String,
     request_reason: RequestReason,
@@ -1528,6 +1588,7 @@ fn build_ledger(
         session_key_source: input.session_key_source,
         collision_suspect: input.collision_suspect,
         ingress_protocol: input.ingress_protocol,
+        authority: input.authority.clone(),
         selected_virtual_model: Some(input.virtual_model_id.clone()),
         selected_thinking_level: Some(input.thinking_level.clone()),
         request_reason: input.request_reason,
@@ -1569,6 +1630,23 @@ fn build_ledger(
         ttft_ms: served.as_ref().and_then(|served| served.ttft_ms),
         duration_ms,
         created_at: input.now_unix,
+    }
+}
+
+/// 是否允许本次请求尝试该候选（P0a-10 half-open 单探针）。
+fn probe_allowed(
+    db: &Db,
+    health: &CandidateHealth,
+    candidate_id: &str,
+    now_unix: u64,
+) -> Result<bool, StoreError> {
+    let Some(state) = health.state_of(candidate_id) else {
+        return Ok(true);
+    };
+    match state.open_until {
+        Some(until) if until > now_unix => Ok(false),
+        Some(_) => store::health::acquire_half_open_probe(db, candidate_id, now_unix),
+        None => Ok(true),
     }
 }
 

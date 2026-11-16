@@ -14,7 +14,12 @@ use sha2::{Digest, Sha256};
 use crate::store::StoreError;
 
 /// 按序号应用的迁移；index + 1 == version。
-pub(crate) const MIGRATIONS: &[&str] = &[M1_BASELINE, M2_LEDGER_JUDGE, M3_LEDGER_CONTRIBUTIONS];
+pub(crate) const MIGRATIONS: &[&str] = &[
+    M1_BASELINE,
+    M2_LEDGER_JUDGE,
+    M3_LEDGER_CONTRIBUTIONS,
+    M4_LEDGER_AUTHORITY,
+];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
@@ -237,3 +242,6 @@ const M2_LEDGER_JUDGE: &str = "ALTER TABLE ledger ADD COLUMN judge_json TEXT;";
 
 /// migration 3：每条策略贡献入账（P2-11 决策可追溯）。
 const M3_LEDGER_CONTRIBUTIONS: &str = "ALTER TABLE ledger ADD COLUMN contributions_json TEXT;";
+
+/// migration 4：请求授权身份入账（P0a-13；P0–P3 只填 `authority_id`）。
+const M4_LEDGER_AUTHORITY: &str = "ALTER TABLE ledger ADD COLUMN authority_json TEXT;";
