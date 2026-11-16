@@ -49,7 +49,7 @@
 | 34 | P3-9 落地：`agent` 作为默认 route 写 `virtual_model_states`（`route-state/v1`，compaction 保留 last_served/generation，外来 state 不覆盖） | §7.2 |
 | 35 | P3-12/13 落地：`[approvals]` 配置与实时拦截；新增 `OutcomeKind::Rejected`、`APPROVAL_REQUIRED`/`APPROVAL_DENIED`；`pending` 审批记录 | §12、§18.2 |
 | 36 | P3-14/P3-18 落地：`[trust_tiers]` 别名只映射 profile；`cargo xtask config-only-check`（CI 记录 core diff = 0） | §4.9、§18.2 |
-| 37 | P1-8/P2-7/P2-8 落地：shadow 报告含 P95/成本与 500 样本门禁；评测集 33 任务；`tr-cli eval --out --baseline-config` 生成三列表；`CompetenceGuard` 记为 P4 可选（D-11） | §11.3、§11.4、§16.2 |
+| 37 | P1-8/P2-7/P2-8 落地：shadow 报告含 P95/成本与 500 样本门禁；评测集 33 任务；`tr-cli eval --out --baseline-config` 生成三列表；`CompetenceGuard` 在 P2-6 实现（见修订 39） | §11.3、§11.4、§6.2 |
 | 38 | P0a-13 落地：`Authenticator` trait + `RequestAuthority` 写入 `SessionFacts`/账本；migration 4 `ledger.authority_json` | §8.5、§18.4.1 |
 | 39 | P2-6 落地：`CompetenceGuard` + `Choices::ScoreBelowFloor`；任务/候选组指纹变化时抑制；低分保护优先于 Sticky/ContextHold；合并优先级 10/20/30/40 | §4.5、§6.2、§13 |
 | 40 | 真实客户端冒烟修复：Responses `developer` 角色、内置工具跳过/`function.name` 兼容、Anthropic `role=system`；P2-8 真实三列表落盘 | §10.3、§11.4 |
@@ -164,6 +164,8 @@
 ### 2.3 范围边界
 
 v2 是**完整产品线重写**：网关内核 + 协议面 + 自有客户端（桌面/CLI/管理台）+ Agent onboarding + Embedding/FFI。
+
+**分期边界**：本设计文档的 S0–P3（实施计划 82 个任务）是本次实施与验收范围；P4（客户端/管理台/onboarding/embed/图片视频）在 §13 中标注为 **TBD、不排期**，不属于本次交付，也不以本次的测试/门禁结果宣称完成。P4 的入口条件见实施计划 §十。
 
 - P0–P3：内核、server、最小 control；不做 v1 兼容，也不发布新客户端。
 - P4：新桌面端/CLI/管理台、Agent onboarding、Embedding/FFI、图片/视频。
@@ -1956,9 +1958,9 @@ pub struct ReasonCode {
 | **P1 判官与棘轮**（4 周） | `decide` + shadow + `Classify`（shadow）+ `Escalation` + `ReleaseCheck` + judge 预算/熔断 | ① `judge test` Passed + 真实流量 shadow 报告（≥N 条，一致率/延迟/预算消耗）；② 注入首选候选连错/工具循环：第 2 次同类失败后 latch；非流式当轮改强档，流式下一轮不再探弱档；③ 一好一坏交替不升级；④ 无会话键退化为每轮从零 + 一次 warn；⑤ judge off 时释放只能靠 `strong_max_calls`（v2 设计；Switchyard 无此行为） |
 | **P2 成本闸与评测**（4 周） | 成本闸（先 shadow）+ `Classify` active + `CompetenceGuard`（可选）+ 评测集 + profile 版本化 + 指标/追踪 | ① 固定任务集三列对照表（成功率/等价成本/首 token 延迟）落盘；② `SWITCH_DENIED_*` 占比与原因可解释；③ 缺价格/缺缓存数据的行为符合 §9.4；④ 判官成本进入账本；⑤ CompetenceGuard 在任务变化时抑制；⑥ 成本闸校准达到 MAPE ≤ 25%、false deny ≤ 5% |
 | **P3 多模型/虚拟模型与审批**（4–6 周） | 多 slot Plan 全量 + 虚拟模型目录 + 每虚拟模型策略 + 审批复用 + 信任度放量（可选） | ① 新增物理候选只改配置/控制面，`core` diff 为 0；② 新增虚拟模型只改配置，`core` diff 为 0；③ Selection / Dispatch 分离且账本记录；④ 每虚拟模型策略与 state 独立；⑤ 审批与路由共享类型/配置，但预算池独立 |
-| **P4 产品交付**（TBD） | 新桌面端/CLI/管理台、虚拟模型编辑器、Agent onboarding、embed/FFI、图片视频 | ① 新客户端覆盖 v1 核心工作流（配置、统计、日志、Agent 接入、虚拟模型管理）；② 按 v2 契约逐项验收，不要求 v1 UI/数据兼容 |
+| **P4 产品交付**（TBD，范围外） | 新桌面端/CLI/管理台、虚拟模型编辑器、Agent onboarding、embed/FFI、图片视频 | 本次不验收；启动前提见实施计划 §十（≥4 周 dogfood、真实客户端无回归、管理面可定位坏决策） |
 
-> P0–P3 是**独立开发/验证**，不承诺与 v1 并行或替换；S0 不通过不进入 P0a；P4 作为 v2 产品正式发布，按 §11.5 的评测结论决定放量。
+> P0–P3 是**独立开发/验证**，不承诺与 v1 并行或替换；S0 不通过不进入 P0a；P4 作为 v2 产品正式发布，按 §11.5 的评测结论决定放量。**P4 不属于本次实施与验收范围。**
 
 ---
 

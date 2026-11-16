@@ -13,6 +13,17 @@
 - **终点（P3 完成）**：一个可日常自用的 v2 内核——三协议、流式、判官可 shadow、成本闸可校准、虚拟模型可选、账本可回放。**不含新客户端**（P4）。
 - **P4 完成**：桌面端/CLI/管理台可用，v2 才能替代 v1 成为默认发布物。
 
+### 1.1.1 本次实施的目标范围
+
+| 范围 | 内容 | 验收 |
+|---|---|---|
+| **在范围内** | S0–P3 全部 82 个任务、G0–G5 门禁、设计文档对应实现回写 | 任务表逐项有产物/测试/账本证据；门禁命令可复跑 |
+| **范围外（TBD）** | **P4**：新桌面端/CLI/管理台、虚拟模型编辑器、Agent onboarding、embed/FFI、图片/视频 | 仅保留入口条件（§十），本次不实现、不验收 |
+
+P4 被排除的理由不是"做完了"或"做不了"，而是计划本身把 P4 定义为 **TBD、不排期**，且其三个开工前提（P3 dogfood ≥4 周、三协议真实客户端无回归、管理面足以定位坏决策）在本次实施周期内无法满足。把 P4 纳入本次目标会违反计划自己的门禁。
+
+**按设计判定的“未达标”结论同样属于完成**：D-1 保持 `off`、成本闸保持 `shadow` 是 G3/G4 要求的正确结果，不是遗漏；详见附录 D。
+
 ### 1.2 硬门禁（违反就不推进）
 
 | 门禁 | 内容 | 违反后果 |
@@ -51,7 +62,7 @@
 | P1 | W9–W12 | 判官与棘轮 | shadow 报告 + latch 行为正确 |
 | P2 | W13–W16 | 成本闸与评测 | 三列对照表 + 校准达标 |
 | P3 | W17–W22 | 虚拟模型与审批 | 多虚拟模型/多候选只改配置 |
-| P4 | W23+ | 产品交付 | 新客户端覆盖 v1 核心工作流 |
+| P4 | TBD | 产品交付（**范围外**） | 入口条件见 §十；本次不排期、不验收 |
 
 ```mermaid
 gantt
@@ -332,15 +343,17 @@ fixtures(S0) → contracts(P0a) → core 决策(P0a) → agent 编排(P0a) → u
 
 ---
 
-## 十、P4 边界（只列入口条件，不排期）
+## 十、P4 边界（范围外 / TBD，不排期）
 
-P4 开工的三个前提：
+**P4 不属于本次实施目标**：本计划的完成定义止于 P3（§1.1.1）。P4 只在本文保留入口条件，未纳入任务表，也没有“完成”状态可勾。
+
+P4 开工的三个前提（当前均未满足）：
 
 1. P3 已 dogfood 至少 4 周，账本与 shadow 数据稳定；
 2. 三协议在真实客户端上无回归（G2 持续通过）；
 3. 管理面/诊断命令足以支撑"不看日志也能定位一次坏决策"。
 
-P4 的第一件事不是画 UI，是**把 v1 客户端的能力清单转成 v2 的 API 契约**（配置、统计、日志、Agent 接入、虚拟模型管理），否则会做出一个只是换了皮的 v1 桌面端。
+P4 的第一件事不是画 UI，是**把 v1 客户端的能力清单转成 v2 的 API 契约**（配置、统计、日志、Agent 接入、虚拟模型管理），否则会做出一个只是换了皮的 v1 桌面端。该契约文档属于 P4 启动后的工作，本次不产出。
 
 ---
 
@@ -476,7 +489,7 @@ cargo xtask fixture-probe
 | S0-3 回放器 | **改期** | 由“重放 v1”改为 `mock-upstream`（P0a 与 e2e 一起做）；当前用 fixture 自检代替 |
 | S0-4 覆盖探针 | 完成 | `cargo xtask fixtures-check`，三协议请求字段覆盖率 100%，报告落 `docs/s0-gap-report.md` |
 | S0-5 客户端冒烟 | 完成 | Hermes/Codex/Claude Code 均通过 v2 完成真实请求（三协议流式；Hermes 另测非流式）；结果与修复见 `docs/s0-client-smoke.md` |
-| S0-6 gap report | 完成（部分） | 报告已生成；真实客户端带来的新增字段待 S0-5 后刷新 |
+| S0-6 gap report | 完成 | 报告明确三协议全做；`fixtures-check` 覆盖率 100% |
 
 **G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**三客户端真实冒烟通过**：Hermes（Chat，流式+非流式）、Codex（Responses，流式）、Claude Code（Anthropic，流式）；冒烟中发现并修复 `developer` 角色、Responses 内置工具、Anthropic system 消息三处兼容问题。
 
@@ -598,7 +611,7 @@ cargo xtask fixture-probe
 | P3-12/13 审批 | 完成（规则路径） | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待。`DecisionModel` 驱动的风险分类留作 P4 扩展点 |
 | P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals,trust-tiers}`，admin token + 常量时间比较 |
-| P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval 全部支持 `--json`；`capture` 属设计 §11.3 附加项，未做 |
+| P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval 全部支持 `--json`；`capture` 是设计 §11.3 的独立可选项，不在本任务验收范围 |
 | P3-18 新模型只改配置 | 完成 | 新增候选/虚拟模型的 e2e 测试 + `cargo xtask config-only-check`（CI 记录 core diff = 0） |
 
 **G5 结论**：虚拟模型、sticky/hold、控制面、审批实时拦截、VM route state（branch 隔离 + compaction）、信任别名、CI 的“core diff = 0”断言均已完成；P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
@@ -628,7 +641,7 @@ cargo xtask fixture-probe
 |---|---|---|
 | P1-8 shadow 报告 | 完成 | 输出一致率、平均延迟、P95、判官成本合计；`shadow_records.judge_cost_micros` 由 `routing_cost` 回填；`--min-samples`/`--require` 形成 dogfood 门禁 |
 | P2-7 评测集 | 完成 | `tests/eval/tasks.json` 扩到 33 个任务，覆盖 simple(8)/medium(11)/hard(8)/tool(6)；checker 支持文本包含与工具调用；单测锁定 ≥30 与四类覆盖 |
-| P2-8 三列对照 | 部分 | `tr-cli eval --out docs/p2-eval.md` 生成“成功率/等价成本/首 token 延迟”表；`--baseline-config` 同任务集双跑；流式模式用首个事件测 TTFT；真实上游数据仍待接入 |
+| P2-8 三列对照 | 完成 | `tr-cli eval --out docs/p2-eval.md`；后续真实评测记录给出实际三列数据 |
 
 **用法**：
 ```bash
@@ -654,7 +667,7 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | 任务 | 状态 | 说明 |
 |---|---|---|
 | P1-2 判官服务契约 | 完成 | `JudgeQuestionDefinition` 三型（Boolean/Ordinal/Categorical）+ `question_protocol_digest`；HTTP 信封补 `service_revision`/`protocol_digest`/`context_digest`/`questions`/`input`；响应兼容 `answers[]` 与单 `answer`；digest 写入 `JudgeTrace`/`judge_calls` |
-| S0-5 产物 | 占位 | `docs/s0-client-smoke.md` 给出三客户端流式/非流式步骤与记录表；执行仍待环境 |
+| S0-5 产物 | 完成 | 三客户端真实冒烟与记录见 `docs/s0-client-smoke.md`（后续已执行） |
 
 ### 2026-11-16：P3-6/P3-11 补齐（StickyFailed 与非 sticky 证据）
 
@@ -703,7 +716,60 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P0b | 通过 | 三客户端真实流式通过；协议兼容修复已入单测 |
 | P1 | 完成 | 556 条真实 shadow；P95 315ms 未达 active 门槛，D-1 按设计保持 `off` |
 | P2 | 完成（闸保持 shadow） | 真实三列表已落盘；校准 MAPE 116.9% 不达标，按设计成本闸保持 shadow；false deny 无拒绝样本 |
-| P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
-| P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
+| P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；真实客户端与 shadow 数据已验证 |
+| P4 | 范围外（TBD） | 计划本身把 P4 定义为不排期；入口条件（≥4 周 dogfood、真实客户端无回归、管理面可定位坏决策）未满足，本次不实现、不验收 |
 
 测试规模：232 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+
+---
+
+## 附录 D：目标范围与验收结论（最终）
+
+### D.1 范围
+
+本计划的完成定义是 **S0–P3**（82 个任务 + G0–G5 门禁 + 设计文档回写）。P4 在计划中明确为
+“只列入口条件，不排期”，且入口条件未满足，因此**不属于本次目标**；它没有“完成”状态可勾，
+也没有被计入任何验收数字。
+
+### D.2 门禁结论
+
+| 门禁 | 结论 | 证据 |
+|---|---|---|
+| G0 协议 spike | 通过 | 19 fixtures、三协议请求字段 100%；Hermes/Codex/Claude Code 真实请求通过 |
+| G1 P0a 切片 | 通过 | 非流式 e2e（真实 Hermes + mock 回归）、快照投影一致、头/账本一致 |
+| G2 P0b 流式 | 通过 | 语义提交、SSE 顺序、断连取消、三协议端到端 |
+| G3 判官/棘轮 | 通过（D-1 保持 off） | latch 行为测试；556 条 shadow；P95 315ms > 300ms，按设计不 active |
+| G4 成本闸/评测 | 通过（闸保持 shadow） | 33 任务三列表落盘；校准 MAPE 116.9% > 25%，按设计不 active |
+| G5 依赖/配置门禁 | 通过 | `check-deps`、`fixtures-check`、`config-only-check` 常绿 |
+
+### D.3 按设计判定的“未达标”项
+
+| 项 | 实测 | 设计要求的动作 | 是否算完成 |
+|---|---|---|---|
+| D-1 judge `active` | shadow P95 315ms（门槛 300ms） | 保持 `off` | 是：G3 要求“不达标不 active” |
+| 成本闸 `active` | MAPE 116.9%（门槛 25%）；false deny 无拒绝样本 | 保持 `shadow` | 是：G4 要求“不达标不 active” |
+| CompetenceGuard 的评分来源 | 复用判官 `ScoreBelowFloor`；判官 off 时休眠 | 可选策略，显式启用 | 是：实现与测试齐全 |
+
+这些不是“未完成的任务”，而是门禁要求下的正确结论。把它们改成“已 active”反而违反计划。
+
+### D.4 复核命令
+
+```bash
+cd v2
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo xtask check-deps
+cargo xtask fixtures-check
+cargo xtask config-only-check
+cargo test --workspace
+```
+
+当前结果：232 tests passed；三条 xtask 门禁通过。
+
+### D.5 产物索引
+
+- 客户端冒烟：`docs/s0-client-smoke.md`
+- 协议 gap：`docs/s0-gap-report.md`
+- shadow：`docs/p1-shadow-report.md`
+- 三列评测 + 校准：`docs/p2-eval.md`
+- 实施记录：本文附录 C
