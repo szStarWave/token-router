@@ -8,6 +8,7 @@
 pub mod health;
 pub mod ledger;
 mod migrate;
+pub mod protocol;
 pub mod sessions;
 pub mod strategy;
 

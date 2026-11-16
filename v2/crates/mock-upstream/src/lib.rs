@@ -24,6 +24,8 @@ pub enum Reply {
     Json { status: u16, body: Value },
     /// 延迟后返回 200。
     Delay { millis: u64, body: Value },
+    /// 原样返回 SSE 文本。
+    RawSse { body: String },
 }
 
 impl Reply {
@@ -57,6 +59,50 @@ impl Reply {
             status,
             body: json!({"error": {"type": kind, "message": message, "code": kind}}),
         }
+    }
+
+    /// Chat Completions 流：逐片 content + finish + usage + `[DONE]`。
+    pub fn chat_stream(parts: &[&str]) -> Self {
+        let id = "chatcmpl-mock-stream";
+        let model = "mock-physical";
+        let mut body = String::new();
+
+        let mut push = |delta: Value, finish: Value| {
+            body.push_str(&format!(
+                "data: {}\n\n",
+                json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+                })
+            ));
+        };
+
+        push(json!({"role": "assistant", "content": ""}), Value::Null);
+        for part in parts {
+            push(json!({"content": part}), Value::Null);
+        }
+        push(json!({}), json!("stop"));
+        body.push_str(&format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": parts.len() as u32,
+                    "total_tokens": 12 + parts.len() as u32,
+                    "prompt_tokens_details": {"cached_tokens": 0}
+                }
+            })
+        ));
+        body.push_str("data: [DONE]\n\n");
+
+        Self::RawSse { body }
     }
 }
 
@@ -136,6 +182,12 @@ async fn chat(State(state): State<MockState>) -> impl IntoResponse {
             tokio::time::sleep(Duration::from_millis(millis)).await;
             (StatusCode::OK, Json(body)).into_response()
         }
+        Reply::RawSse { body } => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            body,
+        )
+            .into_response(),
     }
 }
 

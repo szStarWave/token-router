@@ -503,3 +503,33 @@ cargo xtask fixture-probe
 **新增架构修订**：`upstream -> proto` 允许（唯一 HTTP 边界需要 wire 编解码与错误分类），已更新设计文档 §3.2 依赖图。P0a 期间还发现并修正三处契约缺口：`LedgerRecord` 缺 `failover`/token 聚合/`profile_revision`/`config_digest`/`ttft_ms`、`FailedDispatch` 需要 `error_class`、`SessionKeySource`/`FactsCompleteness` 需要 `as_str`。
 
 下一步：P0b（流式 + Responses/Anthropic + 语义提交）。
+
+### 2026-11-16：P0b 收口（三协议 + 流式）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P0b-1 SSE 状态机与编码 | 完成 | 增量解码 `ChatStreamDecoder`；三协议 `StreamEncoder`；chat 编解码往返测试 |
+| P0b-2 流式转发 | 完成 | channel 背压；接收端丢弃即停上游（取消语义） |
+| P0b-3 语义提交 | 完成 | 首事件到达才提交 headers；提交后不再换候选（测试覆盖） |
+| P0b-4 TTFT/时长 | 完成 | 首事件耗时写 `attempts` 与账本 `ttft_ms` |
+| P0b-5 Responses 编解码 | 完成 | `instructions`/`input` items/`previous_response_id`；三协议往返测试 |
+| P0b-6 protocol_state | 完成 | `resp:<id>` 映射 + 7 天 TTL + `purge_expired` |
+| P0b-7 兼容修复 | 完成 | 工具调用配对（孤儿结果丢弃 / 中断合成）、空消息清理 |
+| P0b-8 Anthropic 编解码 | 完成 | thinking/redacted_thinking、`tool_use.input` 对象化 |
+| P0b-9 跨协议转发 | 完成 | Anthropic/Responses 入站 → OpenAI 上游（e2e 覆盖） |
+| P0b-10 stream_escalation | 完成 | `core::stream_policy` 唯一判断点；`GateBeforeTool` 只允许提交前 |
+| P0b-11 接力 | 完成 | 未提交字节前可换候选；已提交只发错误帧 |
+| P0b-12 三协议 e2e | 完成（HTTP 层） | 三个端点 × 流式/非流式；**未用真实客户端** |
+| P0b-13 SSE golden | 完成 | fixture `expect_events` + 编码器往返；anthropic/responses 为结构性断言 |
+| P0b-14 协议状态缺失降级 | 完成 | 记 `PROTOCOL_STATE_MISSING`，不 500 |
+
+**G2 结论**：语义提交、SSE 顺序、三协议端点、状态缺失降级均通过；**真实客户端冒烟仍待 S0-5 环境**。
+
+**已知取舍（写进实现与文档）**：
+- Anthropic `message_start` 的 `input_tokens` 先发 0，真实值在后续 `message_delta`/usage 里补；
+- Responses 的 `response.completed` 在流结束时补齐（需要先收齐 output）；
+- 流式 Responses 的 protocol_state 由事件重组（仅文本），工具调用历史待 P1 补全。
+
+架构修订：`upstream -> proto` 已在 §3.2 记录；`agent` 因流式任务需要 `Arc<Db>`/`tokio`，依赖方向未变。
+
+下一步：P1（判官与棘轮）。

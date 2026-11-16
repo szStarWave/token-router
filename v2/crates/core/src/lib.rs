@@ -13,6 +13,7 @@
 pub mod merge;
 pub mod signals;
 pub mod strategy;
+pub mod stream_policy;
 
 use tr_contracts::{
     CanonicalRequest, DecisionSnapshot, Plan, SessionFacts, Signals, StrategyState,

@@ -8,10 +8,11 @@
 
 use mock_upstream::{MockUpstream, Reply};
 use tr_agent::config::{Catalog, ConfigFile};
-use tr_agent::pipeline::{Pipeline, PipelineError, RequestContext};
+use tr_agent::pipeline::{Pipeline, PipelineError, RequestContext, StreamChunk};
 use tr_agent::store::{self, Db};
 use tr_contracts::{
-    CanonicalMessage, CanonicalRequest, CanonicalRole, ContentBlock, ErrorClass, OutcomeKind,
+    CanonicalMessage, CanonicalRequest, CanonicalRole, CanonicalStreamEvent, ContentBlock,
+    ErrorClass, OutcomeKind,
 };
 
 fn catalog(mock_base_url: &str, candidate_ids: &[&str]) -> Catalog {
@@ -210,4 +211,139 @@ async fn unknown_virtual_model_is_rejected_before_upstream() {
     assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 0);
     assert_eq!(mock.remaining(), 1, "不应访问上游");
     mock.shutdown();
+}
+
+fn streaming_request(text: &str) -> CanonicalRequest {
+    let mut request = chat_request(text);
+    request.output.stream = true;
+    request
+}
+
+#[tokio::test]
+async fn stream_forwards_events_and_writes_ledger() {
+    let mock = MockUpstream::start(vec![Reply::chat_stream(&["Hello", " world"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut streaming = pipeline
+        .handle_stream(streaming_request("hi"), RequestContext::default())
+        .await
+        .expect("stream");
+
+    assert_eq!(streaming.headers.served_model, "physical-a");
+
+    let mut events = Vec::new();
+    while let Some(chunk) = streaming.events.recv().await {
+        match chunk {
+            StreamChunk::Event(event) => events.push(event),
+            StreamChunk::Done => break,
+            StreamChunk::Error { message } => panic!("stream error: {message}"),
+        }
+    }
+
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            CanonicalStreamEvent::ContentDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Hello world");
+
+    // 账本在流结束后由后台任务提交；给一点时间。
+    for _ in 0..100 {
+        if store::ledger::count(pipeline.db()).expect("count") == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn stream_fails_over_before_first_event() {
+    let mock = MockUpstream::start(vec![
+        Reply::error(503, "overloaded_error", "busy"),
+        Reply::chat_stream(&["served by b"]),
+    ])
+    .await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a", "b"]));
+
+    let mut streaming = pipeline
+        .handle_stream(streaming_request("hi"), RequestContext::default())
+        .await
+        .expect("stream");
+    assert_eq!(streaming.headers.served_model, "physical-b");
+
+    let mut text = String::new();
+    while let Some(chunk) = streaming.events.recv().await {
+        match chunk {
+            StreamChunk::Event(CanonicalStreamEvent::ContentDelta { text: delta }) => {
+                text.push_str(&delta);
+            }
+            StreamChunk::Done => break,
+            _ => {}
+        }
+    }
+    assert_eq!(text, "served by b");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn missing_previous_response_id_degrades_but_succeeds() {
+    let mock = MockUpstream::start(vec![Reply::ok("ok")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut request = chat_request("hi");
+    request.meta.ingress_protocol = tr_contracts::IngressProtocol::Responses;
+    request.meta.previous_response_id = Some("resp_missing".to_string());
+
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("must degrade, not fail");
+
+    assert!(
+        result
+            .ledger
+            .reason_codes
+            .iter()
+            .any(|reason| reason.code == tr_contracts::ReasonCodeKind::ProtocolStateMissing)
+    );
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn responses_success_stores_protocol_state() {
+    let mock = MockUpstream::start(vec![Reply::ok("stored")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut request = chat_request("hi");
+    request.meta.ingress_protocol = tr_contracts::IngressProtocol::Responses;
+
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("handle");
+    let key = format!("resp:{}", result.response.id);
+    let payload = store::protocol::load(pipeline.db(), &key, now_secs())
+        .expect("load")
+        .expect("protocol state saved");
+    assert_eq!(payload["id"], result.response.id);
+
+    mock.shutdown();
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }

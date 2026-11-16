@@ -7,5 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod http;
+pub mod stream;
 
 pub use http::{AttemptFailure, AttemptOutcome, HttpUpstream};
+pub use stream::{StreamAttempt, StreamItem};

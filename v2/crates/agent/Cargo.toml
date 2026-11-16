@@ -18,10 +18,10 @@ rusqlite = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 mock-upstream = { path = "../mock-upstream" }
-tokio = { workspace = true }
 
 [lints]
 workspace = true

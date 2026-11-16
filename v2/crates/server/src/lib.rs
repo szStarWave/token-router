@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -15,6 +16,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use tr_agent::pipeline::{DecisionHeaders, Pipeline, PipelineError, RequestContext};
+use tr_contracts::IngressProtocol;
 use tr_proto::chat;
 
 /// 鉴权方式（P0 只有入站 key）。
@@ -51,6 +53,8 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(anthropic_messages))
+        .route("/v1/responses", post(responses_create))
         .with_state(state)
 }
 
@@ -86,6 +90,32 @@ async fn chat_completions(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    handle_ingress(state, headers, body, IngressProtocol::ChatCompletions).await
+}
+
+async fn anthropic_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    handle_ingress(state, headers, body, IngressProtocol::AnthropicMessages).await
+}
+
+async fn responses_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    handle_ingress(state, headers, body, IngressProtocol::Responses).await
+}
+
+/// 三协议共用入口：解码 → 编排 → 按同一协议编码。
+async fn handle_ingress(
+    state: AppState,
+    headers: HeaderMap,
+    body: Value,
+    protocol: IngressProtocol,
+) -> Response {
     if !authorized(&state.auth, &headers) {
         return error_response(
             StatusCode::UNAUTHORIZED,
@@ -94,7 +124,7 @@ async fn chat_completions(
         );
     }
 
-    let request = match chat::decode_request(&body) {
+    let mut request = match decode(protocol, &body) {
         Ok(request) => request,
         Err(err) => {
             return error_response(
@@ -104,6 +134,8 @@ async fn chat_completions(
             );
         }
     };
+    // 协议形状修复：工具调用配对、空消息清理（不改语义）。
+    let _fixes = tr_proto::compat::repair(&mut request);
 
     let context = RequestContext {
         server_session_id: header_string(&headers, "x-token-router-session-id"),
@@ -112,15 +144,90 @@ async fn chat_completions(
             .and_then(tr_agent::reason::parse_header),
     };
 
+    if request.output.stream {
+        return stream_ingress(state, request, context).await;
+    }
+
     match state.pipeline.handle(request, context).await {
         Ok(result) => {
-            let body = chat::encode_response(&result.response, now_secs());
+            let body = encode(protocol, &result.response, now_secs());
             let mut response = (StatusCode::OK, Json(body)).into_response();
             apply_decision_headers(response.headers_mut(), &result.headers);
             response
         }
         Err(err) => map_error(err),
     }
+}
+
+fn decode(
+    protocol: IngressProtocol,
+    body: &Value,
+) -> Result<tr_contracts::CanonicalRequest, tr_proto::CodecError> {
+    match protocol {
+        IngressProtocol::ChatCompletions => chat::decode_request(body),
+        IngressProtocol::AnthropicMessages => tr_proto::anthropic::decode_request(body),
+        IngressProtocol::Responses => tr_proto::responses::decode_request(body),
+    }
+}
+
+fn encode(
+    protocol: IngressProtocol,
+    response: &tr_contracts::CanonicalResponse,
+    created: u64,
+) -> Value {
+    match protocol {
+        IngressProtocol::ChatCompletions => chat::encode_response(response, created),
+        IngressProtocol::AnthropicMessages => tr_proto::anthropic::encode_response(response),
+        IngressProtocol::Responses => tr_proto::responses::encode_response(response, created),
+    }
+}
+
+/// 流式分支：首事件到达后才提交 headers，之后不再换候选（§10.6）。
+async fn stream_ingress(
+    state: AppState,
+    request: tr_contracts::CanonicalRequest,
+    context: RequestContext,
+) -> Response {
+    let protocol = request.meta.ingress_protocol;
+
+    let streaming = match state.pipeline.handle_stream(request, context).await {
+        Ok(streaming) => streaming,
+        Err(err) => return map_error(err),
+    };
+
+    let mut events = streaming.events;
+    let body_stream = async_stream::stream! {
+        let mut encoder = tr_proto::sse_encode::StreamEncoder::new(protocol);
+        while let Some(chunk) = events.recv().await {
+            match chunk {
+                tr_agent::pipeline::StreamChunk::Event(event) => {
+                    for frame in encoder.push(&event) {
+                        yield Ok::<_, std::convert::Infallible>(Bytes::from(frame.to_sse()));
+                    }
+                }
+                tr_agent::pipeline::StreamChunk::Error { message } => {
+                    for frame in encoder.push(
+                        &tr_contracts::CanonicalStreamEvent::Error { message },
+                    ) {
+                        yield Ok(Bytes::from(frame.to_sse()));
+                    }
+                }
+                tr_agent::pipeline::StreamChunk::Done => break,
+            }
+        }
+        for frame in encoder.finish() {
+            yield Ok(Bytes::from(frame.to_sse()));
+        }
+    };
+
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from_stream(body_stream))
+        .expect("build streaming response");
+    apply_decision_headers(response.headers_mut(), &streaming.headers);
+    response
 }
 
 fn map_error(error: PipelineError) -> Response {

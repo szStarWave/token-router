@@ -94,13 +94,25 @@ pub fn canonicalize(
     }
 }
 
-fn chat(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {
-    let mut out = Vec::new();
-    let mut started = false;
+/// 增量 Chat 流状态：批次与流式共用同一套推进逻辑，避免两套行为漂移。
+#[derive(Debug, Default)]
+pub struct ChatStreamState {
+    started: bool,
+}
 
-    for chunk in chunks {
+impl ChatStreamState {
+    pub fn is_started(&self) -> bool {
+        self.started
+    }
+
+    /// 处理一个 SSE 数据块，返回本块产生的事件。
+    pub fn push(
+        &mut self,
+        chunk: &RawChunk,
+    ) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {
+        let mut out = Vec::new();
         let Some(object) = chunk.data.as_object() else {
-            continue;
+            return Ok(out);
         };
         if let Some(error) = object.get("error") {
             let message = error
@@ -110,10 +122,10 @@ fn chat(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseErr
             out.push(CanonicalStreamEvent::Error {
                 message: message.to_string(),
             });
-            continue;
+            return Ok(out);
         }
 
-        if !started {
+        if !self.started {
             let id = object
                 .get("id")
                 .and_then(Value::as_str)
@@ -123,7 +135,7 @@ fn chat(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseErr
                 id: id.to_string(),
                 model: model.to_string(),
             });
-            started = true;
+            self.started = true;
         }
 
         if let Some(usage) = object.get("usage").filter(|usage| !usage.is_null()) {
@@ -184,12 +196,80 @@ fn chat(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseErr
                 });
             }
         }
-    }
 
-    if !started {
+        Ok(out)
+    }
+}
+
+fn chat(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {
+    let mut state = ChatStreamState::default();
+    let mut out = Vec::new();
+    for chunk in chunks {
+        out.extend(state.push(chunk)?);
+    }
+    if !state.is_started() {
         return Err(StreamParseError::MissingField("id"));
     }
     Ok(out)
+}
+
+/// 增量 SSE 解码器（上游 OpenAI 兼容流）。
+///
+/// 只做分帧 + 状态推进，不缓存整段响应；长流是 O(n)，不是 O(n²)。
+#[derive(Debug, Default)]
+pub struct ChatStreamDecoder {
+    state: ChatStreamState,
+    buffer: String,
+    done: bool,
+}
+
+impl ChatStreamDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 是否已收到 `[DONE]`。
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// 喂入一段字节，返回本段产生的事件。
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {
+        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        if self.buffer.contains('\r') {
+            self.buffer = self.buffer.replace("\r\n", "\n");
+        }
+
+        let mut out = Vec::new();
+        while let Some(index) = self.buffer.find("\n\n") {
+            let block: String = self.buffer.drain(..index + 2).collect();
+            for chunk in parse_sse_text(&block) {
+                if chunk.data == Value::String("[DONE]".to_string()) {
+                    self.done = true;
+                    continue;
+                }
+                out.extend(self.state.push(&chunk)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 流结束：处理残留在缓冲区里的最后一个块。
+    pub fn finish(&mut self) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {
+        let remaining = std::mem::take(&mut self.buffer);
+        if remaining.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for chunk in parse_sse_text(&remaining) {
+            if chunk.data == Value::String("[DONE]".to_string()) {
+                self.done = true;
+                continue;
+            }
+            out.extend(self.state.push(&chunk)?);
+        }
+        Ok(out)
+    }
 }
 
 fn anthropic(chunks: &[RawChunk]) -> Result<Vec<CanonicalStreamEvent>, StreamParseError> {

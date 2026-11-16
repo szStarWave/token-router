@@ -64,6 +64,22 @@ fn post_chat(key: Option<&str>) -> Request<Body> {
     builder.body(Body::from(chat_body())).expect("request")
 }
 
+fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request")
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
 #[tokio::test]
 async fn success_returns_decision_headers() {
     let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
@@ -179,6 +195,136 @@ async fn invalid_body_is_400() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn streaming_chat_returns_sse() {
+    let mock = MockUpstream::start(vec![Reply::chat_stream(&["Hi", " there"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "auto",
+                "stream": true,
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(
+        response.headers()["x-token-router-served-model"],
+        "physical-a"
+    );
+
+    let text = body_text(response).await;
+    assert!(text.contains("data: "), "{text}");
+    assert!(text.contains("Hi"), "{text}");
+    assert!(text.contains(" there"), "{text}");
+    assert!(text.contains("[DONE]"), "{text}");
+
+    for _ in 0..100 {
+        if store::ledger::count(pipeline.db()).expect("count") == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn anthropic_endpoint_round_trips() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello anthropic")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/messages",
+            serde_json::json!({
+                "model": "auto",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&body_text(response).await).expect("json");
+    assert_eq!(value["type"], "message");
+    assert_eq!(value["content"][0]["text"], "hello anthropic");
+    assert_eq!(value["stop_reason"], "end_turn");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn responses_endpoint_round_trips() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello responses")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/responses",
+            serde_json::json!({
+                "model": "auto",
+                "input": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&body_text(response).await).expect("json");
+    assert_eq!(value["object"], "response");
+    assert_eq!(value["output"][0]["content"][0]["text"], "hello responses");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn anthropic_streaming_translates_events() {
+    let mock = MockUpstream::start(vec![Reply::chat_stream(&["hello"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/messages",
+            serde_json::json!({
+                "model": "auto",
+                "max_tokens": 64,
+                "stream": true,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = body_text(response).await;
+    assert!(text.contains("event: message_start"), "{text}");
+    assert!(text.contains("event: content_block_delta"), "{text}");
+    assert!(text.contains("hello"), "{text}");
+    assert!(text.contains("event: message_stop"), "{text}");
 
     mock.shutdown();
 }

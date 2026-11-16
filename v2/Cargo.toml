@@ -16,7 +16,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
+async-stream = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }

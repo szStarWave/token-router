@@ -59,7 +59,7 @@ impl AttemptOutcome {
 /// HTTP 上游客户端。
 #[derive(Debug, Clone)]
 pub struct HttpUpstream {
-    client: Client,
+    pub(crate) client: Client,
 }
 
 /// 默认客户端：120s 单次请求超时（P0a 非流式）。
@@ -240,7 +240,7 @@ pub fn endpoint(base_url: &str) -> String {
     }
 }
 
-fn resolve_credential(reference: &CredentialRef) -> Result<String, AttemptFailure> {
+pub(crate) fn resolve_credential(reference: &CredentialRef) -> Result<String, AttemptFailure> {
     let (kind, name) = reference
         .0
         .split_once(':')

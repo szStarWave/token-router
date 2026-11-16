@@ -12,11 +12,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anthropic;
 pub mod chat;
+pub mod compat;
 pub mod coverage;
 pub mod errors;
 pub mod fixture;
+pub mod responses;
 pub mod sse;
+pub mod sse_encode;
 
 /// 编解码错误。形状问题必须报错，不能静默丢弃字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
