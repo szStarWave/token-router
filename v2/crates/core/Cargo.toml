@@ -1,0 +1,11 @@
+[package]
+name = "tr-core"
+description = "信号抽取、策略与 Plan 合并（纯函数，零 async，零 IO）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+serde_json = { workspace = true }

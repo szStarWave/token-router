@@ -1,0 +1,11 @@
+[package]
+name = "tr-decide"
+description = "DecisionModel trait 与判官实现（唯一允许调用判官模型的 crate）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+serde_json = { workspace = true }

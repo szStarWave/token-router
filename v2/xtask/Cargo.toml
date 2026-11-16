@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+description = "v2 构建与门禁任务"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }

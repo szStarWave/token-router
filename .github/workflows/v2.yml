@@ -1,0 +1,59 @@
+name: v2
+
+# v2 是独立 workspace（v2/），与 v1 作业并存、互不影响。
+# 门禁顺序对应实施计划：静态 → 依赖方向 → 契约/内核测试。
+
+on:
+  push:
+    branches: [v2]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2.yml"
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check (linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: dependency direction gate
+        run: cargo xtask check-deps
+      - name: test
+        run: cargo test --workspace
+
+  check-windows:
+    name: check (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v2
+      - name: dependency direction gate
+        run: cargo xtask check-deps
+      - name: test
+        run: cargo test --workspace

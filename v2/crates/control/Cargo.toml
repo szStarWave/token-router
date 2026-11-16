@@ -1,0 +1,12 @@
+[package]
+name = "tr-control"
+description = "typed admin API、配置与发布、诊断、账本查询"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+tr-agent = { path = "../agent" }
+serde_json = { workspace = true }

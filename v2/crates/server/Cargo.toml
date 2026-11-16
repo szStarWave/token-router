@@ -1,0 +1,13 @@
+[package]
+name = "tr-server"
+description = "axum 组装、鉴权、模型端点、健康检查与观测出口"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+tr-proto = { path = "../proto" }
+tr-agent = { path = "../agent" }
+serde_json = { workspace = true }

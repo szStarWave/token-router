@@ -40,6 +40,7 @@
 | 25 | 引入多模型与虚拟模型：Selection/Dispatch 分离、每虚拟模型 profile/策略/候选池/state、RequestReason | §3.6、§4.9、§8、§10.5、§18.2 |
 | 26 | 融合 pi StickyDispatch 与 HiRoute ContextHold：硬复用/软亲和优先级、FailedDispatch、DispatchSource、回退与失效 | §4.9.1、§6.5、§8.2、§9.2 |
 | 27 | 补实施前置落地件：存储 DDL/迁移、错误分类与行为矩阵、仓库与 CI 形态、配置演进策略；`FailedDispatch` 增加 `ErrorClass` | §18.4、§4.9.1 |
+| 28 | P0a 实现修正：`DecisionSnapshot` 补齐 `RequestView` 全部输入（否则 sticky 无法回放）；包名统一 `tr-` 前缀避开 sysroot 的 `core` | §4.7、§18.4.3 |
 
 ---
 
@@ -575,8 +576,19 @@ pub struct DecisionSnapshot {
     pub profile: ProfileConfig,
     pub now_unix: u64,
     pub verdicts: Vec<Verdict>,        // 按 judge_request_id 排序
+
+    // RequestView 的其余输入：缺了它们，回放无法复现 sticky / hold 决策
+    pub selection: Selection,
+    pub virtual_model: VirtualModel,
+    pub reason: RequestReason,
+    pub previous: Option<Dispatch>,
+    pub failed: Option<FailedDispatch>,
+    pub context_hold: Option<ContextHold>,
+    pub router_state: Option<VirtualModelState>,
 }
 ```
+
+> 实现修正（P0a）：初版字段只覆盖 Plan 阶段的输入，漏掉了 `selection` / `virtual_model` / `reason` / `previous` / `failed` / `context_hold` / `router_state`。`core::decide(&DecisionSnapshot)` 必须能还原完整 `RequestView`，否则 `Retry`/`Continuation` 的 sticky 决策无法回放。回放入口即 `DecisionSnapshot::view()`。
 
 确定性规则：
 
@@ -2508,6 +2520,8 @@ token-router/                 # 仓库根
     apps/desktop/             # P4 新客户端
     tests/fixtures/           # golden fixtures（S0 产物）
 ```
+
+包名约定：`core` 作为 crate 名会与 sysroot 的 `core` 冲突，因此**所有包名加 `tr-` 前缀**（`tr-core` / `tr-contracts` / …），目录名保持短名；依赖门禁按包名匹配。`cargo xtask` 由 `v2/.cargo/config.toml` 的 alias 提供。
 
 理由：
 

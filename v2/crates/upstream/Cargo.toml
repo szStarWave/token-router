@@ -1,0 +1,11 @@
+[package]
+name = "tr-upstream"
+description = "provider 客户端、流式转发、候选接力与上游错误归一化"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+serde_json = { workspace = true }

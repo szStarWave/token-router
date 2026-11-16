@@ -72,7 +72,8 @@ endif
         package-electron-win clean-package-electron-win \
         ui-build tauri-dev tauri-build tauri-build-linux tauri-build-macos \
         setup-linux-desktop-deps setup-tauri-nsis flatpak-build \
-        ota-stage build-ota ota-publish push version
+        ota-stage build-ota ota-publish push version \
+        v2-check v2-test v2-fix v2-fixtures v2-replay
 
 help:
 	@echo "  build            Build debug CLI + library"
@@ -83,6 +84,10 @@ help:
 	@echo "  release-arm64    Build release for ARM64 Linux (glibc)"
 	@echo "  release-arm64-musl  Build release for ARM64 Linux (musl, fully static)"
 	@echo "  test             Run tests"
+	@echo ""
+	@echo "  v2-check         v2: fmt + clippy + 依赖方向门禁"
+	@echo "  v2-test          v2: 单元 + golden 测试"
+	@echo "  v2-fix           v2: fmt + clippy --fix"
 	@echo ""
 	@echo "  env              Print resolved paths & config"
 	@echo "  setup            Interactive upstream setup wizard"
@@ -439,3 +444,28 @@ ifeq ($(BUMP_VERSION),)
 	@exit 1
 endif
 	node scripts/bump_version.mjs $(BUMP_VERSION)
+
+# ---- v2（重写线，独立 workspace）----
+# 根目录 Cargo.toml 仍属 v1；v2 有自己的 Cargo.lock / target / toolchain。
+V2_MANIFEST := v2/Cargo.toml
+V2_XTASK    := v2/xtask/Cargo.toml
+
+v2-check:
+	$(CARGO) fmt --manifest-path $(V2_MANIFEST) --all -- --check
+	$(CARGO) clippy --manifest-path $(V2_MANIFEST) --all-targets -- -D warnings
+	$(CARGO) run --manifest-path $(V2_XTASK) -- check-deps
+
+v2-test:
+	$(CARGO) test --manifest-path $(V2_MANIFEST) --workspace
+
+v2-fix:
+	$(CARGO) fmt --manifest-path $(V2_MANIFEST) --all
+	$(CARGO) clippy --manifest-path $(V2_MANIFEST) --all-targets --fix --allow-dirty
+
+v2-fixtures:
+	@echo "v2-fixtures: 尚未实现（S0-2/S0-3 落地后启用）"
+	@exit 1
+
+v2-replay:
+	@echo "v2-replay: 尚未实现（P0a-6 落地后启用）"
+	@exit 1

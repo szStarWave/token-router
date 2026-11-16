@@ -1,0 +1,11 @@
+[package]
+name = "tr-proto"
+description = "协议编解码、兼容修复与流式事件状态机"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tr-contracts = { path = "../contracts" }
+serde_json = { workspace = true }
