@@ -1,0 +1,122 @@
+{
+  "id": "responses.stream.function_call",
+  "protocol": "responses",
+  "stream": true,
+  "request": {
+    "model": "auto",
+    "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "List files." }] }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "list_files",
+        "parameters": {
+          "type": "object",
+          "properties": { "path": { "type": "string" } }
+        }
+      }
+    ],
+    "stream": true
+  },
+  "stream_framing": "event_data",
+  "chunks": [
+    {
+      "event": "response.created",
+      "data": {
+        "type": "response.created",
+        "response": {
+          "id": "resp_stream_2",
+          "object": "response",
+          "status": "in_progress",
+          "model": "gpt-5-codex",
+          "output": []
+        }
+      }
+    },
+    {
+      "event": "response.output_item.added",
+      "data": {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "function_call",
+          "id": "fc_stream_1",
+          "call_id": "call_stream_2",
+          "name": "list_files",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      }
+    },
+    {
+      "event": "response.function_call_arguments.delta",
+      "data": {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "fc_stream_1",
+        "output_index": 0,
+        "delta": "{\"path\""
+      }
+    },
+    {
+      "event": "response.function_call_arguments.delta",
+      "data": {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "fc_stream_1",
+        "output_index": 0,
+        "delta": ":\".\"}"
+      }
+    },
+    {
+      "event": "response.function_call_arguments.done",
+      "data": {
+        "type": "response.function_call_arguments.done",
+        "item_id": "fc_stream_1",
+        "output_index": 0,
+        "arguments": "{\"path\":\".\"}"
+      }
+    },
+    {
+      "event": "response.completed",
+      "data": {
+        "type": "response.completed",
+        "response": {
+          "id": "resp_stream_2",
+          "object": "response",
+          "status": "completed",
+          "model": "gpt-5-codex",
+          "output": [
+            {
+              "type": "function_call",
+              "id": "fc_stream_1",
+              "call_id": "call_stream_2",
+              "name": "list_files",
+              "arguments": "{\"path\":\".\"}",
+              "status": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 30,
+            "output_tokens": 12,
+            "total_tokens": 42
+          }
+        }
+      }
+    }
+  ],
+  "done": false,
+  "expect_events": [
+    { "event": "started", "id": "resp_stream_2", "model": "gpt-5-codex" },
+    {
+      "event": "tool_call_delta",
+      "index": 0,
+      "id": "call_stream_2",
+      "name": "list_files",
+      "arguments": ""
+    },
+    { "event": "tool_call_delta", "index": 0, "id": null, "name": null, "arguments": "{\"path\"" },
+    { "event": "tool_call_delta", "index": 0, "id": null, "name": null, "arguments": ":\".\"}" },
+    { "event": "usage", "input": 30, "output": 12, "cached": null },
+    { "event": "finished", "reason": "tool_use" }
+  ]
+}

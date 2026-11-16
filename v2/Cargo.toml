@@ -13,3 +13,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.lints.cargo]
+# P0a 阶段部分 crate 只有骨架、依赖已按目标架构声明（依赖方向门禁需要它们）。
+# 代码落地后应移除本 allow，让陈旧的依赖暴露出来。
+unused_dependencies = "allow"

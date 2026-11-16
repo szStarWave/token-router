@@ -1,0 +1,49 @@
+{
+  "id": "chat.nonstream.tool_call_history",
+  "protocol": "chat_completions",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "messages": [
+      { "role": "system", "content": "You are a coding agent." },
+      { "role": "user", "content": "What is in src/lib.rs?" },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_fixture_2",
+            "type": "function",
+            "function": { "name": "read_file", "arguments": "{\"path\":\"src/lib.rs\"}" }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_fixture_2",
+        "name": "read_file",
+        "content": "pub fn hello() {}"
+      },
+      { "role": "user", "content": "Summarize it." }
+    ],
+    "max_completion_tokens": 256
+  },
+  "response": {
+    "id": "chatcmpl-fixture-3",
+    "object": "chat.completion",
+    "created": 1700000002,
+    "model": "deepseek-chat",
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "It defines one function: hello()." },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 96,
+      "completion_tokens": 10,
+      "total_tokens": 106
+    }
+  }
+}

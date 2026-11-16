@@ -12,3 +12,6 @@ tr-core = { path = "../core" }
 tr-decide = { path = "../decide" }
 tr-upstream = { path = "../upstream" }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

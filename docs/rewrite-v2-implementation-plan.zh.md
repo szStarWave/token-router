@@ -460,3 +460,24 @@ cargo xtask fixture-probe
 | 九、P3 | §3.6、§4.9、§10.5、§12 |
 | 十一、测试 | §11.6 |
 | 十三、风险检查点 | §16.1 |
+
+---
+
+## 附录 C：执行记录
+
+> 只记录**与计划不一致的地方**和门禁结论；逐任务进度以 commit 为准。
+
+### 2026-11-16：S0 收口
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| S0-1 workspace 骨架 | 完成 | 包名统一 `tr-` 前缀（避开 sysroot `core`），`check-deps` 正反用例均验证 |
+| S0-2 fixtures | 完成（自建） | 19 个样本：chat 7 / anthropic 6 / responses 6，各含流式与错误样本 |
+| S0-3 回放器 | **改期** | 由“重放 v1”改为 `mock-upstream`（P0a 与 e2e 一起做）；当前用 fixture 自检代替 |
+| S0-4 覆盖探针 | 完成 | `cargo xtask fixtures-check`，三协议请求字段覆盖率 100%，报告落 `docs/s0-gap-report.md` |
+| S0-5 客户端冒烟 | **未执行** | 需要 Hermes / Codex / Claude Code 与上游凭据，属用户环境；补录真实样本后重跑门禁 |
+| S0-6 gap report | 完成（部分） | 报告已生成；真实客户端带来的新增字段待 S0-5 后刷新 |
+
+**G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**客户端冒烟未做，G0 记为“条件通过”**。按计划不因此阻塞 P0a——P0a 只做 Chat Completions 单协议，等真实样本补录后再决定是否需要 P0c。
+
+下一步：P0a-1 ~ P0a-6（内核契约与 `core::decide`），e2e 目标改为 `crates/mock-upstream`。

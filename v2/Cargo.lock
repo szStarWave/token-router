@@ -294,6 +294,7 @@ dependencies = [
 name = "tr-proto"
 version = "0.20.0"
 dependencies = [
+ "serde",
  "serde_json",
  "tr-contracts",
 ]
@@ -395,6 +396,7 @@ name = "xtask"
 version = "0.20.0"
 dependencies = [
  "serde_json",
+ "tr-proto",
 ]
 
 [[package]]

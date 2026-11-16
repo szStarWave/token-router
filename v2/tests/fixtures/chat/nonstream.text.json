@@ -1,0 +1,44 @@
+{
+  "id": "chat.nonstream.text",
+  "protocol": "chat_completions",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "messages": [
+      { "role": "system", "content": "You are a terse assistant." },
+      { "role": "user", "content": "Explain prompt caching in one paragraph." }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 512,
+    "stop": ["\n\n"],
+    "seed": 7,
+    "stream": false,
+    "stream_options": { "include_usage": true },
+    "user": "fixture-client",
+    "metadata": { "trace": "chat-nonstream-text" }
+  },
+  "response": {
+    "id": "chatcmpl-fixture-1",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "deepseek-chat",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Prompt caching reuses a previously processed prefix instead of re-reading it."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 18,
+      "total_tokens": 50,
+      "prompt_tokens_details": { "cached_tokens": 0 }
+    },
+    "system_fingerprint": "fp_fixture"
+  }
+}

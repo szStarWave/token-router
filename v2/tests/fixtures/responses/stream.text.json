@@ -1,0 +1,110 @@
+{
+  "id": "responses.stream.text",
+  "protocol": "responses",
+  "stream": true,
+  "request": {
+    "model": "auto",
+    "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "Say good morning." }] }
+    ],
+    "stream": true
+  },
+  "stream_framing": "event_data",
+  "chunks": [
+    {
+      "event": "response.created",
+      "data": {
+        "type": "response.created",
+        "response": {
+          "id": "resp_stream_1",
+          "object": "response",
+          "created_at": 1700000020,
+          "status": "in_progress",
+          "model": "gpt-5-codex",
+          "output": []
+        }
+      }
+    },
+    {
+      "event": "response.output_item.added",
+      "data": {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "message",
+          "id": "msg_stream_1",
+          "status": "in_progress",
+          "role": "assistant",
+          "content": []
+        }
+      }
+    },
+    {
+      "event": "response.output_text.delta",
+      "data": {
+        "type": "response.output_text.delta",
+        "item_id": "msg_stream_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "Good"
+      }
+    },
+    {
+      "event": "response.output_text.delta",
+      "data": {
+        "type": "response.output_text.delta",
+        "item_id": "msg_stream_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": " morning."
+      }
+    },
+    {
+      "event": "response.output_text.done",
+      "data": {
+        "type": "response.output_text.done",
+        "item_id": "msg_stream_1",
+        "output_index": 0,
+        "content_index": 0,
+        "text": "Good morning."
+      }
+    },
+    {
+      "event": "response.completed",
+      "data": {
+        "type": "response.completed",
+        "response": {
+          "id": "resp_stream_1",
+          "object": "response",
+          "status": "completed",
+          "model": "gpt-5-codex",
+          "output": [
+            {
+              "type": "message",
+              "id": "msg_stream_1",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "Good morning.", "annotations": [] }
+              ]
+            }
+          ],
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "input_tokens_details": { "cached_tokens": 0 }
+          }
+        }
+      }
+    }
+  ],
+  "done": false,
+  "expect_events": [
+    { "event": "started", "id": "resp_stream_1", "model": "gpt-5-codex" },
+    { "event": "content_delta", "text": "Good" },
+    { "event": "content_delta", "text": " morning." },
+    { "event": "usage", "input": 10, "output": 4, "cached": 0 },
+    { "event": "finished", "reason": "stop" }
+  ]
+}

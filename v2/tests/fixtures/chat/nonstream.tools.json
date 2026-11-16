@@ -1,0 +1,58 @@
+{
+  "id": "chat.nonstream.tools",
+  "protocol": "chat_completions",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "messages": [
+      { "role": "user", "content": "List the files in the workspace." }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "list_files",
+          "description": "List files under a path",
+          "parameters": {
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "temperature": 0
+  },
+  "response": {
+    "id": "chatcmpl-fixture-2",
+    "object": "chat.completion",
+    "created": 1700000001,
+    "model": "deepseek-chat",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_fixture_1",
+              "type": "function",
+              "function": { "name": "list_files", "arguments": "{\"path\":\".\"}" }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 64,
+      "completion_tokens": 12,
+      "total_tokens": 76
+    }
+  }
+}

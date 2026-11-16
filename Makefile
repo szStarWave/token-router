@@ -463,8 +463,7 @@ v2-fix:
 	$(CARGO) clippy --manifest-path $(V2_MANIFEST) --all-targets --fix --allow-dirty
 
 v2-fixtures:
-	@echo "v2-fixtures: 尚未实现（S0-2/S0-3 落地后启用）"
-	@exit 1
+	$(CARGO) run --manifest-path $(V2_XTASK) -- fixtures-check
 
 v2-replay:
 	@echo "v2-replay: 尚未实现（P0a-6 落地后启用）"

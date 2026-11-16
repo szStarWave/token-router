@@ -1,0 +1,24 @@
+{
+  "id": "responses.error.context_overflow",
+  "protocol": "responses",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "summarize everything" }] }
+    ]
+  },
+  "error": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "error": {
+        "message": "Your input exceeds the context window of this model.",
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+        "param": "input"
+      }
+    }
+  },
+  "expect_error_class": "context_overflow"
+}

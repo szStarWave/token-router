@@ -1,0 +1,73 @@
+{
+  "id": "chat.stream.text",
+  "protocol": "chat_completions",
+  "stream": true,
+  "request": {
+    "model": "auto",
+    "messages": [
+      { "role": "user", "content": "Say good morning." }
+    ],
+    "stream": true,
+    "stream_options": { "include_usage": true }
+  },
+  "stream_framing": "data_only",
+  "chunks": [
+    {
+      "data": {
+        "id": "chatcmpl-stream-1",
+        "object": "chat.completion.chunk",
+        "created": 1700000003,
+        "model": "deepseek-chat",
+        "choices": [
+          { "index": 0, "delta": { "role": "assistant", "content": "" }, "finish_reason": null }
+        ]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-1",
+        "object": "chat.completion.chunk",
+        "model": "deepseek-chat",
+        "choices": [{ "index": 0, "delta": { "content": "Good" }, "finish_reason": null }]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-1",
+        "object": "chat.completion.chunk",
+        "model": "deepseek-chat",
+        "choices": [{ "index": 0, "delta": { "content": " morning." }, "finish_reason": null }]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-1",
+        "object": "chat.completion.chunk",
+        "model": "deepseek-chat",
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-1",
+        "object": "chat.completion.chunk",
+        "model": "deepseek-chat",
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 4,
+          "total_tokens": 16,
+          "prompt_tokens_details": { "cached_tokens": 0 }
+        }
+      }
+    }
+  ],
+  "done": true,
+  "expect_events": [
+    { "event": "started", "id": "chatcmpl-stream-1", "model": "deepseek-chat" },
+    { "event": "content_delta", "text": "Good" },
+    { "event": "content_delta", "text": " morning." },
+    { "event": "finished", "reason": "stop" },
+    { "event": "usage", "input": 12, "output": 4, "cached": 0 }
+  ]
+}

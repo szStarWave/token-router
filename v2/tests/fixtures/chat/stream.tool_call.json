@@ -1,0 +1,101 @@
+{
+  "id": "chat.stream.tool_call",
+  "protocol": "chat_completions",
+  "stream": true,
+  "request": {
+    "model": "auto",
+    "messages": [
+      { "role": "user", "content": "List files, streaming." }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "list_files",
+          "parameters": {
+            "type": "object",
+            "properties": { "path": { "type": "string" } }
+          }
+        }
+      }
+    ],
+    "stream": true
+  },
+  "stream_framing": "data_only",
+  "chunks": [
+    {
+      "data": {
+        "id": "chatcmpl-stream-2",
+        "model": "deepseek-chat",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "call_stream_1",
+                  "type": "function",
+                  "function": { "name": "list_files", "arguments": "" }
+                }
+              ]
+            },
+            "finish_reason": null
+          }
+        ]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-2",
+        "model": "deepseek-chat",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [{ "index": 0, "function": { "arguments": "{\"path\"" } }]
+            },
+            "finish_reason": null
+          }
+        ]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-2",
+        "model": "deepseek-chat",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [{ "index": 0, "function": { "arguments": ":\".\"}" } }]
+            },
+            "finish_reason": null
+          }
+        ]
+      }
+    },
+    {
+      "data": {
+        "id": "chatcmpl-stream-2",
+        "model": "deepseek-chat",
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }]
+      }
+    }
+  ],
+  "done": true,
+  "expect_events": [
+    { "event": "started", "id": "chatcmpl-stream-2", "model": "deepseek-chat" },
+    {
+      "event": "tool_call_delta",
+      "index": 0,
+      "id": "call_stream_1",
+      "name": "list_files",
+      "arguments": ""
+    },
+    { "event": "tool_call_delta", "index": 0, "id": null, "name": null, "arguments": "{\"path\"" },
+    { "event": "tool_call_delta", "index": 0, "id": null, "name": null, "arguments": ":\".\"}" },
+    { "event": "finished", "reason": "tool_use" }
+  ]
+}

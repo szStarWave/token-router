@@ -7,4 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tr-proto = { path = "../crates/proto" }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

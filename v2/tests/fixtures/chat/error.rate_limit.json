@@ -1,0 +1,23 @@
+{
+  "id": "chat.error.rate_limit",
+  "protocol": "chat_completions",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "messages": [{ "role": "user", "content": "hello" }]
+  },
+  "error": {
+    "status": 429,
+    "headers": { "retry-after": "12", "x-ratelimit-remaining-requests": "0" },
+    "body": {
+      "error": {
+        "message": "Rate limit reached for requests",
+        "type": "requests",
+        "param": null,
+        "code": "rate_limit_exceeded"
+      }
+    }
+  },
+  "expect_error_class": "rate_limit",
+  "expect_retry_after_ms": 12000
+}

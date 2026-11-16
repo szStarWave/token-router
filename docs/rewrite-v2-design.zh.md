@@ -2563,12 +2563,12 @@ CI 作业（`v2-*`，与 v1 作业并存）：
 | 依赖 | `cargo xtask check-deps` | 必须 |
 | 契约 | `cargo test -p contracts`（serde golden、字段增删、未知字段保真） | 必须 |
 | 内核 | `cargo test -p core`（纯函数；fixture 驱动） | 必须 |
-| 协议 | `cargo test -p proto --test golden` | S0 fixtures 全绿 |
+| 协议 | `cargo xtask fixtures-check`（含 `cargo test -p tr-proto`） | 每协议覆盖率 ≥95%，SSE 事件序列一致 |
 | 回放 | `cargo xtask replay --fixtures tests/snapshots` | 投影字节一致 |
 | 存储 | `cargo test -p agent --features sqlite`（临时库，迁移幂等 + CAS） | 必须 |
 | 平台 | Windows + Linux（macOS 进 P2） | 必须 |
 
-Makefile 增目标：`make v2-check`、`make v2-test`、`make v2-fixtures`（重新生成 golden 必须人工 review diff 才能合并）。
+Makefile 增目标：`make v2-check`、`make v2-test`、`make v2-fixtures`（`fixtures-check` 会重写 `docs/s0-gap-report.md`，必须人工 review diff 才能合并）。
 
 #### 18.4.4 配置演进策略
 

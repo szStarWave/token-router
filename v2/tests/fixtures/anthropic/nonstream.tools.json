@@ -1,0 +1,44 @@
+{
+  "id": "anthropic.nonstream.tools",
+  "protocol": "anthropic_messages",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "max_tokens": 256,
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "List the workspace files." }]
+      }
+    ],
+    "tools": [
+      {
+        "name": "list_files",
+        "description": "List files under a path",
+        "input_schema": {
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"]
+        }
+      }
+    ],
+    "tool_choice": { "type": "auto", "disable_parallel_tool_use": true }
+  },
+  "response": {
+    "id": "msg_fixture_2",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [
+      { "type": "tool_use", "id": "toolu_fixture_1", "name": "list_files", "input": { "path": "." } }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 80,
+      "output_tokens": 14,
+      "cache_read_input_tokens": 64,
+      "cache_creation_input_tokens": 0
+    }
+  }
+}

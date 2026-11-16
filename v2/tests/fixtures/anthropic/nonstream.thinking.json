@@ -1,0 +1,52 @@
+{
+  "id": "anthropic.nonstream.thinking",
+  "protocol": "anthropic_messages",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "max_tokens": 2048,
+    "thinking": { "type": "enabled", "budget_tokens": 1024 },
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "Plan a two-file refactor." }]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "I should first check both files.",
+            "signature": "sig_fixture_abc"
+          },
+          { "type": "text", "text": "Let me look at both files first." }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "Go ahead." }]
+      }
+    ]
+  },
+  "response": {
+    "id": "msg_fixture_3",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [
+      {
+        "type": "redacted_thinking",
+        "data": "opaque-redacted-payload"
+      },
+      { "type": "text", "text": "Reading both files now." }
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 120,
+      "output_tokens": 22,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0
+    }
+  }
+}

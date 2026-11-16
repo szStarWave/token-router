@@ -2,18 +2,22 @@
 //!
 //! 用法：
 //! ```text
-//! cargo xtask check-deps    # 依赖方向门禁（§3.2 / §18.4.3）
+//! cargo xtask check-deps      # 依赖方向门禁（§3.2 / §18.4.3）
+//! cargo xtask fixtures-check  # S0 协议覆盖 + 流式事件门禁（§13 S0）
 //! cargo xtask help
 //! ```
 //!
 //! 为什么不用 clippy 自定义 lint：依赖方向是**架构约束**，需要可读的违规信息
 //! （`crate -> dep` + 设计文档章节号），而不是一条编号 warning。
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// 内部 crate 允许依赖的内部 crate 白名单（§3.2）。
+///
+/// `xtask` 是构建工具，允许依赖契约与协议实现来做门禁，不参与运行时依赖图。
 const ALLOWED: &[(&str, &[&str])] = &[
     ("tr-contracts", &[]),
     ("tr-proto", &["tr-contracts"]),
@@ -30,6 +34,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
         "tr-cli",
         &["tr-contracts", "tr-proto", "tr-core", "tr-agent"],
     ),
+    ("xtask", &["tr-proto"]),
 ];
 
 /// `tr-core` 禁止出现的外部依赖：一旦出现就失去“纯函数可回放”。
@@ -44,6 +49,7 @@ fn main() {
         .unwrap_or_else(|| "help".to_string());
     let code = match task.as_str() {
         "check-deps" => check_deps(),
+        "fixtures-check" => fixtures_check(),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -58,7 +64,13 @@ fn main() {
 }
 
 fn print_help() {
-    println!("xtask 可用任务:\n  check-deps   依赖方向门禁（§3.2）\n  help         显示本帮助");
+    println!(
+        "xtask 可用任务:\n\
+         \x20 check-deps      依赖方向门禁（§3.2）\n\
+         \x20 fixtures-check  S0 协议覆盖 + 流式事件门禁（默认阈值 95%）\n\
+         \x20                 --fixtures <dir> --report <path> --min-coverage <0..1>\n\
+         \x20 help            显示本帮助"
+    );
 }
 
 fn workspace_root() -> PathBuf {
@@ -212,4 +224,198 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+#[derive(Default)]
+struct ProtocolStats {
+    fixtures: usize,
+    streams: usize,
+    errors: usize,
+    leaves: usize,
+    mapped: usize,
+    unmapped: Vec<(String, String)>,
+}
+
+fn fixtures_check() -> i32 {
+    let root = workspace_root();
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let fixtures_dir = flag_value(&args, "--fixtures")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("tests/fixtures"));
+    let report_path = flag_value(&args, "--report")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("../docs/s0-gap-report.md"));
+    let min_coverage = flag_value(&args, "--min-coverage")
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.95);
+
+    let fixtures = match tr_proto::fixture::load_dir(&fixtures_dir) {
+        Ok(fixtures) => fixtures,
+        Err(err) => {
+            eprintln!(
+                "cannot load fixtures from {}: {err}",
+                fixtures_dir.display()
+            );
+            return 2;
+        }
+    };
+    if fixtures.is_empty() {
+        eprintln!("no fixtures in {}", fixtures_dir.display());
+        return 2;
+    }
+
+    let mut stats: BTreeMap<String, ProtocolStats> = BTreeMap::new();
+    let mut problems: Vec<String> = Vec::new();
+
+    for fixture in &fixtures {
+        let result = tr_proto::fixture::check(fixture);
+        let entry = stats.entry(fixture.protocol.clone()).or_default();
+        entry.fixtures += 1;
+        entry.leaves += result.coverage.total_leaves;
+        entry.mapped += result.coverage.mapped_leaves;
+        if !fixture.chunks.is_empty() {
+            entry.streams += 1;
+        }
+        if fixture.error.is_some() {
+            entry.errors += 1;
+        }
+        for path in result.coverage.unmapped {
+            entry.unmapped.push((fixture.id.clone(), path));
+        }
+        for problem in result.problems {
+            problems.push(format!("{}: {problem}", fixture.id));
+        }
+    }
+
+    for (protocol, entry) in &stats {
+        let ratio = ratio(entry.mapped, entry.leaves);
+        println!(
+            "{protocol:20} fixtures={:2} streams={:2} errors={:2} leaves={:4} mapped={:4} coverage={:.1}%",
+            entry.fixtures,
+            entry.streams,
+            entry.errors,
+            entry.leaves,
+            entry.mapped,
+            ratio * 100.0
+        );
+        if ratio < min_coverage {
+            problems.push(format!(
+                "{protocol}: coverage {:.1}% < 阈值 {:.0}%",
+                ratio * 100.0,
+                min_coverage * 100.0
+            ));
+        }
+        if !entry.unmapped.is_empty() {
+            problems.push(format!(
+                "{protocol}: {} 个未映射请求字段",
+                entry.unmapped.len()
+            ));
+        }
+    }
+
+    if let Err(err) = write_gap_report(&report_path, &stats, &problems, min_coverage) {
+        eprintln!("cannot write report {}: {err}", report_path.display());
+        problems.push(format!("report write failed: {err}"));
+    } else {
+        println!("gap report: {}", report_path.display());
+    }
+
+    if problems.is_empty() {
+        println!(
+            "fixtures-check OK: {} fixtures across {} protocols",
+            fixtures.len(),
+            stats.len()
+        );
+        0
+    } else {
+        eprintln!("fixtures-check FAILED:");
+        for problem in &problems {
+            eprintln!("  - {problem}");
+        }
+        1
+    }
+}
+
+fn ratio(mapped: usize, total: usize) -> f64 {
+    if total == 0 {
+        1.0
+    } else {
+        mapped as f64 / total as f64
+    }
+}
+
+fn flag_value(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
+}
+
+fn write_gap_report(
+    path: &Path,
+    stats: &BTreeMap<String, ProtocolStats>,
+    problems: &[String],
+    min_coverage: f64,
+) -> std::io::Result<()> {
+    let mut out = String::new();
+    out.push_str("# S0 协议覆盖报告\n\n");
+    out.push_str(
+        "> 由 `cargo xtask fixtures-check --report docs/s0-gap-report.md` 生成，请勿手改。\n\
+         > 覆盖探针只统计**请求**字段；响应形状与流式事件由 fixture 自检断言。\n\
+         > 本报告不是“兼容承诺”：v2 的 canonical 面见设计文档 §4.1。\n\n",
+    );
+    out.push_str(
+        "## 数据来源与已知限制\n\n\
+         - 样本为**自建协议样本**（`v2/tests/fixtures/`），不是真实客户端录制；\n\
+           因此 100% 覆盖率只证明“映射表覆盖了这些形状”，不证明真实客户端不会带来新字段。\n\
+         - 三客户端冒烟（Hermes / Codex / Claude Code）尚未执行，需在具备客户端与上游凭据的\n\
+           环境补录真实样本后重跑本门禁；届时新增字段会出现在“未映射字段”里。\n\
+         - provider 私有字段靠 `passthrough` 兜底；探针里映射到 `passthrough.*` 的字段视为“有处置”。\n\
+         - mock upstream / v1 重放尚未接入：P0a 的 e2e 需要它，届时补 `crates/mock-upstream`。\n\n",
+    );
+    out.push_str("## 覆盖率\n\n");
+    out.push_str("| 协议 | fixtures | 流式 | 错误 | wire 叶子 | 已映射 | 覆盖率 |\n");
+    out.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
+    for (protocol, entry) in stats {
+        out.push_str(&format!(
+            "| {protocol} | {} | {} | {} | {} | {} | {:.1}% |\n",
+            entry.fixtures,
+            entry.streams,
+            entry.errors,
+            entry.leaves,
+            entry.mapped,
+            ratio(entry.mapped, entry.leaves) * 100.0
+        ));
+    }
+
+    out.push_str("\n## 未映射字段\n\n");
+    let mut any_unmapped = false;
+    for (protocol, entry) in stats {
+        for (fixture, field) in &entry.unmapped {
+            any_unmapped = true;
+            out.push_str(&format!("- `{protocol}` / `{fixture}`: `{field}`\n"));
+        }
+    }
+    if !any_unmapped {
+        out.push_str("（无）\n");
+    }
+
+    out.push_str("\n## 断言失败\n\n");
+    if problems.is_empty() {
+        out.push_str("（无）\n");
+    } else {
+        for problem in problems {
+            out.push_str(&format!("- {problem}\n"));
+        }
+    }
+
+    out.push_str(&format!(
+        "\n门禁阈值：每个协议覆盖率 ≥ {:.0}%。\n",
+        min_coverage * 100.0
+    ));
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, out)
 }

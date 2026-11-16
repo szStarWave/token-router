@@ -11,3 +11,6 @@ tr-contracts = { path = "../contracts" }
 tr-proto = { path = "../proto" }
 tr-agent = { path = "../agent" }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

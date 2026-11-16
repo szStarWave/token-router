@@ -1,0 +1,19 @@
+{
+  "id": "anthropic.error.overloaded",
+  "protocol": "anthropic_messages",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "max_tokens": 64,
+    "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hello" }] }]
+  },
+  "error": {
+    "status": 529,
+    "headers": {},
+    "body": {
+      "type": "error",
+      "error": { "type": "overloaded_error", "message": "Overloaded" }
+    }
+  },
+  "expect_error_class": "overloaded"
+}

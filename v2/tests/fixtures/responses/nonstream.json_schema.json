@@ -1,0 +1,58 @@
+{
+  "id": "responses.nonstream.json_schema",
+  "protocol": "responses",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "input": [
+      {
+        "role": "user",
+        "content": [{ "type": "input_text", "text": "Return a routing verdict." }]
+      }
+    ],
+    "text": {
+      "format": {
+        "type": "json_schema",
+        "name": "routing_verdict",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "escalate": { "type": "boolean" },
+            "reason": { "type": "string" }
+          },
+          "required": ["escalate", "reason"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "stream": false
+  },
+  "response": {
+    "id": "resp_fixture_3",
+    "object": "response",
+    "created_at": 1700000012,
+    "status": "completed",
+    "model": "gpt-5-codex",
+    "output": [
+      {
+        "type": "message",
+        "id": "msg_fixture_3",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "{\"escalate\":false,\"reason\":\"cheap model is sufficient\"}",
+            "annotations": []
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 60,
+      "output_tokens": 16,
+      "total_tokens": 76
+    }
+  }
+}

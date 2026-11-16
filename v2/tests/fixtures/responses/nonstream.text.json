@@ -1,0 +1,51 @@
+{
+  "id": "responses.nonstream.text",
+  "protocol": "responses",
+  "stream": false,
+  "request": {
+    "model": "auto",
+    "instructions": "You are a terse assistant.",
+    "input": [
+      {
+        "role": "user",
+        "content": [{ "type": "input_text", "text": "Explain prompt caching." }]
+      }
+    ],
+    "max_output_tokens": 512,
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "stream": false,
+    "store": true,
+    "parallel_tool_calls": true,
+    "metadata": { "trace": "responses-nonstream-text" }
+  },
+  "response": {
+    "id": "resp_fixture_1",
+    "object": "response",
+    "created_at": 1700000010,
+    "status": "completed",
+    "model": "gpt-5-codex",
+    "output": [
+      {
+        "type": "message",
+        "id": "msg_fixture_1",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Prompt caching reuses a processed prefix.",
+            "annotations": []
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 40,
+      "output_tokens": 12,
+      "total_tokens": 52,
+      "input_tokens_details": { "cached_tokens": 0 },
+      "output_tokens_details": { "reasoning_tokens": 0 }
+    }
+  }
+}

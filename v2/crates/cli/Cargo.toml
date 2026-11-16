@@ -12,3 +12,6 @@ tr-proto = { path = "../proto" }
 tr-core = { path = "../core" }
 tr-agent = { path = "../agent" }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true
