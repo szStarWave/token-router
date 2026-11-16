@@ -43,6 +43,100 @@ pub struct Choice {
     pub label: String,
 }
 
+/// 可版本化的问题定义（§7.5.3）。判官服务按它生成动态 schema。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JudgeQuestionDefinition {
+    Boolean {
+        id: String,
+        instructions: String,
+    },
+    Ordinal {
+        id: String,
+        instructions: String,
+        levels: Vec<OrdinalLevel>,
+    },
+    Categorical {
+        id: String,
+        instructions: String,
+        options: Vec<CategoryOption>,
+    },
+}
+
+/// 序数等级。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrdinalLevel {
+    pub id: String,
+    pub criterion: String,
+}
+
+/// 分类选项，可带子序数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryOption {
+    pub id: String,
+    pub criterion: String,
+    pub refinement: Option<Vec<OrdinalLevel>>,
+}
+
+/// 把内部 `Question` 映射为 wire 定义。Score 用 low/high 两档表达阈值。
+pub fn question_definition(id: &str, question: &Question) -> JudgeQuestionDefinition {
+    match &question.choices {
+        Choices::Boolean => JudgeQuestionDefinition::Boolean {
+            id: id.to_string(),
+            instructions: question.prompt.clone(),
+        },
+        Choices::Enum(choices) => JudgeQuestionDefinition::Categorical {
+            id: id.to_string(),
+            instructions: question.prompt.clone(),
+            options: choices
+                .iter()
+                .map(|choice| CategoryOption {
+                    id: choice.id.clone(),
+                    criterion: choice.label.clone(),
+                    refinement: None,
+                })
+                .collect(),
+        },
+        Choices::Score {
+            min: _,
+            max: _,
+            decline_at,
+            escalate_at,
+        } => JudgeQuestionDefinition::Ordinal {
+            id: id.to_string(),
+            instructions: question.prompt.clone(),
+            levels: vec![
+                OrdinalLevel {
+                    id: "low".to_string(),
+                    criterion: format!("score < {decline_at}"),
+                },
+                OrdinalLevel {
+                    id: "high".to_string(),
+                    criterion: format!("score >= {escalate_at}"),
+                },
+            ],
+        },
+    }
+}
+
+/// 结构化值的 SHA-256（十六进制）。用于 context/protocol digests。
+pub fn digest_json<T: Serialize>(value: &T) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// 问题定义的协议指纹（§7.5.3）：改选项/措辞/顺序都必须升 revision。
+pub fn question_protocol_digest(definitions: &[JudgeQuestionDefinition]) -> String {
+    digest_json(&definitions)
+}
+
 /// 判官调用审计。写入 `LedgerRecord.judge` 与 `DecisionSnapshot` 之外的账本路径。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -232,4 +326,84 @@ pub enum TestOutcome {
     Passed,
     #[default]
     Failed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn question(choices: Choices) -> Question {
+        Question {
+            prompt: "should we escalate?".to_string(),
+            choices,
+            min_confidence: 0.0,
+        }
+    }
+
+    #[test]
+    fn boolean_question_maps_to_definition() {
+        let definition = question_definition("escalate", &question(Choices::Boolean));
+        assert_eq!(
+            definition,
+            JudgeQuestionDefinition::Boolean {
+                id: "escalate".to_string(),
+                instructions: "should we escalate?".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn enum_question_maps_to_categorical_options() {
+        let definition = question_definition(
+            "difficulty",
+            &question(Choices::Enum(vec![
+                Choice {
+                    id: "simple".to_string(),
+                    label: "simple task".to_string(),
+                },
+                Choice {
+                    id: "complex".to_string(),
+                    label: "complex task".to_string(),
+                },
+            ])),
+        );
+        let JudgeQuestionDefinition::Categorical { options, .. } = definition else {
+            panic!("expected categorical");
+        };
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].id, "simple");
+    }
+
+    #[test]
+    fn score_question_maps_to_ordinal_levels() {
+        let definition = question_definition(
+            "competence",
+            &question(Choices::Score {
+                min: 0.0,
+                max: 1.0,
+                decline_at: 0.5,
+                escalate_at: 0.8,
+            }),
+        );
+        let JudgeQuestionDefinition::Ordinal { levels, .. } = definition else {
+            panic!("expected ordinal");
+        };
+        assert_eq!(levels.len(), 2);
+        assert!(levels[0].criterion.contains("0.5"));
+    }
+
+    #[test]
+    fn protocol_digest_changes_with_definition() {
+        let a = question_protocol_digest(&[question_definition("q", &question(Choices::Boolean))]);
+        let b = question_protocol_digest(&[question_definition(
+            "q",
+            &Question {
+                prompt: "different prompt".to_string(),
+                choices: Choices::Boolean,
+                min_confidence: 0.0,
+            },
+        )]);
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b);
+    }
 }

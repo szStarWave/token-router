@@ -316,10 +316,15 @@ impl JudgeRuntime {
             };
             outcome.verdicts.push(verdict);
 
-            let mut trace = JudgeTrace {
+            let protocol_digest =
+                tr_contracts::question_protocol_digest(&[tr_contracts::question_definition(
+                    "q0",
+                    &request.question,
+                )]);
+            let trace = JudgeTrace {
                 service_id: Some(self.settings.backend.service_id().to_string()),
                 service_revision: Some(self.settings.backend.revision()),
-                protocol_digest: None,
+                protocol_digest: Some(protocol_digest.clone()),
                 context_digest: Some(context_digest.clone()),
                 local_decision_digest: digest(&request.evidence),
                 effective_source: match effective_source {
@@ -333,9 +338,6 @@ impl JudgeRuntime {
                 duration_ms: latency_ms,
                 usage,
             };
-            if failure.is_some() {
-                trace.protocol_digest = None;
-            }
             outcome.traces.push(trace.clone());
 
             outcome.calls.push(JudgeCallRecord {
@@ -343,7 +345,7 @@ impl JudgeRuntime {
                 question_id: request.id.clone(),
                 service_id: self.settings.backend.service_id().to_string(),
                 revision: self.settings.backend.revision(),
-                protocol_digest: None,
+                protocol_digest: Some(protocol_digest),
                 effective_source: effective_source.to_string(),
                 outcome: if failure.is_some() {
                     "failed".to_string()

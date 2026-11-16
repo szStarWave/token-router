@@ -475,7 +475,7 @@ cargo xtask fixture-probe
 | S0-2 fixtures | 完成（自建） | 19 个样本：chat 7 / anthropic 6 / responses 6，各含流式与错误样本 |
 | S0-3 回放器 | **改期** | 由“重放 v1”改为 `mock-upstream`（P0a 与 e2e 一起做）；当前用 fixture 自检代替 |
 | S0-4 覆盖探针 | 完成 | `cargo xtask fixtures-check`，三协议请求字段覆盖率 100%，报告落 `docs/s0-gap-report.md` |
-| S0-5 客户端冒烟 | **未执行** | 需要 Hermes / Codex / Claude Code 与上游凭据，属用户环境；补录真实样本后重跑门禁 |
+| S0-5 客户端冒烟 | **未执行** | 需要 Hermes / Codex / Claude Code 与上游凭据；步骤与记录表见 `docs/s0-client-smoke.md`，补录真实样本后重跑门禁 |
 | S0-6 gap report | 完成（部分） | 报告已生成；真实客户端带来的新增字段待 S0-5 后刷新 |
 
 **G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**客户端冒烟未做，G0 记为“条件通过”**。按计划不因此阻塞 P0a——P0a 只做 Chat Completions 单协议，等真实样本补录后再决定是否需要 P0c。
@@ -539,7 +539,7 @@ cargo xtask fixture-probe
 | 任务 | 状态 | 说明 |
 |---|---|---|
 | P1-1 DecisionModel/预算/deadline | 完成 | `tr-decide`；超预算记 `budget_exceeded`，deadline 硬生效 |
-| P1-2 判官服务契约 | 完成（精简） | 信封 + answer 解析 + 失败码；`JudgeQuestionDefinition` 完整目录留 P2 |
+| P1-2 判官服务契约 | 完成 | 信封含 `service_revision`/`protocol_digest`/`context_digest`/`questions`/`input`；`JudgeQuestionDefinition` 三型映射 + 协议指纹；失败码与降级齐全 |
 | P1-3 LLM adapter | 完成 | 动态 JSON schema / json_mode / tool_call；`uncertain` 保留字校验 |
 | P1-4 本地兜底 + `judge test` | 完成 | `tr-cli judge-test` 对 local 后端 Passed |
 | P1-5 判官审计 | 完成 | `judge_calls` 只存结构化字段，不存 prompt |
@@ -649,6 +649,13 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P0a-13 RequestAuthority | 完成 | `server::Authenticator` trait + `AuthMode` 实现；`SessionFacts.authority` 与账本 `authority_json`（migration 4）同源；e2e 断言 |
 | P1-6 shadow 异步写 | 完成 | 独立 writer 线程按批写 `shadow_records`；请求路径只入队，写失败只记日志 |
 
+### 2026-11-16：P1-2 判官信封与 S0-5 产物补齐
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P1-2 判官服务契约 | 完成 | `JudgeQuestionDefinition` 三型（Boolean/Ordinal/Categorical）+ `question_protocol_digest`；HTTP 信封补 `service_revision`/`protocol_digest`/`context_digest`/`questions`/`input`；响应兼容 `answers[]` 与单 `answer`；digest 写入 `JudgeTrace`/`judge_calls` |
+| S0-5 产物 | 占位 | `docs/s0-client-smoke.md` 给出三客户端流式/非流式步骤与记录表；执行仍待环境 |
+
 ### 总体状态（截至本次收口）
 
 | 阶段 | 状态 | 主要缺口 |
@@ -661,4 +668,4 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：208 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：213 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

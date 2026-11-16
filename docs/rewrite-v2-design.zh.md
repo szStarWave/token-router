@@ -1218,6 +1218,7 @@ pub struct CategoryOption {
 
 - `protocol_digest` 覆盖这些定义；改选项、改措辞、改顺序都必须升 revision。
 - `JudgeAnswer.value` 必须落在定义声明的选项内；越界按 `MalformedOutput` 处理。
+- 已实现：`contracts::question_definition` 把 `Question` 映射为 Boolean/Ordinal/Categorical；`question_protocol_digest` 对定义做 SHA-256，写入 `JudgeTrace`/`judge_calls`；HTTP 信封同时携带新版 `questions`/`input` 与旧版扁平字段，响应兼容 `answers[]` 与单 `answer`。
 
 #### 7.5.4 上下文策略与快照
 

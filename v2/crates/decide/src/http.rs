@@ -52,14 +52,28 @@ impl DecisionModel for HttpJudgeModel {
                 });
             }
 
+            let questions = vec![tr_contracts::question_definition("q0", &input.question)];
+            let protocol_digest = tr_contracts::question_protocol_digest(&questions);
+            let context_digest = tr_contracts::digest_json(&input.context);
+
+            // §7.5.2 信封字段齐全；旧服务仍可读顶层的 question/category/evidence/context。
             let envelope = json!({
                 "schema": "token-router.judge-request/v1",
                 "service_id": self.config.service_id,
+                "service_revision": self.config.revision,
                 "revision": self.config.revision,
+                "protocol_digest": protocol_digest,
+                "context_digest": context_digest,
+                "questions": questions,
+                "input": {
+                    "category": input.category,
+                    "evidence": input.evidence,
+                    "context": input.context,
+                },
                 "question": input.question,
                 "category": input.category,
                 "evidence": input.evidence,
-                "context": input.context
+                "context": input.context,
             });
 
             let mut request = self.client.post(&self.config.endpoint).json(&envelope);
@@ -79,10 +93,16 @@ impl DecisionModel for HttpJudgeModel {
                 code: JudgeFailureCode::MalformedOutput,
                 message: Some(error.to_string()),
             })?;
-            let answer = value.get("answer").ok_or_else(|| JudgeFailure {
-                code: JudgeFailureCode::MalformedOutput,
-                message: Some("响应缺少 answer".to_string()),
-            })?;
+            // 新信封：answers[]；兼容旧的单 answer 字段。
+            let answer = value
+                .get("answers")
+                .and_then(Value::as_array)
+                .and_then(|answers| answers.first())
+                .or_else(|| value.get("answer"))
+                .ok_or_else(|| JudgeFailure {
+                    code: JudgeFailureCode::MalformedOutput,
+                    message: Some("响应缺少 answers/answer".to_string()),
+                })?;
             let mut answer = parse_answer(answer)?;
             answer.usage = parse_usage(value.get("usage"));
             Ok(answer)
@@ -109,22 +129,27 @@ fn parse_usage(value: Option<&Value>) -> Option<tr_contracts::JudgeUsage> {
 }
 
 fn parse_answer(value: &Value) -> Result<JudgeAnswer, JudgeFailure> {
-    let judged = match value.get("kind").and_then(Value::as_str) {
+    // 新信封把 kind/value 放在 `value` 对象里；旧服务直接平铺。
+    let typed = value
+        .get("value")
+        .filter(|candidate| candidate.get("kind").is_some())
+        .unwrap_or(value);
+    let judged = match typed.get("kind").and_then(Value::as_str) {
         Some("bool") => JudgeValue::Bool(
-            value
+            typed
                 .get("value")
                 .and_then(Value::as_bool)
                 .ok_or_else(|| malformed("bool value 缺失"))?,
         ),
         Some("choice") => JudgeValue::Choice(
-            value
+            typed
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| malformed("choice value 缺失"))?
                 .to_string(),
         ),
         Some("score") => JudgeValue::Score(
-            value
+            typed
                 .get("value")
                 .and_then(Value::as_f64)
                 .ok_or_else(|| malformed("score value 缺失"))? as f32,
@@ -198,6 +223,18 @@ mod tests {
 
         let answer = parse_answer(&json!({"kind": "uncertain"})).expect("parse uncertain");
         assert_eq!(answer.value, JudgeValue::Uncertain);
+    }
+
+    #[test]
+    fn parses_nested_answer_shape() {
+        let answer = parse_answer(&json!({
+            "question_id": "q0",
+            "value": {"kind": "bool", "value": true},
+            "confidence": 0.8
+        }))
+        .expect("parse nested");
+        assert_eq!(answer.value, JudgeValue::Bool(true));
+        assert_eq!(answer.confidence, Some(0.8));
     }
 
     #[test]
