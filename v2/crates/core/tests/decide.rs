@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use tr_contracts::{
     Candidate, CandidateHealth, CanonicalMessage, CanonicalRequest, CanonicalRole,
     CapabilityProfile, ContentBlock, DecisionSnapshot, InputModality, LedgerSummary, MediaSource,
-    PlanMode, PriceModel, ProfileConfig, ProviderKind, ReasonCodeKind, Selection, SessionFacts,
-    Signals, UpstreamRef, VirtualModel,
+    PlanContribution, PlanDraft, PlanMode, PriceModel, ProfileConfig, ProviderKind, ReasonCode,
+    ReasonCodeKind, Selection, SessionFacts, Signals, UpstreamRef, VirtualModel,
 };
 use tr_core::decide;
 
@@ -285,6 +285,66 @@ fn slots_carry_cost_and_clamp_thinking_level() {
     ));
     assert_eq!(plan.preference[0].thinking_level, "off");
     assert!(plan.preference[0].est_cost.is_some());
+}
+
+#[test]
+fn merge_priority_keeps_escalation_above_competence_above_classify() {
+    let snapshot = snapshot(
+        vec![
+            candidate("weak", "local", 10, 32_768, vec![InputModality::Text]),
+            candidate("medium", "cloud", 50, 128_000, vec![InputModality::Text]),
+            candidate("strong", "premium", 80, 200_000, vec![InputModality::Text]),
+        ],
+        CandidateHealth::default(),
+        PlanMode::Cascade,
+        "hello",
+    );
+    let view = snapshot.view();
+
+    let mut baseline = PlanDraft::default();
+    baseline.contributions.push(PlanContribution::Prefer {
+        order: vec!["weak".into(), "medium".into(), "strong".into()],
+        reason: ReasonCode::new(ReasonCodeKind::BaselineOrder),
+    });
+
+    let mut classify = PlanDraft::default();
+    classify.contributions.push(PlanContribution::Prefer {
+        order: vec!["strong".into()],
+        reason: ReasonCode::new(ReasonCodeKind::ClassifyPrefer),
+    });
+
+    let mut competence = PlanDraft::default();
+    competence.contributions.push(PlanContribution::Pin {
+        candidate: "strong".into(),
+        reason: ReasonCode::new(ReasonCodeKind::CompetenceProtected),
+    });
+
+    let mut escalation = PlanDraft::default();
+    escalation.contributions.push(PlanContribution::Pin {
+        candidate: "medium".into(),
+        reason: ReasonCode::new(ReasonCodeKind::EscalationLatched),
+    });
+
+    let plan = tr_core::merge::merge(
+        &view,
+        &[
+            ("baseline".to_string(), 40, baseline),
+            ("classify".to_string(), 30, classify),
+            ("competence_guard".to_string(), 20, competence),
+            ("escalation".to_string(), 10, escalation),
+        ],
+    );
+
+    let order: Vec<_> = plan
+        .preference
+        .iter()
+        .map(|slot| slot.candidate_id.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec!["medium", "strong", "weak"],
+        "Escalation pin > CompetenceGuard pin > Classify/Baseline order"
+    );
 }
 
 #[test]

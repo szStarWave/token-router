@@ -68,6 +68,20 @@ output_micros_per_mtok = 2000000
         .expect("catalog")
 }
 
+fn chat_request(text: &str) -> CanonicalRequest {
+    CanonicalRequest {
+        messages: vec![CanonicalMessage {
+            role: CanonicalRole::User,
+            blocks: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+            ..CanonicalMessage::default()
+        }],
+        ..CanonicalRequest::default()
+    }
+}
+
 fn failing_request(extra_turn: bool) -> CanonicalRequest {
     let mut messages = vec![
         CanonicalMessage {
@@ -374,5 +388,97 @@ async fn llm_judge_cost_lands_in_routing_cost() {
         2000
     );
 
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn competence_guard_protects_same_task_and_suppresses_on_task_change() {
+    let judge_body = serde_json::json!({
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "{\"value\": 0.2, \"confidence\": 0.9, \"reason\": \"previous answer was wrong\"}"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+    });
+    let mock = MockUpstream::start(vec![
+        Reply::ok("first answer"),
+        Reply::Json {
+            status: 200,
+            body: judge_body,
+        },
+        Reply::ok("protected answer"),
+        Reply::ok("new task answer"),
+    ])
+    .await;
+
+    let mut catalog = catalog_with_judge(&mock.base_url(), "active", "llm", "judge-model");
+    catalog
+        .virtual_models
+        .get_mut("auto")
+        .expect("vm")
+        .strategies = vec![
+        "baseline".to_string(),
+        "failover".to_string(),
+        "competence_guard".to_string(),
+    ];
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog);
+
+    let context = RequestContext {
+        server_session_id: Some("sess-competence".to_string()),
+        ..RequestContext::default()
+    };
+    // 第一轮：建立 previous（弱档成功）。
+    let first = pipeline
+        .handle(chat_request("task A"), context.clone())
+        .await
+        .expect("first");
+    assert_eq!(first.headers.served_model, "physical-weak");
+
+    // 同一任务续接：判官给 0.2 → 保护性升级到强档，且 sticky 不得拉回弱档。
+    let continuation = RequestContext {
+        server_session_id: Some("sess-competence".to_string()),
+        request_reason: Some(tr_contracts::RequestReason::Continuation),
+        ..RequestContext::default()
+    };
+    let protected = pipeline
+        .handle(chat_request("task A"), continuation)
+        .await
+        .expect("protected");
+    assert_eq!(protected.headers.served_model, "physical-strong");
+    assert!(
+        protected
+            .ledger
+            .reason_codes
+            .iter()
+            .any(|reason| reason.code == tr_contracts::ReasonCodeKind::CompetenceProtected)
+    );
+
+    // 新任务：任务指纹变化 → 抑制升级；用 Direct 排除 ContextHold 的软亲和干扰。
+    let new_task = pipeline
+        .handle(
+            chat_request("task B"),
+            RequestContext {
+                server_session_id: Some("sess-competence".to_string()),
+                request_reason: Some(tr_contracts::RequestReason::Direct),
+                ..RequestContext::default()
+            },
+        )
+        .await
+        .expect("new task");
+    assert_eq!(new_task.headers.served_model, "physical-weak");
+    assert!(
+        new_task
+            .ledger
+            .reason_codes
+            .iter()
+            .any(|reason| reason.code == tr_contracts::ReasonCodeKind::CompetenceTaskChanged)
+    );
+
+    assert_eq!(mock.remaining(), 0);
     mock.shutdown();
 }

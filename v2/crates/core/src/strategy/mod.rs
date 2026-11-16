@@ -5,11 +5,13 @@
 
 pub mod baseline;
 pub mod classify;
+pub mod competence;
 pub mod escalation;
 pub mod failover;
 
 pub use baseline::Baseline;
 pub use classify::Classify;
+pub use competence::CompetenceGuard;
 pub use escalation::Escalation;
 pub use failover::Failover;
 

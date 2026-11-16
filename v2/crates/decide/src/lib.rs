@@ -144,6 +144,21 @@ pub fn to_verdict(input: &JudgeInput, answer: &JudgeAnswer) -> Verdict {
         (JudgeValue::Choice(_), Choices::Enum(_)) => Verdict::Uncertain {
             reason: "enum mapping 未在调用点声明".to_string(),
         },
+        (JudgeValue::Score(score), Choices::ScoreBelowFloor { floor }) => {
+            // 胜任度方向相反：分数越低越需要升级。
+            if *score < *floor {
+                Verdict::Escalate {
+                    category,
+                    target_strength: None,
+                    evidence,
+                    confidence,
+                }
+            } else {
+                Verdict::Decline {
+                    reason: tr_contracts::DeclineReason::Sufficient,
+                }
+            }
+        }
         (JudgeValue::Uncertain, _) => Verdict::Uncertain {
             reason: answer
                 .reason

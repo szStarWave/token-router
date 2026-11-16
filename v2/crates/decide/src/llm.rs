@@ -218,6 +218,9 @@ fn choices_hint(choices: &Choices) -> String {
         Choices::Score { min, max, .. } => {
             format!("number in [{min}, {max}] | \"uncertain\"")
         }
+        Choices::ScoreBelowFloor { floor } => {
+            format!("number in [0, 1]; below {floor} means low competence | \"uncertain\"")
+        }
     }
 }
 
@@ -225,7 +228,7 @@ fn answer_schema(choices: &Choices) -> Value {
     let value_type = match choices {
         Choices::Boolean => json!(["boolean", "string"]),
         Choices::Enum(_) => json!(["string"]),
-        Choices::Score { .. } => json!(["number", "string"]),
+        Choices::Score { .. } | Choices::ScoreBelowFloor { .. } => json!(["number", "string"]),
     };
     json!({
         "type": "object",
@@ -281,6 +284,13 @@ pub fn parse_content(content: &str, choices: &Choices) -> Result<JudgeAnswer, Ju
             let score = number.as_f64().ok_or_else(|| malformed("score 不是数字"))? as f32;
             if score < *min || score > *max {
                 return Err(malformed(format!("score {score} 超出 [{min}, {max}]")));
+            }
+            JudgeValue::Score(score)
+        }
+        (Value::Number(number), Choices::ScoreBelowFloor { .. }) => {
+            let score = number.as_f64().ok_or_else(|| malformed("score 不是数字"))? as f32;
+            if !(0.0..=1.0).contains(&score) {
+                return Err(malformed(format!("score {score} 超出 [0, 1]")));
             }
             JudgeValue::Score(score)
         }

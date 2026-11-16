@@ -68,6 +68,9 @@ reason_kinds! {
     // 审批（HITL）
     ApprovalRequired => "APPROVAL_REQUIRED",
     ApprovalDenied => "APPROVAL_DENIED",
+    // 胜任度保护（CompetenceGuard）
+    CompetenceProtected => "COMPETENCE_PROTECTED",
+    CompetenceTaskChanged => "COMPETENCE_TASK_CHANGED",
     // 状态/协议
     StateCasConflict => "STATE_CAS_CONFLICT",
     StateCasRetry => "STATE_CAS_RETRY",

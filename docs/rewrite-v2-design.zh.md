@@ -51,6 +51,7 @@
 | 36 | P3-14/P3-18 落地：`[trust_tiers]` 别名只映射 profile；`cargo xtask config-only-check`（CI 记录 core diff = 0） | §4.9、§18.2 |
 | 37 | P1-8/P2-7/P2-8 落地：shadow 报告含 P95/成本与 500 样本门禁；评测集 33 任务；`tr-cli eval --out --baseline-config` 生成三列表；`CompetenceGuard` 记为 P4 可选（D-11） | §11.3、§11.4、§16.2 |
 | 38 | P0a-13 落地：`Authenticator` trait + `RequestAuthority` 写入 `SessionFacts`/账本；migration 4 `ledger.authority_json` | §8.5、§18.4.1 |
+| 39 | P2-6 落地：`CompetenceGuard` + `Choices::ScoreBelowFloor`；任务/候选组指纹变化时抑制；低分保护优先于 Sticky/ContextHold；合并优先级 10/20/30/40 | §4.5、§6.2、§13 |
 
 ---
 
@@ -926,6 +927,8 @@ pub trait Strategy: Send + Sync {
 
 硬信号（工具错误 streak、上下文溢出、端侧慢、风险工具）直接进入 `Baseline` 的强度调整或 `Escalation` 的确认分，不调用判官；这是借鉴 Switchyard stage router 的确定性硬 override，用于把大多数请求挡在判官之外。
 
+`CompetenceGuard` 实现（P2-6）：`draft` 读策略状态里的 `score`；低于 floor 且任务指纹一致时 `Pin` 最强候选。没有低分时不重复咨询；有上一阶段时发 `ScoreBelowFloor` 问题。`refine` 只认领证据指纹为 `competence:<task>` 的 Escalate，写入下一轮状态。任务指纹由首条 system + 首条 user + 工具名组成，候选组/profile/branch 组成 group 指纹；任一变化即清空分数并记 `COMPETENCE_TASK_CHANGED`，不升级。低分保护与 Escalation latch 一样优先于 StickyDispatch/ContextHold。
+
 ### 6.3 合并代数
 
 多个策略的 `PlanContribution` 由 `agent` 的合并器按以下顺序处理：
@@ -1081,12 +1084,15 @@ pub enum Choices {
     // Score 仅 P3 启用；必须显式声明阈值与方向，避免“分数怎么变成 Verdict”含糊
     // 约定：分数越高越倾向升级；要求 decline_at < escalate_at
     Score { min: f32, max: f32, decline_at: f32, escalate_at: f32 },
+    // 胜任度评分方向相反：分数越低越需要升级（CompetenceGuard，P2-6）
+    ScoreBelowFloor { floor: f32 },
 }
 ```
 
 - `Boolean`：true = Escalate，false = Decline。
 - `Enum`：选项显式映射到 `Escalate/Decline/Uncertain`，映射表在策略配置里。
 - `Score`：低于 `decline_at` 为 Decline，高于 `escalate_at` 为 Escalate，两者之间为 Uncertain；要求 `decline_at < escalate_at`。
+- `ScoreBelowFloor`：低于 `floor` 为 Escalate（胜任度差），否则 Decline；用于 `CompetenceGuard`，与 `Score` 方向相反。
 - `confidence < min_confidence` → 调用点视为 `Uncertain`。
 - `uncertain` 是保留答案，不得作为 choice 名称；需要强制承诺时用 `Question.required`（或调用点声明），不要靠删除选项来实现（借鉴 Strands 的保留字规则）。
 - `Category` 由问题选项或调用点映射，不允许自由文本参与 latch 比较。
@@ -2050,7 +2056,7 @@ v2 固定 7 种步态（见 §4.3 的 `StepKind`）：
 | D-8 | 多模型 strength 语义 | profile 声明 `strength_order`；策略只认 strength；edge/cloud 只是标签 | P3 | 已定 |
 | D-9 | 虚拟模型语义 | Selection = 虚拟模型；Dispatch = 物理模型；每虚拟模型独立 profile/strategies/candidate_pool/state；禁止虚拟→虚拟 | P3 | 已定 |
 | D-10 | StickyDispatch vs ContextHold | Sticky 硬复用（Retry/Continuation）；ContextHold 软亲和（User/兜底）；优先级见 §4.9.1 | P3 | 已定 |
-| D-11 | `CompetenceGuard` 实现时机 | P0–P3 不实现：它需要逐轮 competence score，而默认判官预算为 1 次/轮；先由 Escalation latch 覆盖低质量场景，P4 再评估独立评分器 | `core`、判官预算 | 已定（P4 可选） |
+| D-11 | `CompetenceGuard` 实现方式 | 已实现：`Choices::ScoreBelowFloor`（低分 → Escalate）；任务指纹（首条 system/user/工具名）或候选组变化时抑制；低分 pin 最强且优先于 Sticky/ContextHold；默认关闭，虚拟模型 `strategies` 显式启用 | `core`、判官 | 已定（P2-6） |
 
 ---
 

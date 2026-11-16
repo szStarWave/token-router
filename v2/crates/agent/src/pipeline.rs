@@ -379,13 +379,18 @@ impl Pipeline {
 
         // Sticky / ContextHold：硬复用（Retry/Continuation）与软亲和（User）。
         //
-        // 例外：Escalation latch 是权威状态。latch 生效时必须跳过 sticky，
-        // 否则 agent 工具续接（Continuation）会把强档拉回弱档，latch 永远无法落地。
+        // 例外：Escalation latch 与 CompetenceGuard 低分保护都是权威状态。
+        // latch 生效时跳过 sticky，否则 agent 工具续接（Continuation）会把强档拉回弱档；
+        // 胜任度保护同理，否则上一成功候选的 StickyDispatch 会覆盖保护。
         let latched = plan
             .reason_codes
             .iter()
             .any(|reason| reason.code == ReasonCodeKind::EscalationLatched);
-        if !latched {
+        let protected = plan
+            .reason_codes
+            .iter()
+            .any(|reason| reason.code == ReasonCodeKind::CompetenceProtected);
+        if !latched && !protected {
             let resolution = crate::dispatch::resolve(&crate::dispatch::DispatchContext {
                 reason: request_reason,
                 previous: snapshot.previous.as_ref(),
@@ -1842,7 +1847,7 @@ fn required_input(request: &CanonicalRequest) -> Vec<tr_contracts::InputModality
 
 /// 虚拟模型可用的策略集：`virtual_models[].strategies` 非空时只启用列出的策略。
 fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::Strategy>> {
-    use tr_core::strategy::{Baseline, Classify, Escalation, Failover, Strategy};
+    use tr_core::strategy::{Baseline, Classify, CompetenceGuard, Escalation, Failover, Strategy};
 
     if virtual_model.strategies.is_empty() {
         return tr_core::default_strategies();
@@ -1855,6 +1860,7 @@ fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::
             "failover" => strategies.push(Box::new(Failover)),
             "escalation" => strategies.push(Box::new(Escalation)),
             "classify" => strategies.push(Box::new(Classify)),
+            "competence_guard" => strategies.push(Box::new(CompetenceGuard)),
             // 未知策略由配置校验负责报错；运行时静默忽略并保持可用。
             _ => {}
         }

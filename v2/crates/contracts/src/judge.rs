@@ -33,6 +33,10 @@ pub enum Choices {
         decline_at: f32,
         escalate_at: f32,
     },
+    /// 胜任度评分：分数越低越需要升级（与 `Score` 方向相反）。
+    ///
+    /// 用于 `CompetenceGuard`：`score < floor` → Escalate，`>= floor` → Decline。
+    ScoreBelowFloor { floor: f32 },
 }
 
 /// 枚举选项。`uncertain` 是保留答案，不得作为选项 id。
@@ -113,6 +117,20 @@ pub fn question_definition(id: &str, question: &Question) -> JudgeQuestionDefini
                 OrdinalLevel {
                     id: "high".to_string(),
                     criterion: format!("score >= {escalate_at}"),
+                },
+            ],
+        },
+        Choices::ScoreBelowFloor { floor } => JudgeQuestionDefinition::Ordinal {
+            id: id.to_string(),
+            instructions: question.prompt.clone(),
+            levels: vec![
+                OrdinalLevel {
+                    id: "below_floor".to_string(),
+                    criterion: format!("score < {floor}"),
+                },
+                OrdinalLevel {
+                    id: "meets_floor".to_string(),
+                    criterion: format!("score >= {floor}"),
                 },
             ],
         },

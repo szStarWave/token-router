@@ -567,7 +567,7 @@ cargo xtask fixture-probe
 | P2-3 answer/routing 分账 | 完成 | 判官适配器解析 `usage`；按 `[judge.service]` 价格折算 `routing_cost`；`judge_calls` 同源 |
 | P2-4 成本闸方向规则 | 完成 | `core::gate` + `agent::gate::evaluate`；质量升级未知价格放行、成本降级拒绝 |
 | P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
-| P2-6 CompetenceGuard | 未做（可选） | 设计标为可选；P0–P3 没有 competence score 生产器（逐轮判官评分会突破默认预算），留 P4 |
+| P2-6 CompetenceGuard | 完成 | `core/src/strategy/competence.rs`：`Choices::ScoreBelowFloor` 低分 → Escalate；任务指纹（首条 system/user/工具名）或候选组变化时清空旧分数并抑制；低分 pin 最强；`refine` 用证据指纹认领自己的 verdict |
 | P2-7 评测集与 checker | 完成 | 33 个任务，覆盖 simple/medium/hard/tool；checker 为文本包含或指定工具调用，不用 LLM 判成功 |
 | P2-8 三列对照表 | 部分 | `tr-cli eval --out <md>` 生成“成功率/等价成本/首 token 延迟”表，支持 `--baseline-config` 双跑；真实上游数据未接入，占位与运行方式见 `docs/p2-eval.md` |
 | P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
@@ -575,7 +575,7 @@ cargo xtask fixture-probe
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
 | P2-12 profile 版本化 | 完成 | `config_digest` + `profile.revision` 入账 |
 
-**G4 结论**：闸门逻辑与 shadow 机制完成；**校准未执行**（缺真实模型与价格），因此成本闸保持 `shadow`，不得 active。
+**G4 结论**：闸门逻辑与 shadow 机制完成；`CompetenceGuard` 已实现并通过“同任务保护 / 任务变化抑制”单测与 e2e；**校准未执行**（缺真实模型与价格），因此成本闸保持 `shadow`，不得 active。
 迁移新增 migration 2：`ledger.judge_json`（判官 trace 入账，指标同源）。
 
 下一步：P3（虚拟模型、sticky/hold、控制面、审批）。
@@ -620,7 +620,7 @@ cargo xtask fixture-probe
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（全部为环境/数据依赖或可选）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 真实数据的三列表、P2-9 真实观测集校准（工具已就绪）；P2-6 `CompetenceGuard` 为设计可选且缺评分生产器；P4 入口条件未满足。
+**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 真实数据的三列表、P2-9 真实观测集校准（工具已就绪）；P4 入口条件未满足。
 
 ### 2026-11-16：P1-8/P2-7/P2-8 证据链补齐
 
@@ -663,6 +663,17 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3-6 StickyFailed | 完成 | 失败请求把 `FailedDispatch` 写入 `SessionFacts.last_failed`（流式/非流式/后台收尾三路径）；`Retry` 优先失败候选，`Overloaded`/`ContextOverflow` 跳过；成功清空 |
 | P3-11 非 sticky | 完成 | 预置 route state 指向强档后，`direct` 请求仍按 Plan 派发弱档，证明 state 不参与 sticky |
 
+### 2026-11-16：P2-6 CompetenceGuard 与 §13 P2 验收⑤
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P2-6 CompetenceGuard | 完成 | 新增 `core/src/strategy/competence.rs`；契约新增 `Choices::ScoreBelowFloor`；低分 → Escalate，`refine` 用 `competence:<task>` 证据指纹认领；低分时 pin 最强，且跳过 StickyDispatch/ContextHold（保护优先于软亲和） |
+| 任务变化抑制 | 完成 | 任务指纹 = 首条 system + 首条 user + 工具名；候选组/profile/branch 组成 group 指纹；任一变化即清空旧分数、记 `COMPETENCE_TASK_CHANGED`、不升级 |
+| 合并优先级 | 完成 | `CompetenceGuard::priority() == 20`；`merge` 测试断言 `Escalation(10) > CompetenceGuard(20) > Classify(30) > Baseline(40)` |
+| 测试 | 完成 | 7 个 core 单测（低分/高分/无分/任务变化/refine 认领/外来 verdict/禁用）+ 1 个 agent e2e（同任务升级、新任务回退） |
+
+**启用方式**：虚拟模型 `strategies = ["baseline", "failover", "competence_guard"]`；判官为 `active` 时才有评分。默认 floor 0.5。
+
 ### 总体状态（截至本次收口）
 
 | 阶段 | 状态 | 主要缺口 |
@@ -671,8 +682,8 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P0a | 通过 | e2e 用 mock 上游，非真实 Hermes |
 | P0b | 通过 | 真实客户端流式冒烟待补 |
 | P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
-| P2 | 部分 | 评测集（33 任务）与三列表/校准工具已就绪，真实上游数据未接入（闸保持 shadow）；`CompetenceGuard` 可选未做 |
+| P2 | 部分 | 评测集（33 任务）、三列表/校准工具、`CompetenceGuard` 均已完成；真实上游数据未接入（闸保持 shadow） |
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：219 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：229 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

@@ -47,6 +47,10 @@ impl DecisionModel for LocalDecisionModel {
             let value = match &input.question.choices {
                 Choices::Boolean => JudgeValue::Bool(escalate),
                 Choices::Score { .. } => JudgeValue::Score(if escalate { 1.0 } else { 0.0 }),
+                // 胜任度方向相反：有升级信号 = 上一阶段分数低。
+                Choices::ScoreBelowFloor { .. } => {
+                    JudgeValue::Score(if escalate { 0.0 } else { 1.0 })
+                }
                 Choices::Enum(_) => JudgeValue::Uncertain,
             };
             Ok(JudgeAnswer {
