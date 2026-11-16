@@ -1,0 +1,16 @@
+/** Flowy account service config (aligned with FlowyClaw / flowyaipc). */
+export const BRAND = {
+  id: 'flowy',
+  name: 'Token Router',
+  wechatAppId: 'wxc7a38fe55e162569',
+  storePrefix: 'tokenrouter',
+} as const
+
+/** Flowy login / device activate client app id (distinct from FlowyClaw aipc). */
+export const FLOWY_CLIENT_APP = 'tokenrouter' as const
+
+export const FLOWY_HOSTS = {
+  productionDomesticHost: 'server.flowyaipc.cn',
+  productionInternationalHost: 'server.flowyaipc.com',
+  testHost: 'test.flowyaipc.cn',
+} as const

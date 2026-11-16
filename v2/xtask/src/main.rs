@@ -48,7 +48,14 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("tr-control", &["tr-contracts", "tr-agent"]),
     (
         "tr-cli",
-        &["tr-contracts", "tr-proto", "tr-core", "tr-agent"],
+        &[
+            "tr-contracts",
+            "tr-proto",
+            "tr-core",
+            "tr-agent",
+            // P4-045：admin 子命令通过 tr-client 走 HTTP 管理面（不直连 SQLite）。
+            "tr-client",
+        ],
     ),
     ("tr-client", &["tr-contracts"]),
     ("tr-onboard", &[]),

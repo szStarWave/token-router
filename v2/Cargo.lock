@@ -1777,6 +1777,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tr-agent",
+ "tr-client",
  "tr-contracts",
  "tr-core",
  "tr-proto",

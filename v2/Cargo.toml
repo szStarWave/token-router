@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
+# 桌面壳独立构建（Tauri 生态 + 前端打包），不进 workspace 门禁；
+# 依赖 workspace 内的 tr-client/tr-contracts（path 依赖）。
+exclude = ["apps/desktop/src-tauri", "apps/desktop/frontend"]
 [workspace.package]
 version = "0.20.0"
 edition = "2024"
@@ -22,7 +25,7 @@ async-stream = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

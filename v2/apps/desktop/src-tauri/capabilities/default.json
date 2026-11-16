@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "default",
+  "description": "Default capabilities for Token Router v2 desktop",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "opener:default",
+    "allow-supervisor-status",
+    "allow-supervisor-start",
+    "allow-supervisor-stop",
+    "allow-supervisor-restart",
+    "allow-admin-request",
+    "allow-host-app-info",
+    "allow-host-open-path",
+    "allow-host-ui-state-load",
+    "allow-host-ui-state-save"
+  ]
+}

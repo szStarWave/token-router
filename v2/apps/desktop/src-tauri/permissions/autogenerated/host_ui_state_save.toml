@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-host-ui-state-save"
+description = "Enables the host_ui_state_save command without any pre-configured scope."
+commands.allow = ["host_ui_state_save"]
+
+[[permission]]
+identifier = "deny-host-ui-state-save"
+description = "Denies the host_ui_state_save command without any pre-configured scope."
+commands.deny = ["host_ui_state_save"]

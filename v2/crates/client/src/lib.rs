@@ -14,7 +14,7 @@ use serde_json::Value;
 use tr_contracts::{
     AdminScope, ApplyRequest, ApplyResponse, ConfigAuditEntry, ConfigDocument, CreateTokenRequest,
     CreatedToken, DoctorResponse, HealthResponse, LogEntry, RequestDetail, RequestSummary,
-    StatsSummary, StatusResponse, TokenInfo, ValidateResponse,
+    SeriesResponse, StatsSummary, StatusResponse, TokenInfo, ValidateResponse,
 };
 
 /// 客户端错误：与契约错误信封一一对应。
@@ -225,7 +225,18 @@ impl AdminClient {
 
     /// `GET /v2/admin/config/audit`
     pub async fn config_audit(&self) -> Result<Vec<ConfigAuditEntry>, ClientError> {
-        Self::decode(self.get("/v2/admin/config/audit", &[]).await?)
+        let value = self.get("/v2/admin/config/audit", &[]).await?;
+        if value.is_array() {
+            Self::decode(value)
+        } else {
+            // 服务端信封 {items: [...]}（与 requests/tokens 一致）。
+            Self::decode(
+                value
+                    .get("items")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new())),
+            )
+        }
     }
 
     /// `GET /v2/admin/requests`
@@ -273,6 +284,58 @@ impl AdminClient {
         let to = window.to.map(|value| value.to_string()).unwrap_or_default();
         Self::decode(
             self.get("/v2/admin/stats/summary", &[("from", &from), ("to", &to)])
+                .await?,
+        )
+    }
+
+    /// `GET /v2/admin/stats/series`
+    pub async fn stats_series(
+        &self,
+        window: &WindowQuery,
+        bucket: &str,
+        group_by: &str,
+        metric: &str,
+    ) -> Result<SeriesResponse, ClientError> {
+        let from = window
+            .from
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let to = window.to.map(|value| value.to_string()).unwrap_or_default();
+        Self::decode(
+            self.get(
+                "/v2/admin/stats/series",
+                &[
+                    ("from", &from),
+                    ("to", &to),
+                    ("bucket", bucket),
+                    ("group_by", group_by),
+                    ("metric", metric),
+                ],
+            )
+            .await?,
+        )
+    }
+
+    /// `GET /v2/admin/stats/models`
+    pub async fn stats_models(&self, window: &WindowQuery) -> Result<Value, ClientError> {
+        let from = window
+            .from
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let to = window.to.map(|value| value.to_string()).unwrap_or_default();
+        self.get("/v2/admin/stats/models", &[("from", &from), ("to", &to)])
+            .await
+    }
+
+    /// `GET /v2/admin/shadow`
+    pub async fn shadow(&self) -> Result<Value, ClientError> {
+        self.get("/v2/admin/shadow", &[]).await
+    }
+
+    /// `POST /v2/admin/config/rollback`
+    pub async fn config_rollback(&self) -> Result<ApplyResponse, ClientError> {
+        Self::decode(
+            self.post("/v2/admin/config/rollback", &serde_json::json!({}))
                 .await?,
         )
     }

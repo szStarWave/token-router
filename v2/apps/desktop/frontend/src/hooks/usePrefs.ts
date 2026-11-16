@@ -1,0 +1,43 @@
+import { useEffect } from 'react'
+import { STORAGE_LOCALE, STORAGE_THEME } from '../constants/defaults'
+import { useAppStore } from '../stores/appStore'
+import type { Locale } from '../i18n/dict'
+import type { ThemePref } from '../types/gateway'
+import { getUiState, isUiStateLoaded, setUiTheme, setUiLocale, isTauri } from '../lib/ui-state'
+import { useTheme } from './useI18n'
+
+export function usePrefs() {
+  const { setThemePref, setLocale } = useAppStore()
+  const { applyTheme } = useTheme()
+
+  useEffect(() => {
+    if (isTauri() && isUiStateLoaded()) {
+      const state = getUiState()
+      setThemePref(state.theme as ThemePref)
+      setLocale(state.locale as Locale)
+    } else {
+      const theme = (localStorage.getItem(STORAGE_THEME) || 'system') as ThemePref
+      const locale = (localStorage.getItem(STORAGE_LOCALE) || 'zh') as Locale
+      setThemePref(theme)
+      setLocale(locale)
+    }
+    applyTheme()
+    document.documentElement.lang = (useAppStore.getState().locale || 'zh') === 'zh' ? 'zh-CN' : 'en'
+  }, [setThemePref, setLocale, applyTheme])
+
+  const savePrefs = () => {
+    const { themePref, locale } = useAppStore.getState()
+    if (isTauri()) {
+      setUiTheme(themePref)
+      setUiLocale(locale)
+    } else {
+      localStorage.setItem(STORAGE_THEME, themePref)
+      localStorage.setItem(STORAGE_LOCALE, locale)
+    }
+    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+    applyTheme()
+    window.dispatchEvent(new CustomEvent('app-locale-change'))
+  }
+
+  return { savePrefs }
+}

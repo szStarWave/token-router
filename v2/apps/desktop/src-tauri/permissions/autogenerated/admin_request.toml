@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-request"
+description = "Enables the admin_request command without any pre-configured scope."
+commands.allow = ["admin_request"]
+
+[[permission]]
+identifier = "deny-admin-request"
+description = "Denies the admin_request command without any pre-configured scope."
+commands.deny = ["admin_request"]

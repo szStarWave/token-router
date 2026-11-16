@@ -1,4 +1,6 @@
-//! `tr-cli` 入门命令：P0a 只有 `replay` 与 `check-config`。
+//! `tr-cli`：离线命令（replay/check-config/doctor/eval）+ `admin` 子命令（HTTP 管理面）。
+
+mod admin;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,6 +10,12 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "tr-cli", version, about = "Token Router v2 运维命令")]
 struct Args {
+    /// 管理面 base URL（admin 子命令用；默认本地 17621）
+    #[arg(long, global = true, default_value = "http://127.0.0.1:17621")]
+    base_url: String,
+    /// 管理 token（或环境变量 TR_ADMIN_TOKEN）
+    #[arg(long, global = true, env = "TR_ADMIN_TOKEN", hide_env_values = true)]
+    token: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -103,6 +111,11 @@ enum Command {
         #[arg(long)]
         no_stream: bool,
     },
+    /// 运行中服务的管理查询（HTTP 管理面；需要 --token）
+    Admin {
+        #[command(subcommand)]
+        command: admin::AdminCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -116,8 +129,36 @@ fn main() -> ExitCode {
     }
 }
 
+/// 从常见数据目录读 bootstrap token（`~/.token-router-v2/admin.token`）。
+fn read_bootstrap_token() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let path = std::path::Path::new(&home)
+        .join(".token-router-v2")
+        .join("admin.token");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
+        Command::Admin { command } => {
+            let token = args.token.clone().or_else(read_bootstrap_token).ok_or(
+                "需要管理 token：--token <token> 或 TR_ADMIN_TOKEN 环境变量，\
+                     或 <data_dir>/admin.token 文件",
+            )?;
+            admin::run(
+                command,
+                &admin::AdminArgs {
+                    base_url: args.base_url.clone(),
+                    token,
+                },
+                false,
+            )
+        }
         Command::Replay {
             snapshot,
             digest,

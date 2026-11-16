@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supervisor-restart"
+description = "Enables the supervisor_restart command without any pre-configured scope."
+commands.allow = ["supervisor_restart"]
+
+[[permission]]
+identifier = "deny-supervisor-restart"
+description = "Denies the supervisor_restart command without any pre-configured scope."
+commands.deny = ["supervisor_restart"]

@@ -1,0 +1,27 @@
+[package]
+name = "tr-desktop"
+description = "Token Router v2 桌面壳（Tauri 2）"
+version = "0.20.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[lib]
+name = "tr_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process"] }
+
+[features]
+# tauri build
+custom-protocol = ["tauri/custom-protocol"]

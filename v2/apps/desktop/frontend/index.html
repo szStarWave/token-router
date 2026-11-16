@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Token Router</title>
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+    <script src="https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js"></script>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('tokenrouter-auth');
+          if (!raw) return;
+          var parsed = JSON.parse(raw);
+          var s = parsed && parsed.state;
+          if (s && s.isLoggedIn && s.authToken) {
+            document.documentElement.dataset.auth = 'logged-in';
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
