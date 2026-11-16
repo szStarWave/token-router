@@ -522,3 +522,29 @@ async fn approval_required_maps_to_428() {
 
     mock.shutdown();
 }
+
+#[tokio::test]
+async fn unknown_model_returns_400_with_code() {
+    let mock = MockUpstream::start(vec![Reply::ok("unused")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "nope",
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = body_text(response).await;
+    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(value["error"]["code"], "MODEL_NOT_FOUND");
+
+    mock.shutdown();
+}

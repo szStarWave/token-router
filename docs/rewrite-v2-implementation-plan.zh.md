@@ -598,7 +598,7 @@ cargo xtask fixture-probe
 | P3-12/13 审批 | 完成（规则路径） | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待。`DecisionModel` 驱动的风险分类留作 P4 扩展点 |
 | P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals,trust-tiers}`，admin token + 常量时间比较 |
-| P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval；`capture` 属设计 §11.3 附加项，未做 |
+| P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval 全部支持 `--json`；`capture` 属设计 §11.3 附加项，未做 |
 | P3-18 新模型只改配置 | 完成 | 新增候选/虚拟模型的 e2e 测试 + `cargo xtask config-only-check`（CI 记录 core diff = 0） |
 
 **G5 结论**：虚拟模型、sticky/hold、控制面、审批实时拦截、VM route state（branch 隔离 + compaction）、信任别名、CI 的“core diff = 0”断言均已完成；P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
@@ -675,4 +675,4 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：218 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：219 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

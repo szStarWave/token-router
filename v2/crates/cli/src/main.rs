@@ -24,11 +24,17 @@ enum Command {
         /// 紧凑 JSON 输出
         #[arg(long)]
         compact: bool,
+        /// JSON 输出（等价 compact）
+        #[arg(long)]
+        json: bool,
     },
     /// 校验配置文件并打印目录摘要
     CheckConfig {
         #[arg(long)]
         config: PathBuf,
+        /// JSON 输出
+        #[arg(long)]
+        json: bool,
     },
     /// shadow 记录聚合（一致率/延迟/P95/预算）
     ShadowReport {
@@ -116,6 +122,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             snapshot,
             digest,
             compact,
+            json,
         } => {
             if digest {
                 let text = std::fs::read_to_string(&snapshot)?;
@@ -124,22 +131,38 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             let plan = tr_cli::replay_file(&snapshot)?;
-            if compact {
+            if compact || json {
                 println!("{}", serde_json::to_string(&plan)?);
             } else {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             }
             Ok(())
         }
-        Command::CheckConfig { config } => {
+        Command::CheckConfig { config, json } => {
             let catalog = tr_agent::config::load(&config)?;
-            println!(
-                "ok: {} candidates, {} virtual models, default = {}, config_digest = {}",
-                catalog.candidates.len(),
-                catalog.virtual_models.len(),
-                catalog.default_virtual_model,
-                catalog.config_digest
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "ok": true,
+                        "candidates": catalog.candidates.len(),
+                        "virtual_models": catalog.virtual_models.len(),
+                        "default_virtual_model": catalog.default_virtual_model,
+                        "config_digest": catalog.config_digest,
+                        "judge_mode": format!("{:?}", catalog.judge.mode),
+                        "cost_gate": format!("{:?}", catalog.cost_gate),
+                        "trust_tiers": catalog.trust_tiers,
+                    }))?
+                );
+            } else {
+                println!(
+                    "ok: {} candidates, {} virtual models, default = {}, config_digest = {}",
+                    catalog.candidates.len(),
+                    catalog.virtual_models.len(),
+                    catalog.default_virtual_model,
+                    catalog.config_digest
+                );
+            }
             Ok(())
         }
         Command::ShadowReport {

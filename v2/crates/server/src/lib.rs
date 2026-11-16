@@ -328,11 +328,17 @@ async fn stream_ingress(
 
 fn map_error(error: PipelineError) -> Response {
     match error {
-        PipelineError::ModelNotFound(model) => error_response(
+        PipelineError::ModelNotFound(model) => (
             StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            &format!("model not found: {model}"),
-        ),
+            Json(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "MODEL_NOT_FOUND",
+                    "message": format!("model not found: {model}"),
+                }
+            })),
+        )
+            .into_response(),
         PipelineError::NoEligibleCandidate { reason_codes, .. } => {
             let codes = reason_codes
                 .iter()
