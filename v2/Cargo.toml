@@ -13,6 +13,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+clap = { version = "4", features = ["derive"] }
 
 [workspace.lints.cargo]
 # P0a 阶段部分 crate 只有骨架、依赖已按目标架构声明（依赖方向门禁需要它们）。

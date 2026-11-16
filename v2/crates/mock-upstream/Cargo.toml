@@ -1,0 +1,15 @@
+[package]
+name = "mock-upstream"
+description = "本地 mock 上游：用 fixture 形状驱动 P0a e2e，不需要真实 API key"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

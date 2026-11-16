@@ -206,6 +206,7 @@ graph TD
     agent --> decide
     agent --> upstream["upstream<br/>provider·流式·接力"]
     upstream --> contracts
+    upstream --> proto
     server["server<br/>axum·鉴权·模型端点"] --> agent
     server --> proto
     control["control<br/>管理 API·配置·诊断"] --> agent
@@ -225,7 +226,7 @@ graph TD
 3. `server` 不直接调用 `core`/`decide`，一律经 `agent` 编排。
 4. `cli replay` 是唯一例外：允许直接调用 `core::decide(&DecisionSnapshot)`，因为回放不执行 IO，也不应触发判官。该入口只读、不写库。
 5. `decide` 是**唯一允许调用判官模型的 crate**；`agent`/`upstream`/`server` 仍有自己的 IO（SQLite、网络、文件），不要表述为“唯一 IO crate”。
-6. `upstream` 依赖 `contracts` 是为了直接消费 `Plan/Slot`，避免 `agent` 重复翻译。
+6. `upstream` 依赖 `contracts` 是为了直接消费 `Plan/Slot`，避免 `agent` 重复翻译；依赖 `proto` 是因为它是**唯一 HTTP 边界**，wire 编解码与错误分类只能在这里发生。`proto` 不反向依赖 `upstream`，无环。
 7. `client` 只通过 `server`/`control` 的 HTTP API 访问内核，不直接读 SQLite；桌面端/CLI/管理台可以各自演进。
 8. `embed` 复用 `server`，只为宿主提供进程内启动与 FFI，不复制核心逻辑。
 

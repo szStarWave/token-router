@@ -109,6 +109,29 @@ pub fn is_overload_or_overflow(class: Option<ErrorClass>) -> bool {
     )
 }
 
+impl std::str::FromStr for ErrorClass {
+    type Err = ();
+
+    /// 从账本/熔断器里的稳定字符串还原；未知值返回 `Err`，由调用方决定记 warn 还是忽略。
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "transport" => Self::Transport,
+            "timeout" => Self::Timeout,
+            "rate_limit" => Self::RateLimit,
+            "overloaded" => Self::Overloaded,
+            "auth" => Self::Auth,
+            "quota" => Self::Quota,
+            "context_overflow" => Self::ContextOverflow,
+            "invalid_request" => Self::InvalidRequest,
+            "content_policy" => Self::ContentPolicy,
+            "protocol" => Self::Protocol,
+            "cancelled" => Self::Cancelled,
+            "unknown" => Self::Unknown,
+            _ => return Err(()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

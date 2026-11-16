@@ -1,5 +1,11 @@
 //! provider 客户端、流式转发、候选接力与上游错误归一化（P0a–P0b）。
 //!
-//! `ErrorClass` 只在这里产生一次（§18.4.2）；下游不得再匹配错误文本。
+//! P0a 只实现 OpenAI 兼容的**非流式**执行；流式、Responses、Anthropic 在 P0b。
+//!
+//! 错误归一化只在这里发生（通过 `tr_proto::errors`），写回健康度由 `agent` 负责。
 
 #![forbid(unsafe_code)]
+
+pub mod http;
+
+pub use http::{AttemptFailure, AttemptOutcome, HttpUpstream};

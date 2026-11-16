@@ -32,6 +32,8 @@ reason_kinds! {
     ModelInputUnsupported => "MODEL_INPUT_UNSUPPORTED",
     VirtualModelMissing => "VIRTUAL_MODEL_MISSING",
     VirtualModelChainRejected => "VIRTUAL_MODEL_CHAIN_REJECTED",
+    // 策略贡献
+    BaselineOrder => "BASELINE_ORDER",
     // Plan 校验
     NoEligibleCandidate => "NO_ELIGIBLE_CANDIDATE",
     CandidatesCoolingDown => "CANDIDATES_COOLING_DOWN",

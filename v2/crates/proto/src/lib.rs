@@ -12,7 +12,28 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chat;
 pub mod coverage;
 pub mod errors;
 pub mod fixture;
 pub mod sse;
+
+/// 编解码错误。形状问题必须报错，不能静默丢弃字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodecError {
+    MissingField(&'static str),
+    Invalid(&'static str),
+    Unsupported(String),
+}
+
+impl std::fmt::Display for CodecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingField(field) => write!(f, "missing field: {field}"),
+            Self::Invalid(detail) => write!(f, "invalid shape: {detail}"),
+            Self::Unsupported(value) => write!(f, "unsupported value: {value}"),
+        }
+    }
+}
+
+impl std::error::Error for CodecError {}

@@ -40,6 +40,16 @@ pub enum SessionKeySource {
     Fallback,
 }
 
+impl SessionKeySource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerId => "server_id",
+            Self::Content => "content",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
 /// 会话级事实。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]

@@ -25,6 +25,16 @@ pub enum FactsCompleteness {
     Unknown,
 }
 
+impl FactsCompleteness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// 单次候选尝试。落库为 `attempts_json`，P2 再拆表。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -58,13 +68,21 @@ pub struct LedgerRecord {
     pub plan_mode: PlanMode,
     /// 最终计划顺序，用于事后分析"为什么选它"。
     pub preference: Vec<CandidateId>,
+    /// 接力顺序；与响应头/Plan 对齐，便于分析"失败后找了谁"。
+    pub failover: Vec<CandidateId>,
     pub served_slot: Option<SlotRef>,
     pub served_physical_model: Option<PhysicalModelId>,
+    pub served_provider: Option<String>,
     pub served_thinking_level: Option<ThinkingLevel>,
     pub dispatch_source: DispatchSource,
     pub switches: u32,
     pub attempts: Vec<AttemptRecord>,
     pub judge: Option<JudgeTrace>,
+    /// 聚合用量（来自最终 attempt；失败请求可为 `None`）。
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
     pub cache_hit_tokens: Option<u64>,
     /// 用户流量成本。
     pub answer_cost: Option<Cost>,
@@ -76,6 +94,9 @@ pub struct LedgerRecord {
     pub reason_codes: Vec<ReasonCode>,
     pub outcome: OutcomeKind,
     pub http_status: Option<u16>,
+    pub profile_revision: Option<String>,
+    pub config_digest: Option<String>,
+    pub ttft_ms: Option<u64>,
     pub duration_ms: u64,
     pub created_at: u64,
 }

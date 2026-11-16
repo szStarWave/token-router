@@ -481,3 +481,25 @@ cargo xtask fixture-probe
 **G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**客户端冒烟未做，G0 记为“条件通过”**。按计划不因此阻塞 P0a——P0a 只做 Chat Completions 单协议，等真实样本补录后再决定是否需要 P0c。
 
 下一步：P0a-1 ~ P0a-6（内核契约与 `core::decide`），e2e 目标改为 `crates/mock-upstream`。
+
+### 2026-11-16：P0a 收口（非流式垂直切片）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P0a-1/2 契约与快照投影 | 完成 | `contracts` 11 个模块；`DecisionSnapshot::view()` + `projection_digest()` |
+| P0a-3/4/5 Signals + Baseline/Failover + decide | 完成 | `core` 零 IO；token 估算为字符启发式（P0a 末换 tokenizers） |
+| P0a-6 `cli replay` | 完成 | `tr-cli replay --snapshot --digest` |
+| P0a-7/8 迁移 + 仓储 + CAS | 完成 | migration 1 全部 10 张表；sessions/ledger/breakers/strategy/vm_state |
+| P0a-9 upstream 非流式 | 完成 | OpenAI 兼容；`ErrorClass` 归一化；credential `env:`/`file:` |
+| P0a-10 熔断 | 完成 | 按 §18.4.2 权重计数；`InvalidRequest`/`Auth`/`Quota` 不计数 |
+| P0a-11 编排 + 事务提交 | 完成 | 会话 CAS + 熔断 + 账本同事务；失败也写账本 |
+| P0a-12 Chat 编解码 | 完成 | fixture 往返无损；`passthrough` 保留未知字段 |
+| P0a-13/14/15 端点/鉴权/头 | 完成 | `/v1/chat/completions`、`/v1/models`、`/health`；常数时间 key 比较 |
+| P0a-16 e2e | 完成（mock） | `mock-upstream` + axum `oneshot`；**未用真实 Hermes** |
+| P0a-17 CI | 完成 | 三个门禁 + `cargo test --workspace`（84 tests） |
+
+**G1 结论**：① 单协议非流式跑通（mock 上游，非真实客户端）；② 快照回放投影一致；③ 响应头与账本同源；④ 无判官、无状态学习。第①项与计划口径有偏差：真实 Hermes 冒烟仍属 S0-5 环境依赖。
+
+**新增架构修订**：`upstream -> proto` 允许（唯一 HTTP 边界需要 wire 编解码与错误分类），已更新设计文档 §3.2 依赖图。P0a 期间还发现并修正三处契约缺口：`LedgerRecord` 缺 `failover`/token 聚合/`profile_revision`/`config_digest`/`ttft_ms`、`FailedDispatch` 需要 `error_class`、`SessionKeySource`/`FactsCompleteness` 需要 `as_str`。
+
+下一步：P0b（流式 + Responses/Anthropic + 语义提交）。

@@ -23,17 +23,28 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("tr-proto", &["tr-contracts"]),
     ("tr-core", &["tr-contracts"]),
     ("tr-decide", &["tr-contracts"]),
-    ("tr-upstream", &["tr-contracts"]),
+    ("tr-upstream", &["tr-contracts", "tr-proto"]),
     (
         "tr-agent",
-        &["tr-contracts", "tr-core", "tr-decide", "tr-upstream"],
+        &[
+            "tr-contracts",
+            "tr-core",
+            "tr-decide",
+            "tr-upstream",
+            // 仅 dev-dependency：测试用本地 mock 上游。
+            "mock-upstream",
+        ],
     ),
-    ("tr-server", &["tr-contracts", "tr-proto", "tr-agent"]),
+    (
+        "tr-server",
+        &["tr-contracts", "tr-proto", "tr-agent", "mock-upstream"],
+    ),
     ("tr-control", &["tr-contracts", "tr-agent"]),
     (
         "tr-cli",
         &["tr-contracts", "tr-proto", "tr-core", "tr-agent"],
     ),
+    ("mock-upstream", &[]),
     ("xtask", &["tr-proto"]),
 ];
 
