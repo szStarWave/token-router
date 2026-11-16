@@ -597,7 +597,7 @@ cargo xtask fixture-probe
 | P3-12/13 审批 | 部分 | 风险分级 + `approvals` 表 + 控制面记录；**未做实时拦截** |
 | P3-14 信任档位别名 | 未做 | P4 UI 层映射（trial/familiar/trusted） |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals}`，admin token + 常量时间比较 |
-| P3-16 CLI | 部分 | config/replay/shadow-report/judge-test/eval；`doctor`/`capture` 未做 |
+| P3-16 CLI | 完成（除 capture） | config/replay/shadow-report/judge-test/doctor/eval；`capture` 未做 |
 | P3-18 新模型只改配置 | 结构成立 | 候选/虚拟模型均为配置驱动；未建 CI 断言 |
 
 **G5 结论**：虚拟模型、sticky/hold、控制面、审批记录完成；审批实时拦截、VM route state 写入、CI 的“core diff = 0”断言未做。

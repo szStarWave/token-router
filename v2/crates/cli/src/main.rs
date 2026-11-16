@@ -45,6 +45,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 诊断：配置、迁移、判官、账本
+    Doctor {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// 任务集评测（成功率/成本/时延）
     Eval {
         #[arg(long)]
@@ -164,6 +173,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
+        Command::Doctor { config, db, json } => run_doctor(config, db, json),
         Command::Eval {
             config,
             tasks,
@@ -171,6 +181,141 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             db,
         } => run_eval(config, tasks, json, db),
     }
+}
+
+fn run_doctor(
+    config: PathBuf,
+    db_path: Option<PathBuf>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+    let mut failed = false;
+
+    let catalog = match tr_agent::config::load(&config) {
+        Ok(catalog) => {
+            checks.push(serde_json::json!({
+                "check": "config",
+                "ok": true,
+                "detail": format!(
+                    "{} candidates, {} virtual models, digest={}",
+                    catalog.candidates.len(),
+                    catalog.virtual_models.len(),
+                    catalog.config_digest
+                ),
+            }));
+            Some(catalog)
+        }
+        Err(error) => {
+            failed = true;
+            checks.push(serde_json::json!({
+                "check": "config",
+                "ok": false,
+                "detail": error.to_string(),
+            }));
+            None
+        }
+    };
+
+    let db_path = db_path.unwrap_or_else(|| config.with_file_name("token-router-v2.db"));
+    match tr_agent::store::Db::open(&db_path) {
+        Ok(db) => {
+            let version = db.schema_version().unwrap_or(-1);
+            checks.push(serde_json::json!({
+                "check": "database",
+                "ok": version > 0,
+                "detail": format!("path={} schema_version={version}", db_path.display()),
+            }));
+            match tr_agent::store::stats::stats(&db) {
+                Ok(stats) => checks.push(serde_json::json!({
+                    "check": "ledger",
+                    "ok": true,
+                    "detail": format!(
+                        "requests={} successes={} cost_micros={}",
+                        stats.requests, stats.successes, stats.cost_micros()
+                    ),
+                })),
+                Err(error) => {
+                    failed = true;
+                    checks.push(serde_json::json!({
+                        "check": "ledger",
+                        "ok": false,
+                        "detail": error.to_string(),
+                    }));
+                }
+            }
+        }
+        Err(error) => {
+            failed = true;
+            checks.push(serde_json::json!({
+                "check": "database",
+                "ok": false,
+                "detail": error.to_string(),
+            }));
+        }
+    }
+
+    if let Some(catalog) = &catalog {
+        let mode = catalog.judge.mode;
+        if mode == tr_agent::judge::JudgeMode::Off {
+            checks.push(serde_json::json!({
+                "check": "judge",
+                "ok": true,
+                "detail": "off (skipped)",
+            }));
+        } else {
+            match tr_agent::judge::JudgeRuntime::new(catalog.judge.clone()) {
+                Ok(runtime) => {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    let result = rt.block_on(runtime.self_test());
+                    let ok = result.outcome == tr_contracts::TestOutcome::Passed;
+                    failed |= !ok;
+                    checks.push(serde_json::json!({
+                        "check": "judge",
+                        "ok": ok,
+                        "detail": format!("{:?} ({}ms)", result.outcome, result.latency_ms),
+                    }));
+                }
+                Err(error) => {
+                    failed = true;
+                    checks.push(serde_json::json!({
+                        "check": "judge",
+                        "ok": false,
+                        "detail": error,
+                    }));
+                }
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": !failed,
+                "checks": checks,
+            }))?
+        );
+    } else {
+        for check in &checks {
+            println!(
+                "[{}] {}: {}",
+                if check["ok"] == serde_json::Value::Bool(true) {
+                    "ok"
+                } else {
+                    "FAIL"
+                },
+                check["check"].as_str().unwrap_or("?"),
+                check["detail"].as_str().unwrap_or("")
+            );
+        }
+    }
+
+    if failed {
+        return Err("doctor found failures".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
