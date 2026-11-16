@@ -89,12 +89,22 @@ impl Backend {
     }
 }
 
+/// 判官价格（micros 量纲，§9.1）。判官成本计入 `routing_cost`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JudgePrice {
+    pub input_micros_per_mtok: u64,
+    pub output_micros_per_mtok: u64,
+    pub request_micros: u64,
+}
+
 /// 判官配置。
 #[derive(Debug, Clone)]
 pub struct JudgeSettings {
     pub mode: JudgeMode,
     pub budget: Budget,
     pub backend: Backend,
+    pub price: JudgePrice,
+    pub currency: String,
 }
 
 impl Default for JudgeSettings {
@@ -103,6 +113,8 @@ impl Default for JudgeSettings {
             mode: JudgeMode::Off,
             budget: Budget::default(),
             backend: Backend::Local,
+            price: JudgePrice::default(),
+            currency: "USD".to_string(),
         }
     }
 }
@@ -116,6 +128,8 @@ pub struct JudgeOutcome {
     /// 首个结论的原始值（shadow 记录用）。
     pub first_value: Option<JudgeValue>,
     pub latency_ms: u32,
+    /// 本次咨询消耗的判官成本（写入账本 `routing_cost`）。
+    pub routing_cost: Option<tr_contracts::Cost>,
 }
 
 /// 判官运行时。
@@ -269,6 +283,26 @@ impl JudgeRuntime {
             let latency_ms = started.elapsed().as_millis() as u32;
             outcome.latency_ms = outcome.latency_ms.max(latency_ms);
 
+            // 判官成本：tokens 来自适配器解析的 usage，价格来自配置（micros 量纲）。
+            let usage = answer
+                .as_ref()
+                .and_then(|answer| answer.usage)
+                .map(|mut usage| {
+                    usage.cost_micros = self.price_micros(&usage);
+                    usage
+                });
+            if let Some(usage) = usage
+                && usage.cost_micros > 0
+            {
+                outcome.routing_cost = Some(tr_contracts::Cost {
+                    micros: outcome
+                        .routing_cost
+                        .as_ref()
+                        .map_or(usage.cost_micros, |cost| cost.micros + usage.cost_micros),
+                    currency: self.settings.currency.clone(),
+                });
+            }
+
             let verdict = match &answer {
                 Some(answer) => {
                     if outcome.first_value.is_none() {
@@ -297,7 +331,7 @@ impl JudgeRuntime {
                 fallback_used: failure.is_some(),
                 fallback_reason: failure.as_ref().map(|failure| failure.code),
                 duration_ms: latency_ms,
-                usage: None,
+                usage,
             };
             if failure.is_some() {
                 trace.protocol_digest = None;
@@ -320,14 +354,24 @@ impl JudgeRuntime {
                     .as_ref()
                     .map(|failure| format!("{:?}", failure.code)),
                 latency_ms,
-                prompt_tokens: None,
-                completion_tokens: None,
-                cost_micros: None,
+                prompt_tokens: usage.map(|usage| usage.prompt_tokens),
+                completion_tokens: usage.map(|usage| usage.completion_tokens),
+                cost_micros: usage.map(|usage| usage.cost_micros),
                 created_at: snapshot.now_unix,
             });
         }
 
         outcome
+    }
+
+    /// 按配置价格计算一次判官调用的成本（micros）。
+    fn price_micros(&self, usage: &tr_contracts::JudgeUsage) -> i64 {
+        let prompt = u128::from(usage.prompt_tokens);
+        let completion = u128::from(usage.completion_tokens);
+        let micros = prompt * u128::from(self.settings.price.input_micros_per_mtok) / 1_000_000
+            + completion * u128::from(self.settings.price.output_micros_per_mtok) / 1_000_000
+            + u128::from(self.settings.price.request_micros);
+        i64::try_from(micros).unwrap_or(i64::MAX)
     }
 
     /// shadow 对比：判官建议升级 vs 内核已选最强候选。
@@ -588,6 +632,7 @@ mod tests {
             value: JudgeValue::Bool(true),
             confidence: Some(0.9),
             reason: None,
+            usage: None,
         };
         assert_eq!(answer.value, JudgeValue::Bool(true));
     }

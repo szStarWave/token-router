@@ -16,7 +16,7 @@ use tr_contracts::{
 use tr_decide::budget::Budget;
 use tr_decide::llm::StructuredOutput;
 
-use crate::judge::{Backend, JudgeMode, JudgeSettings};
+use crate::judge::{Backend, JudgeMode, JudgePrice, JudgeSettings};
 
 /// 当前配置 schema 版本。
 pub const SCHEMA_VERSION: u32 = 1;
@@ -262,6 +262,11 @@ pub struct JudgeServiceFile {
     pub structured_output: String,
     pub temperature: f32,
     pub max_output_tokens: u32,
+    /// 判官计价（micros 量纲）；用于把 token 用量折算进 `routing_cost`。
+    pub currency: String,
+    pub input_micros_per_mtok: u64,
+    pub output_micros_per_mtok: u64,
+    pub request_micros: u64,
 }
 
 impl Default for JudgeServiceFile {
@@ -277,6 +282,10 @@ impl Default for JudgeServiceFile {
             structured_output: "json_mode".to_string(),
             temperature: 0.0,
             max_output_tokens: 256,
+            currency: "USD".to_string(),
+            input_micros_per_mtok: 0,
+            output_micros_per_mtok: 0,
+            request_micros: 0,
         }
     }
 }
@@ -523,6 +532,12 @@ fn build_judge_settings(file: &JudgeFile) -> Result<JudgeSettings, ConfigError> 
             deadline_ms: file.deadline_ms,
         },
         backend,
+        price: JudgePrice {
+            input_micros_per_mtok: service.input_micros_per_mtok,
+            output_micros_per_mtok: service.output_micros_per_mtok,
+            request_micros: service.request_micros,
+        },
+        currency: service.currency.clone(),
     })
 }
 

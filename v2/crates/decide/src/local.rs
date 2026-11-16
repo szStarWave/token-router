@@ -62,6 +62,7 @@ impl DecisionModel for LocalDecisionModel {
                 } else {
                     "local signals: no escalation evidence".to_string()
                 }),
+                usage: None,
             })
         })
     }

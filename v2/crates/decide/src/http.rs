@@ -83,9 +83,29 @@ impl DecisionModel for HttpJudgeModel {
                 code: JudgeFailureCode::MalformedOutput,
                 message: Some("响应缺少 answer".to_string()),
             })?;
-            parse_answer(answer)
+            let mut answer = parse_answer(answer)?;
+            answer.usage = parse_usage(value.get("usage"));
+            Ok(answer)
         })
     }
+}
+
+/// 解析判官服务返回的 usage（字段名兼容 prompt/completion 与 input/output）。
+fn parse_usage(value: Option<&Value>) -> Option<tr_contracts::JudgeUsage> {
+    let object = value?.as_object()?;
+    Some(tr_contracts::JudgeUsage {
+        prompt_tokens: object
+            .get("prompt_tokens")
+            .or_else(|| object.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        completion_tokens: object
+            .get("completion_tokens")
+            .or_else(|| object.get("output_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        cost_micros: 0,
+    })
 }
 
 fn parse_answer(value: &Value) -> Result<JudgeAnswer, JudgeFailure> {
@@ -125,6 +145,7 @@ fn parse_answer(value: &Value) -> Result<JudgeAnswer, JudgeFailure> {
             .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string),
+        usage: None,
     })
 }
 

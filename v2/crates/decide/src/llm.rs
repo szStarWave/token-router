@@ -131,9 +131,29 @@ impl DecisionModel for LlmJudgeModel {
             let value: Value = serde_json::from_str(&text).map_err(malformed_err)?;
             let content = extract_content(&value, self.config.structured_output)
                 .ok_or_else(|| malformed("响应里没有判官答案"))?;
-            parse_content(&content, &input.question.choices)
+            let mut answer = parse_content(&content, &input.question.choices)?;
+            answer.usage = parse_usage(value.get("usage"));
+            Ok(answer)
         })
     }
+}
+
+/// 解析 chat completions 的 `usage`。
+fn parse_usage(value: Option<&Value>) -> Option<tr_contracts::JudgeUsage> {
+    let object = value?.as_object()?;
+    Some(tr_contracts::JudgeUsage {
+        prompt_tokens: object
+            .get("prompt_tokens")
+            .or_else(|| object.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        completion_tokens: object
+            .get("completion_tokens")
+            .or_else(|| object.get("output_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        cost_micros: 0,
+    })
 }
 
 fn chat_url(endpoint: &str) -> String {
@@ -279,6 +299,7 @@ pub fn parse_content(content: &str, choices: &Choices) -> Result<JudgeAnswer, Ju
             .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string),
+        usage: None,
     })
 }
 

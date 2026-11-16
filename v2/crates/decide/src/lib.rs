@@ -183,6 +183,7 @@ mod tests {
             value: JudgeValue::Bool(true),
             confidence: Some(0.9),
             reason: None,
+            usage: None,
         };
         assert!(matches!(
             to_verdict(&input(Choices::Boolean, 0.6), &answer),
@@ -196,6 +197,7 @@ mod tests {
             value: JudgeValue::Bool(true),
             confidence: Some(0.3),
             reason: None,
+            usage: None,
         };
         assert!(matches!(
             to_verdict(&input(Choices::Boolean, 0.6), &answer),
@@ -218,6 +220,7 @@ mod tests {
             value: JudgeValue::Score(score),
             confidence: Some(1.0),
             reason: None,
+            usage: None,
         };
         assert!(matches!(
             to_verdict(&question, &answer(0.2)),
@@ -239,6 +242,7 @@ mod tests {
             value: JudgeValue::Choice("retry".to_string()),
             confidence: Some(1.0),
             reason: None,
+            usage: None,
         };
         assert!(matches!(
             to_verdict(&input(Choices::Enum(Vec::new()), 0.0), &answer),

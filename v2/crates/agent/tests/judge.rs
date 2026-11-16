@@ -10,6 +10,10 @@ use tr_contracts::{
 };
 
 fn catalog(mock_base_url: &str, judge_mode: &str) -> Catalog {
+    catalog_with_judge(mock_base_url, judge_mode, "local", "")
+}
+
+fn catalog_with_judge(mock_base_url: &str, judge_mode: &str, kind: &str, model: &str) -> Catalog {
     let toml = format!(
         r#"
 schema_version = 1
@@ -27,6 +31,7 @@ base_url = "{mock_base_url}"
 model = "physical-weak"
 window = 32768
 input = ["text"]
+price = {{ currency = "USD", input_micros_per_mtok = 1000000, output_micros_per_mtok = 2000000 }}
 
 [[candidates]]
 id = "strong"
@@ -37,6 +42,7 @@ base_url = "{mock_base_url}"
 model = "physical-strong"
 window = 128000
 input = ["text"]
+price = {{ currency = "USD", input_micros_per_mtok = 3000000, output_micros_per_mtok = 15000000 }}
 
 [[virtual_models]]
 provider = "router"
@@ -49,7 +55,11 @@ candidate_pool = ["weak", "strong"]
 mode = "{judge_mode}"
 
 [judge.service]
-kind = "local"
+kind = "{kind}"
+endpoint = "{mock_base_url}"
+model = "{model}"
+input_micros_per_mtok = 1000000
+output_micros_per_mtok = 2000000
 "#
     );
     ConfigFile::parse(&toml)
@@ -300,6 +310,69 @@ async fn llm_judge_adapter_parses_structured_answer() {
         .expect("answer");
     assert_eq!(answer.value, tr_contracts::JudgeValue::Bool(true));
     assert_eq!(answer.confidence, Some(0.9));
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn llm_judge_cost_lands_in_routing_cost() {
+    let judge_body = serde_json::json!({
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "{\"value\": true, \"confidence\": 0.9, \"reason\": \"tool failed twice\"}"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500}
+    });
+    let mock = MockUpstream::start(vec![
+        Reply::Json {
+            status: 200,
+            body: judge_body,
+        },
+        Reply::ok("final answer"),
+    ])
+    .await;
+
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(
+        db,
+        catalog_with_judge(&mock.base_url(), "active", "llm", "judge-model"),
+    );
+
+    let result = pipeline
+        .handle(failing_request(false), RequestContext::default())
+        .await
+        .expect("handle");
+
+    // 1000 × 1e6/1e6 + 500 × 2e6/1e6 = 2000 micros
+    let routing = result.ledger.routing_cost.as_ref().expect("routing cost");
+    assert_eq!(routing.micros, 2000);
+    assert_eq!(routing.currency, "USD");
+
+    let usage = result
+        .ledger
+        .judge
+        .as_ref()
+        .and_then(|trace| trace.usage)
+        .expect("judge usage");
+    assert_eq!(usage.prompt_tokens, 1000);
+    assert_eq!(usage.completion_tokens, 500);
+    assert_eq!(usage.cost_micros, 2000);
+
+    let answer_cost = result.ledger.answer_cost.as_ref().expect("answer cost");
+    assert_eq!(
+        result.ledger.cost_equiv.as_ref().expect("equiv").micros,
+        answer_cost.micros + 2000
+    );
+
+    // 审计表与账本同源：judge_calls 的成本合计必须等于 routing_cost。
+    assert_eq!(
+        store::judge::total_call_cost_micros(pipeline.db()).expect("call cost"),
+        2000
+    );
 
     mock.shutdown();
 }

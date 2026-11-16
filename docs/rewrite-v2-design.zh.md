@@ -44,6 +44,7 @@
 | 29 | P1 实现补充：`JudgeRequest` 携带 `category`/`evidence`；新增 `PlanContribution::Note`；`upstream -> proto` 依赖 | §4.5、§3.2 |
 | 30 | P2 实现补充：migration 2 增加 `ledger.judge_json`（判官 trace 与指标同源）；成本闸配置 `[cost_gate] mode`；`tr-cli eval` 评测底座 | §9.2、§18.3、§11.2 |
 | 31 | P3 实现补充：Escalation latch 权威高于 StickyDispatch（否则续接轮永远回弱档）；`server -> control` 用于挂载管理路由；控制面不提供在线改配置 | §4.9.1、§3.2、§11.1 |
+| 32 | P2-3 落地：判官适配器解析 `usage`，按 `[judge.service]` 价格折算写入 `routing_cost`；`judge_calls.cost_micros` 与账本同源 | §9.2、§18.2 |
 
 ---
 
@@ -1592,7 +1593,7 @@ pub struct LedgerRecord {
 }
 ```
 
-- `cost_equiv` 必须包含判官成本；否则“成本进算术”只覆盖一半。
+- `cost_equiv` 必须包含判官成本；否则“成本进算术”只覆盖一半。实现上由判官适配器解析 `usage`，按 `[judge.service]` 的 micros 价格折算后写入 `routing_cost`，`judge_calls` 与账本同源。
 - `preference` 记录最终计划顺序，用于事后分析“为什么选它”。
 - 逐 attempt 明细可写入 `attempts` 表（P2），账本保留 request 聚合；未知/部分覆盖要显式标注 `facts_completeness`，不把部分和当完整和（借鉴 HiRoute 的 valuation coverage）。
 
@@ -2188,6 +2189,11 @@ endpoint = "http://127.0.0.1:11435/v1/decisions"
 model = "gemma-2b"
 timeout_ms = 300
 protocol_digest = "sha256:..."
+# 判官计价：把 token 用量折算成 routing_cost（缺省 0 = 只记 token 不记钱）
+currency = "USD"
+input_micros_per_mtok = 0
+output_micros_per_mtok = 0
+request_micros = 0
 
 [judge.service.auth]
 kind = "header"

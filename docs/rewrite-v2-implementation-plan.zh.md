@@ -564,7 +564,7 @@ cargo xtask fixture-probe
 |---|---|---|
 | P2-1 价格与成本链路 | 完成 | `PriceModel::estimate`；缺缓存价记 `PRICE_CACHE_ASSUMED` |
 | P2-2 缓存损失估计 | 完成 | `core::cache_cost`；同前缀才复用命中，币种不一致返回 unknown |
-| P2-3 answer/routing 分账 | 部分 | 账本分列已就绪；判官适配器未解析 token usage，`routing_cost` 仍为 None |
+| P2-3 answer/routing 分账 | 完成 | 判官适配器解析 `usage`；按 `[judge.service]` 价格折算 `routing_cost`；`judge_calls` 同源 |
 | P2-4 成本闸方向规则 | 完成 | `core::gate` + `agent::gate::evaluate`；质量升级未知价格放行、成本降级拒绝 |
 | P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
 | P2-6 CompetenceGuard | 未做 | 设计里标为可选 |

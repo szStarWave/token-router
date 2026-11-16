@@ -185,6 +185,8 @@ pub struct JudgeAnswer {
     pub confidence: Option<f32>,
     /// 自然语言理由：只进审计，不参与算术。
     pub reason: Option<String>,
+    /// 本次调用的 token 用量（由适配器从上游响应解析）。
+    pub usage: Option<JudgeUsage>,
 }
 
 /// 判官失败。

@@ -61,6 +61,16 @@ pub fn count_calls(db: &Db) -> Result<i64, StoreError> {
     Ok(connection.query_row("SELECT COUNT(*) FROM judge_calls", [], |row| row.get(0))?)
 }
 
+/// 判官调用累计成本（micros），用于对账 `routing_cost`。
+pub fn total_call_cost_micros(db: &Db) -> Result<i64, StoreError> {
+    let connection = db.read();
+    Ok(connection.query_row(
+        "SELECT COALESCE(SUM(cost_micros), 0) FROM judge_calls",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
 /// 影子记录（判官建议 vs 内核结论）。
 #[derive(Debug, Clone)]
 pub struct ShadowRecord {

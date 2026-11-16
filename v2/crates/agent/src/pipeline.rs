@@ -261,11 +261,14 @@ impl Pipeline {
         let plan_id = format!("plan-{}", &plan_uuid[..12]);
 
         let mut shadow: Option<ShadowInfo> = None;
+        let mut routing_cost: Option<Cost> = None;
         if !requests.is_empty() && self.judge.mode() != crate::judge::JudgeMode::Off {
             let outcome = self
                 .judge
                 .consult(&derived.key, &plan_id, &snapshot, &requests)
                 .await;
+
+            routing_cost = outcome.routing_cost.clone();
 
             if let Some(kind) = crate::judge::JudgeRuntime::unavailable_reason(&outcome) {
                 plan.reason_codes.push(ReasonCode::new(kind));
@@ -374,6 +377,7 @@ impl Pipeline {
                     config_digest: self.catalog.config_digest.clone(),
                     now_unix,
                     judge: Some(plan.judge.clone()),
+                    routing_cost: routing_cost.clone(),
                 },
                 Vec::new(),
                 None,
@@ -409,6 +413,7 @@ impl Pipeline {
             shadow,
             group_digest,
             plan_revision,
+            routing_cost,
         })
     }
 
@@ -811,6 +816,7 @@ struct Prepared {
     shadow: Option<ShadowInfo>,
     group_digest: String,
     plan_revision: u64,
+    routing_cost: Option<Cost>,
 }
 
 /// shadow 模式记录：判官建议 vs 内核结论。
@@ -859,6 +865,7 @@ impl Prepared {
             config_digest: self.profile.config_digest.clone(),
             now_unix: self.now_unix,
             judge: Some(self.plan.judge.clone()),
+            routing_cost: self.routing_cost.clone(),
         }
     }
 
@@ -1200,6 +1207,7 @@ struct LedgerInput {
     config_digest: String,
     now_unix: u64,
     judge: Option<tr_contracts::JudgeTrace>,
+    routing_cost: Option<Cost>,
 }
 
 struct Served {
@@ -1243,6 +1251,14 @@ fn build_ledger(
             .as_ref()
             .map(|price| price.estimate(&served.usage))
     });
+    let routing_cost = input.routing_cost.clone();
+    // 等价成本必须同时包含用户流量与判官成本；币种不一致时宁可给 None 也不混算。
+    let cost_equiv = match (&answer_cost, &routing_cost) {
+        (Some(answer), Some(routing)) => answer.checked_add(routing),
+        (Some(answer), None) => Some(answer.clone()),
+        (None, Some(routing)) => Some(routing.clone()),
+        (None, None) => None,
+    };
 
     LedgerRecord {
         request_id: Uuid::new_v4(),
@@ -1281,9 +1297,9 @@ fn build_ledger(
             .map(u64::from),
         attempts,
         judge: input.judge.clone(),
-        answer_cost: answer_cost.clone(),
-        routing_cost: None,
-        cost_equiv: answer_cost,
+        answer_cost,
+        routing_cost,
+        cost_equiv,
         facts_completeness: FactsCompleteness::Complete,
         reason_codes: input.reason_codes.clone(),
         outcome,
