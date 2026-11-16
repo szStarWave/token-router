@@ -345,6 +345,18 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the admin_events_subscribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-events-subscribe",
+          "markdownDescription": "Enables the admin_events_subscribe command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_events_unsubscribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-events-unsubscribe",
+          "markdownDescription": "Enables the admin_events_unsubscribe command without any pre-configured scope."
+        },
+        {
           "description": "Enables the admin_request command without any pre-configured scope.",
           "type": "string",
           "const": "allow-admin-request",
@@ -427,6 +439,18 @@
           "type": "string",
           "const": "allow-supervisor-stop",
           "markdownDescription": "Enables the supervisor_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_events_subscribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-events-subscribe",
+          "markdownDescription": "Denies the admin_events_subscribe command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_events_unsubscribe command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-events-unsubscribe",
+          "markdownDescription": "Denies the admin_events_unsubscribe command without any pre-configured scope."
         },
         {
           "description": "Denies the admin_request command without any pre-configured scope.",

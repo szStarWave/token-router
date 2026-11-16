@@ -7,6 +7,7 @@ use tr_agent::pipeline::Pipeline;
 
 use crate::auth::AdminAuth;
 use crate::error::AdminApiError;
+use crate::events::EventBus;
 use crate::logs::LogTail;
 
 /// 控制面状态。
@@ -20,6 +21,8 @@ pub struct ControlState {
     pub data_dir: Option<std::path::PathBuf>,
     /// 服务端内存日志环形缓冲。
     pub logs: Option<LogTail>,
+    /// SSE 事件总线（P4-081）。
+    pub events: Arc<EventBus>,
     /// 进程启动时间（Unix 毫秒）。
     pub started_at: i64,
     /// 优雅关闭信号（supervisor/CLI 触发）。
@@ -34,6 +37,7 @@ impl ControlState {
             config_path: None,
             data_dir: None,
             logs: None,
+            events: Arc::new(EventBus::new()),
             started_at: now_millis(),
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -50,6 +54,76 @@ impl ControlState {
     pub fn with_logs(mut self, logs: LogTail) -> Self {
         self.logs = Some(logs);
         self
+    }
+
+    /// 启动 ledger/熔断 → 事件同步任务（P4-081）。
+    ///
+    /// 每 2s 检查一次：
+    /// - 账本行数增长 → 每个 ID 区间发一条 `request.completed`（元数据摘要）；
+    /// - 熔断从 closed → open → `breaker.opened`。
+    ///
+    /// 事件只含 ID 与元数据，不含 prompt/正文（§4.9）。
+    pub fn spawn_event_sync(&self) {
+        let pipeline = self.pipeline.clone();
+        let bus = self.events.clone();
+        let shutdown_flag = {
+            // 借 shutdown AtomicBool 的克隆：ControlState 内部字段私有，
+            // 用一个独立标志。
+            std::sync::Arc::new(AtomicBool::new(false))
+        };
+        let _ = shutdown_flag;
+        tokio::spawn(async move {
+            let mut last_count: i64 = tr_agent::store::ledger::count(pipeline.db()).unwrap_or(0);
+            let mut last_open: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // 账本增长：发 request.completed（新行的 id 区间）。
+                let current = tr_agent::store::ledger::count(pipeline.db()).unwrap_or(last_count);
+                if current > last_count {
+                    if let Ok(rows) = tr_agent::store::admin_query::list_requests(
+                        pipeline.db(),
+                        &tr_agent::store::admin_query::LedgerQuery {
+                            limit: (current - last_count).clamp(1, 20) as u32,
+                            ..Default::default()
+                        },
+                    ) {
+                        for row in rows {
+                            bus.publish(
+                                crate::events::EventKind::RequestCompleted,
+                                serde_json::json!({
+                                    "request_id": row.request_id,
+                                    "outcome": row.outcome,
+                                    "model": row.dispatch_model,
+                                    "cost_micros": row.cost_micros.answer + row.cost_micros.routing,
+                                }),
+                            );
+                        }
+                    }
+                    last_count = current;
+                }
+                // 熔断：新打开的候选 → breaker.opened。
+                if let Ok(health) = tr_agent::store::health::load(pipeline.db()) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    let open_now: std::collections::BTreeSet<String> = health
+                        .candidates
+                        .iter()
+                        .filter(|(_, state)| state.is_open(now))
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for id in open_now.difference(&last_open) {
+                        bus.publish(
+                            crate::events::EventKind::BreakerOpened,
+                            serde_json::json!({"candidate_id": id}),
+                        );
+                    }
+                    last_open = open_now;
+                }
+            }
+        });
     }
 
     /// 日志查询（logs.rs 回调）。

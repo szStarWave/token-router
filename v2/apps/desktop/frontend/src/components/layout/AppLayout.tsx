@@ -3,6 +3,7 @@ import { Outlet, useRouterState } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { TitleBar } from './TitleBar'
 import { Toast } from '../common/Toast'
+import { useLiveEvents } from '../../hooks/useLiveEvents'
 
 const PAGE_TITLES: Record<string, string> = {
   overview: '总览',
@@ -21,6 +22,8 @@ export function AppLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const page = pathname.replace(/^\//, '').split('/')[0] || 'overview'
   const title = PAGE_TITLES[page] ?? '总览'
+  // SSE 实时刷新（Tauri 下桥接；轮询兜底）。
+  useLiveEvents()
 
   return (
     <div className="app" id="app">

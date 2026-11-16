@@ -20,6 +20,9 @@ fn main() {
                 "onboard_apply",
                 "onboard_verify",
                 "onboard_wsl_detect",
+                // SSE 事件桥（§6.3）
+                "admin_events_subscribe",
+                "admin_events_unsubscribe",
             ]),
         ),
     )

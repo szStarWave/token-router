@@ -85,6 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("token-router v2 listening on http://{addr}");
 
+    // SSE 事件同步（P4-081）：账本/熔断 → 事件总线。
+    control_state.spawn_event_sync();
+
     // 优雅关闭：管理面 `/v2/admin/shutdown` 置位后轮询退出。
     let shutdown_state = control_state.clone();
     tokio::spawn(async move {

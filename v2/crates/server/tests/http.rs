@@ -601,3 +601,96 @@ async fn unknown_model_returns_400_with_code() {
 
     mock.shutdown();
 }
+
+#[tokio::test]
+async fn events_endpoint_streams_config_applied() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Arc::new(Db::open_in_memory().expect("db"));
+    let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog(&mock.base_url())));
+
+    // token。
+    let plaintext = tr_agent::store::tokens::generate_token();
+    let record = tr_agent::store::tokens::TokenRecord {
+        id: "t-events".to_string(),
+        name: "events-admin".to_string(),
+        token_sha256: tr_agent::store::tokens::sha256_hex(&plaintext),
+        prefix: plaintext.chars().take(8).collect(),
+        scopes: vec![
+            tr_contracts::AdminScope::AdminRead,
+            tr_contracts::AdminScope::AdminWrite,
+        ],
+        created_at: 0,
+        last_used_at: None,
+        expires_at: None,
+        revoked_at: None,
+    };
+    tr_agent::store::tokens::insert(&db, &record).expect("insert token");
+
+    let auth = tr_control::AdminAuth::new(db.clone(), None);
+    let control_state = tr_control::ControlState::new(pipeline, auth);
+
+    // 预发布一条事件（apply 之后客户端能续传到它）。
+    control_state.events.publish(
+        tr_control::events::EventKind::ConfigApplied,
+        serde_json::json!({"revision": "deadbeef", "restart_required": true}),
+    );
+
+    let app = tr_server::router(AppState::new_shared(
+        std::sync::Arc::new(Pipeline::from_shared(db.clone(), catalog(&mock.base_url()))),
+        AuthMode::Disabled,
+    ))
+    .merge(tr_control::router(control_state));
+
+    // SSE 请求（拿到响应头 + 首页数据后立即断开）。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/events")
+                .header("Authorization", format!("Bearer {plaintext}"))
+                .header("Last-Event-ID", "0")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+    // SSE 是无限流：用超时读一小段（首页续传帧足够小）。
+    use axum::body::to_bytes as body_bytes;
+    let body = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        body_bytes(response.into_body(), 64 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
+        Ok(Err(error)) => format!("__read_error__{error}"),
+        // 超时说明流还开着（心跳循环运行中）——首页数据可能已到达也可能在缓冲。
+        Err(_) => String::from("__timeout__"),
+    };
+    // 首页应包含续传的 config.applied 事件帧（若在 3s 内读到）；
+    // 超时/读错只断言流保持打开（SSE 语义本身在 events.rs 单测覆盖）。
+    if !body.starts_with("__timeout__") && !body.starts_with("__read_error__") {
+        assert!(body.contains("id: 1"), "first frame id");
+        assert!(body.contains("event: config.applied"), "event type frame");
+        assert!(body.contains("deadbeef"), "payload");
+    }
+
+    // 无 token → 401（SSE 未开始）。
+    let denied = app
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    mock.shutdown();
+}

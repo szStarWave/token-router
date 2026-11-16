@@ -13,11 +13,12 @@
 pub mod auth;
 pub mod config_service;
 pub mod error;
+pub mod events;
 pub mod logs;
 pub mod state;
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -55,6 +56,7 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/tokens", get(tokens_list).post(tokens_create))
         .route("/v2/admin/tokens/{id}", delete(tokens_revoke))
         .route("/v2/admin/logs", get(logs_endpoint))
+        .route("/v2/admin/events", get(events_endpoint))
         .route("/v2/admin/shutdown", post(shutdown))
         .with_state(state)
 }
@@ -605,6 +607,73 @@ async fn shutdown(
 }
 
 // ---------------------------------------------------------------------------
+// events（P4-081：SSE）
+// ---------------------------------------------------------------------------
+
+/// `GET /v2/admin/events`：SSE 流；`Last-Event-ID` 续传；心跳 15s。
+///
+/// 认证在首个响应字节前完成（SSE 一旦开始就无法改状态码）。
+async fn events_endpoint(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let last_event_id = headers
+        .get("Last-Event-ID")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0);
+
+    let (events, overflow) = state.events.after(last_event_id);
+    let mut stream_body = String::new();
+    if overflow {
+        // ring 已滚动：客户端应重新全量拉取。
+        stream_body
+            .push_str("event: overflow\ndata: {\"message\":\"events behind ring; refetch\"}\n\n");
+    }
+    for event in &events {
+        stream_body.push_str(&event.to_sse());
+    }
+
+    let bus = state.events.clone();
+    let body_stream = async_stream::stream! {
+        // 先发续传页。
+        yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(stream_body.clone()));
+        let mut cursor = events.last().map(|event| event.id).unwrap_or(last_event_id);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let (new_events, overflow) = bus.after(cursor);
+            if overflow {
+                yield Ok(axum::body::Bytes::from_static(
+                    b"event: overflow\ndata: {\"message\":\"events behind ring; refetch\"}\n\n",
+                ));
+                cursor = bus.latest_id();
+                continue;
+            }
+            for event in &new_events {
+                cursor = event.id;
+                yield Ok(axum::body::Bytes::from(event.to_sse()));
+            }
+            // 心跳（15s = 15 次轮询；用计数器避免每秒 ping）。
+            static PING_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let ticks = PING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if ticks % 15 == 14 {
+                yield Ok(axum::body::Bytes::from_static(
+                    crate::events::ping_frame().as_bytes(),
+                ));
+            }
+        }
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from_stream(body_stream))
+        .expect("build SSE response"))
+}
+
+// ---------------------------------------------------------------------------
 // config（M2，实现在 config_service）
 // ---------------------------------------------------------------------------
 
@@ -673,6 +742,14 @@ async fn config_apply(
             diff: &response.diff,
         },
     )?;
+    // SSE：config.applied（§4.9）。
+    state.events.publish(
+        crate::events::EventKind::ConfigApplied,
+        json!({
+            "revision": response.revision,
+            "restart_required": true,
+        }),
+    );
     Ok(Json(tr_contracts::ApplyResponse {
         revision: response.revision,
         restart_required: true,

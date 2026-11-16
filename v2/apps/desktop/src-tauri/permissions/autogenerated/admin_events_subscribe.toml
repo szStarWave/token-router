@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-events-subscribe"
+description = "Enables the admin_events_subscribe command without any pre-configured scope."
+commands.allow = ["admin_events_subscribe"]
+
+[[permission]]
+identifier = "deny-admin-events-subscribe"
+description = "Denies the admin_events_subscribe command without any pre-configured scope."
+commands.deny = ["admin_events_subscribe"]

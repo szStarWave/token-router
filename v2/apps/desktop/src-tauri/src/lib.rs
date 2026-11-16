@@ -10,6 +10,7 @@
 
 pub mod admin_proxy;
 pub mod commands;
+pub mod events_bridge;
 pub mod host;
 pub mod onboard;
 pub mod supervisor;
@@ -97,6 +98,7 @@ pub fn run() {
             }
         }))
         .manage(state)
+        .manage(events_bridge::EventBridge::default())
         .invoke_handler(tauri::generate_handler![
             commands::supervisor_status,
             commands::supervisor_start,
@@ -112,6 +114,8 @@ pub fn run() {
             onboard::onboard_apply,
             onboard::onboard_verify,
             onboard::onboard_wsl_detect,
+            events_bridge::admin_events_subscribe,
+            events_bridge::admin_events_unsubscribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
