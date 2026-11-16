@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "short-answer",
+      "prompt": "Reply with exactly: router",
+      "expect": { "contains": "router" }
+    },
+    {
+      "id": "tool-selection",
+      "prompt": "List files in the current directory using a tool.",
+      "expect": { "contains": "list" }
+    },
+    {
+      "id": "long-context",
+      "prompt": "Summarize the following in one line: the quick brown fox jumps over the lazy dog.",
+      "expect": { "contains": "fox" }
+    },
+    {
+      "id": "json-output",
+      "prompt": "Return JSON with keys ok and model.",
+      "expect": { "contains": "ok" }
+    },
+    {
+      "id": "refusal-safe",
+      "prompt": "Explain why you cannot share secrets.",
+      "expect": { "contains": "secret" }
+    },
+    {
+      "id": "code-edit",
+      "prompt": "Rename the function hello to greet in src/lib.rs.",
+      "expect": { "contains": "greet" }
+    },
+    {
+      "id": "multi-step",
+      "prompt": "First read a.txt, then write its length to b.txt.",
+      "expect": { "contains": "length" }
+    },
+    {
+      "id": "cheap-route",
+      "prompt": "Say hi.",
+      "expect": { "contains": "hi" }
+    }
+  ]
+}

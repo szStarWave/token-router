@@ -557,3 +557,25 @@ cargo xtask fixture-probe
 **G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；**真实流量 shadow 报告未产出**，D-1 维持“默认 off”。
 
 下一步：P2（成本闸与评测）。
+
+### 2026-11-16：P2 阶段性收口（成本闸与评测底座）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P2-1 价格与成本链路 | 完成 | `PriceModel::estimate`；缺缓存价记 `PRICE_CACHE_ASSUMED` |
+| P2-2 缓存损失估计 | 完成 | `core::cache_cost`；同前缀才复用命中，币种不一致返回 unknown |
+| P2-3 answer/routing 分账 | 部分 | 账本分列已就绪；判官适配器未解析 token usage，`routing_cost` 仍为 None |
+| P2-4 成本闸方向规则 | 完成 | `core::gate` + `agent::gate::evaluate`；质量升级未知价格放行、成本降级拒绝 |
+| P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
+| P2-6 CompetenceGuard | 未做 | 设计里标为可选 |
+| P2-7 评测集与 checker | 完成（底座） | `v2/tests/eval/tasks.json` + `tr-cli eval`；checker 为 contains，非 LLM 判成功 |
+| P2-8 三列对照表 | **未产出** | 需要真实上游；mock 上游的对照没有意义 |
+| P2-9 成本闸校准 | **未执行** | 需要真实流量与价格数据（MAPE/false deny） |
+| P2-10 指标 | 完成（基础） | `/v2/admin/stats` 与账本同源聚合 |
+| P2-11 decision span | 未做 | 结构化 reason 已在账本，无 tracing span |
+| P2-12 profile 版本化 | 完成 | `config_digest` + `profile.revision` 入账 |
+
+**G4 结论**：闸门逻辑与 shadow 机制完成；**校准未执行**（缺真实模型与价格），因此成本闸保持 `shadow`，不得 active。
+迁移新增 migration 2：`ledger.judge_json`（判官 trace 入账，指标同源）。
+
+下一步：P3（虚拟模型、sticky/hold、控制面、审批）。

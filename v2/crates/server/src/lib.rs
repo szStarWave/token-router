@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(responses_create))
+        .route("/v2/admin/stats", get(admin_stats))
         .with_state(state)
 }
 
@@ -83,6 +84,40 @@ async fn models(State(state): State<AppState>) -> Json<Value> {
         })
         .collect();
     Json(json!({"object": "list", "data": data}))
+}
+
+/// 账本指标（P2-10）：与账本同源，避免“日志口径”和“账本口径”分裂。
+async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !authorized(&state.auth, &headers) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "invalid or missing inbound key",
+        );
+    }
+    match tr_agent::store::stats::stats(state.pipeline.db()) {
+        Ok(stats) => Json(json!({
+            "requests": stats.requests,
+            "successes": stats.successes,
+            "upstream_errors": stats.upstream_errors,
+            "quality_fails": stats.quality_fails,
+            "cancelled": stats.cancelled,
+            "switches": stats.switches,
+            "answer_cost_micros": stats.answer_cost_micros,
+            "routing_cost_micros": stats.routing_cost_micros,
+            "judge_fallbacks": stats.judge_fallbacks,
+            "success_rate": stats.success_rate(),
+        }))
+        .into_response(),
+        Err(error) => {
+            eprintln!("stats query failed: {error}");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "stats query failed",
+            )
+        }
+    }
 }
 
 async fn chat_completions(

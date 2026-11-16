@@ -16,6 +16,7 @@ tr-proto = { path = "../proto" }
 tr-core = { path = "../core" }
 tr-agent = { path = "../agent" }
 serde_json = { workspace = true }
+serde = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

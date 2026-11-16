@@ -43,6 +43,8 @@ pub struct Catalog {
     pub virtual_models: BTreeMap<VirtualModelId, VirtualModel>,
     /// 判官配置（`off` 时 backend 不构造）。
     pub judge: JudgeSettings,
+    /// 成本闸模式（P2 默认 shadow）。
+    pub cost_gate: crate::gate::CostGateMode,
     /// 规范化配置的 SHA-256，写入账本与快照。
     pub config_digest: String,
 }
@@ -111,6 +113,24 @@ pub struct ConfigFile {
     pub virtual_models: Vec<VirtualModelFile>,
     #[serde(default)]
     pub judge: JudgeFile,
+    #[serde(default)]
+    pub cost_gate: CostGateFile,
+}
+
+/// 成本闸配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CostGateFile {
+    /// `off` | `shadow` | `active`
+    pub mode: String,
+}
+
+impl Default for CostGateFile {
+    fn default() -> Self {
+        Self {
+            mode: "shadow".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +430,13 @@ impl ConfigFile {
         }
 
         let judge = build_judge_settings(&self.judge)?;
+        let cost_gate =
+            crate::gate::CostGateMode::parse(&self.cost_gate.mode).ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "cost_gate.mode 只能是 off/shadow/active，得到 `{}`",
+                    self.cost_gate.mode
+                ))
+            })?;
 
         Ok(Catalog {
             server: self.server,
@@ -418,6 +445,7 @@ impl ConfigFile {
             candidates,
             virtual_models,
             judge,
+            cost_gate,
             config_digest,
         })
     }

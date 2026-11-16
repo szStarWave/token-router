@@ -98,6 +98,7 @@ pub struct Pipeline {
     upstream: HttpUpstream,
     judge: std::sync::Arc<crate::judge::JudgeRuntime>,
     strategies: Vec<Box<dyn tr_core::strategy::Strategy>>,
+    cost_gate: crate::gate::CostGateMode,
 }
 
 impl Pipeline {
@@ -111,12 +112,14 @@ impl Pipeline {
                     .expect("off judge runtime")
             }
         };
+        let cost_gate = catalog.cost_gate;
         Self {
             db: std::sync::Arc::new(db),
             catalog: std::sync::Arc::new(catalog),
             upstream,
             judge: std::sync::Arc::new(judge),
             strategies: tr_core::default_strategies(),
+            cost_gate,
         }
     }
 
@@ -298,6 +301,9 @@ impl Pipeline {
             }
         }
 
+        // 成本闸：P2 默认 shadow（只记录）；active 时拒绝无收益的切换。
+        self.apply_cost_gate(&mut plan, &facts, &profile, &snapshot);
+
         if plan.preference.is_empty() {
             let ledger = build_ledger(
                 &LedgerInput {
@@ -358,6 +364,93 @@ impl Pipeline {
             strategy_states,
             shadow,
         })
+    }
+
+    /// 成本闸：在决策与执行之间调整 Plan（§9.4）。
+    ///
+    /// - `off`：不计算；
+    /// - `shadow`：只写结论与 `expected_cache_loss`，不改变顺序；
+    /// - `active`：拒绝时把上一成功候选排回队首（若仍在计划里）。
+    fn apply_cost_gate(
+        &self,
+        plan: &mut Plan,
+        facts: &SessionFacts,
+        profile: &tr_contracts::ProfileConfig,
+        snapshot: &DecisionSnapshot,
+    ) {
+        if self.cost_gate == crate::gate::CostGateMode::Off {
+            return;
+        }
+        let Some(previous_ref) = facts.last_served_slot.as_ref() else {
+            return;
+        };
+        let Some(next_slot) = plan.preference.first().cloned() else {
+            return;
+        };
+        if previous_ref.candidate_id == next_slot.candidate_id {
+            return;
+        }
+        let (Some(previous), Some(next)) = (
+            self.catalog.candidate(&previous_ref.candidate_id),
+            self.catalog.candidate(&next_slot.candidate_id),
+        ) else {
+            return;
+        };
+
+        let anchor = facts.cache_anchor.as_ref();
+        let same_prefix = anchor.is_some_and(|anchor| {
+            anchor.physical_model == next.upstream.model
+                && anchor.provider == format!("{:?}", next.upstream.provider)
+        });
+
+        let verdict = crate::gate::evaluate(&crate::gate::SwitchContext {
+            previous,
+            next,
+            previous_cached_tokens: anchor.map_or(0, |anchor| anchor.cached_tokens),
+            prompt_tokens: u64::from(facts.last_prompt_tokens.unwrap_or(0)),
+            same_prefix_reusable: same_prefix,
+            difficulty_gap: snapshot.signals.core.difficulty_gap,
+            hard_signal_score: snapshot.signals.core.hard_signal_score,
+            profile,
+            policy: profile.unknown_price_policy,
+        });
+
+        match verdict {
+            crate::gate::SwitchVerdict::Skip => {}
+            crate::gate::SwitchVerdict::Allow {
+                expected_cache_loss,
+                reasons,
+            } => {
+                plan.expected_cache_loss = expected_cache_loss;
+                plan.reason_codes.extend(reasons);
+            }
+            crate::gate::SwitchVerdict::Deny {
+                expected_cache_loss,
+                reasons,
+            } => {
+                plan.expected_cache_loss = expected_cache_loss;
+                plan.reason_codes.extend(reasons);
+
+                if self.cost_gate == crate::gate::CostGateMode::Active {
+                    if let Some(position) = plan
+                        .preference
+                        .iter()
+                        .position(|slot| slot.candidate_id == previous_ref.candidate_id)
+                    {
+                        let slot = plan.preference.remove(position);
+                        plan.preference.insert(0, slot);
+                    }
+                    if let Some(position) = plan
+                        .failover
+                        .iter()
+                        .position(|slot| slot.candidate_id == previous_ref.candidate_id)
+                    {
+                        let slot = plan.failover.remove(position);
+                        plan.failover.insert(0, slot);
+                    }
+                }
+            }
+        }
     }
 
     /// 非流式处理。

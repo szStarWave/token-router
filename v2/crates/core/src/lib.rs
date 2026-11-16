@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cache_cost;
+pub mod gate;
 pub mod merge;
 pub mod signals;
 pub mod strategy;

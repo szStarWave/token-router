@@ -243,6 +243,40 @@ async fn streaming_chat_returns_sse() {
 }
 
 #[tokio::test]
+async fn admin_stats_matches_ledger() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let ok = app
+        .clone()
+        .oneshot(post_chat(None))
+        .await
+        .expect("response");
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v2/admin/stats")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let value: serde_json::Value = serde_json::from_str(&body_text(response).await).expect("json");
+    assert_eq!(value["requests"], 1);
+    assert_eq!(value["successes"], 1);
+    assert_eq!(value["success_rate"], 1.0);
+    assert!(value["answer_cost_micros"].as_i64().unwrap_or(0) > 0);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
 async fn anthropic_endpoint_round_trips() {
     let mock = MockUpstream::start(vec![Reply::ok("hello anthropic")]).await;
     let db = Db::open_in_memory().expect("db");

@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod gate;
 pub mod judge;
 pub mod pipeline;
 pub mod reason;

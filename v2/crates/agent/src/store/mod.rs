@@ -11,6 +11,7 @@ pub mod ledger;
 mod migrate;
 pub mod protocol;
 pub mod sessions;
+pub mod stats;
 pub mod strategy;
 
 use std::path::Path;

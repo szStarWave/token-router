@@ -45,6 +45,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 任务集评测（成功率/成本/时延）
+    Eval {
+        #[arg(long)]
+        config: PathBuf,
+        /// 任务集 JSON
+        #[arg(long, default_value = "tests/eval/tasks.json")]
+        tasks: PathBuf,
+        #[arg(long)]
+        json: bool,
+        /// 指定账本库（默认临时库）
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -151,5 +164,139 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
+        Command::Eval {
+            config,
+            tasks,
+            json,
+            db,
+        } => run_eval(config, tasks, json, db),
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct EvalTask {
+    id: String,
+    prompt: String,
+    expect: EvalExpect,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct EvalExpect {
+    contains: String,
+}
+
+fn run_eval(
+    config: PathBuf,
+    tasks_path: PathBuf,
+    json: bool,
+    db_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = tr_agent::config::load(&config)?;
+    let tasks_text = std::fs::read_to_string(&tasks_path)?;
+    let tasks: Vec<EvalTask> = serde_json::from_str::<serde_json::Value>(&tasks_text)?
+        .get("tasks")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .ok_or("tasks file 缺少 tasks 数组")?;
+
+    let db_path = db_path.unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "tr-eval-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0)
+        ))
+    });
+    let db = tr_agent::store::Db::open(&db_path)?;
+    let pipeline = tr_agent::pipeline::Pipeline::from_catalog(db, catalog);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    let mut results = Vec::new();
+    for task in &tasks {
+        let request = tr_contracts::CanonicalRequest {
+            messages: vec![tr_contracts::CanonicalMessage {
+                role: tr_contracts::CanonicalRole::User,
+                blocks: vec![tr_contracts::ContentBlock::Text {
+                    text: task.prompt.clone(),
+                    cache_control: None,
+                }],
+                ..tr_contracts::CanonicalMessage::default()
+            }],
+            ..tr_contracts::CanonicalRequest::default()
+        };
+
+        let outcome = runtime
+            .block_on(pipeline.handle(request, tr_agent::pipeline::RequestContext::default()));
+        match outcome {
+            Ok(result) => {
+                let text: String = result
+                    .response
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        tr_contracts::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let passed = text.contains(&task.expect.contains);
+                results.push(serde_json::json!({
+                    "id": task.id,
+                    "passed": passed,
+                    "served_model": result.headers.served_model,
+                    "cost_micros": result.ledger.cost_equiv.as_ref().map(|cost| cost.micros),
+                    "duration_ms": result.ledger.duration_ms,
+                }));
+            }
+            Err(error) => {
+                results.push(serde_json::json!({
+                    "id": task.id,
+                    "passed": false,
+                    "error": error.to_string(),
+                }));
+            }
+        }
+    }
+
+    let total = results.len();
+    let passed = results
+        .iter()
+        .filter(|result| result["passed"] == serde_json::Value::Bool(true))
+        .count();
+    let cost: i64 = results
+        .iter()
+        .filter_map(|result| result["cost_micros"].as_i64())
+        .sum();
+    let duration: i64 = results
+        .iter()
+        .filter_map(|result| result["duration_ms"].as_i64())
+        .sum();
+
+    let summary = serde_json::json!({
+        "tasks": total,
+        "passed": passed,
+        "success_rate": if total > 0 { Some(passed as f64 / total as f64) } else { None },
+        "total_cost_micros": cost,
+        "avg_duration_ms": if total > 0 { Some(duration as f64 / total as f64) } else { None },
+        "results": results,
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!(
+            "eval: {passed}/{total} passed, cost={cost} micros, avg_duration={:.1}ms",
+            summary["avg_duration_ms"].as_f64().unwrap_or(0.0)
+        );
+        for result in summary["results"].as_array().into_iter().flatten() {
+            println!(
+                "  {} passed={} served={} cost={:?}",
+                result["id"], result["passed"], result["served_model"], result["cost_micros"]
+            );
+        }
+    }
+    Ok(())
 }

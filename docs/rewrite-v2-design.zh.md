@@ -42,6 +42,7 @@
 | 27 | 补实施前置落地件：存储 DDL/迁移、错误分类与行为矩阵、仓库与 CI 形态、配置演进策略；`FailedDispatch` 增加 `ErrorClass` | §18.4、§4.9.1 |
 | 28 | P0a 实现修正：`DecisionSnapshot` 补齐 `RequestView` 全部输入（否则 sticky 无法回放）；包名统一 `tr-` 前缀避开 sysroot 的 `core` | §4.7、§18.4.3 |
 | 29 | P1 实现补充：`JudgeRequest` 携带 `category`/`evidence`；新增 `PlanContribution::Note`；`upstream -> proto` 依赖 | §4.5、§3.2 |
+| 30 | P2 实现补充：migration 2 增加 `ledger.judge_json`（判官 trace 与指标同源）；成本闸配置 `[cost_gate] mode`；`tr-cli eval` 评测底座 | §9.2、§18.3、§11.2 |
 
 ---
 

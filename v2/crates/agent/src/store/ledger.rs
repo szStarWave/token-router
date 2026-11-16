@@ -23,6 +23,11 @@ pub(crate) fn insert_with(
     let failover_json = serde_json::to_string(&record.failover)?;
     let attempts_json = serde_json::to_string(&record.attempts)?;
     let reason_codes_json = serde_json::to_string(&record.reason_codes)?;
+    let judge_json = record
+        .judge
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
 
     connection.execute(
         "INSERT INTO ledger (
@@ -34,7 +39,8 @@ pub(crate) fn insert_with(
             reason_codes_json, outcome, http_status,
             input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
             answer_cost_micros, routing_cost_micros, facts_completeness,
-            profile_revision, config_digest, ttft_ms, duration_ms, created_at
+            profile_revision, config_digest, ttft_ms, duration_ms, created_at,
+            judge_json
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8,
@@ -44,7 +50,8 @@ pub(crate) fn insert_with(
             ?20, ?21, ?22,
             ?23, ?24, ?25, ?26,
             ?27, ?28, ?29,
-            ?30, ?31, ?32, ?33, ?34
+            ?30, ?31, ?32, ?33, ?34,
+            ?35
          )",
         params![
             record.request_id.to_string(),
@@ -80,7 +87,8 @@ pub(crate) fn insert_with(
             record.config_digest,
             record.ttft_ms.map(|value| value as i64),
             record.duration_ms as i64,
-            record.created_at as i64
+            record.created_at as i64,
+            judge_json
         ],
     )?;
     Ok(())
