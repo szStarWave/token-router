@@ -633,7 +633,7 @@ cargo xtask fixture-probe
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（范围外）**：P4 入口条件未满足（计划明确 TBD）；S0-5、P1-13、P2-8、P2-9 已在后续记录中完成并给出真实数据/结论。
+**范围外（不验收）**：P4 入口条件未满足（计划明确 TBD，不排期）；S0-5、P1-13、P2-8、P2-9 已在后续记录中完成并给出真实数据/结论。
 
 ### 2026-11-16：P1-8/P2-7/P2-8 证据链补齐
 
