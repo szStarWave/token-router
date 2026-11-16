@@ -726,6 +726,8 @@ pub enum DispatchSource {
 
 `Direct` 不读写 state；只有 route 显式要求时才 StickyDispatch previous。
 
+实现（P3-6）：`failed` 来自 `SessionFacts.last_failed`。非流式失败、首事件前失败、流式收尾失败都会写入 `FailedDispatch`（候选、provider、`ErrorClass`、状态码、错误文本），成功请求清空；只有 `Retry` 读取它，`Overloaded`/`ContextOverflow` 直接跳过，回退 previous。
+
 ```text
 previous = 当前 messages 中最近一次成功响应的 Dispatch
 failed   = 失败请求的 FailedDispatch；路由本身失败时为 None

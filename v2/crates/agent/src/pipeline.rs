@@ -292,7 +292,11 @@ impl Pipeline {
             virtual_model: virtual_model.clone(),
             reason: request_reason,
             previous: facts.last_successful_dispatch.clone(),
-            failed: None,
+            failed: if request_reason == RequestReason::Retry {
+                facts.last_failed.clone()
+            } else {
+                None
+            },
             context_hold: facts.context_holds.get(&virtual_model.id).cloned(),
             router_state: router_state.clone(),
         };
@@ -385,6 +389,7 @@ impl Pipeline {
             let resolution = crate::dispatch::resolve(&crate::dispatch::DispatchContext {
                 reason: request_reason,
                 previous: snapshot.previous.as_ref(),
+                failed: snapshot.failed.as_ref(),
                 hold: snapshot.context_hold.as_ref(),
                 candidates: &candidates,
                 health: &snapshot.health,
@@ -719,6 +724,14 @@ impl Pipeline {
 
         let Some((index, candidate, slot, response)) = success else {
             let failure = last_failure.unwrap_or(no_attempt_failure());
+            let failed_facts = build_failed_facts(
+                &self.catalog,
+                &prepared,
+                Some(failure.class),
+                failure.status,
+                failure.message.as_deref(),
+                &attempts,
+            );
             let ledger = build_ledger(
                 &prepared.ledger_input(DispatchSource::Failover),
                 attempts,
@@ -729,7 +742,7 @@ impl Pipeline {
             );
             let breakers: Vec<_> = breakers.into_iter().collect();
             let request_id = ledger.request_id;
-            store::commit(&self.db, None, &breakers, &ledger, None)?;
+            store::commit(&self.db, failed_facts.as_ref(), &breakers, &ledger, None)?;
             persist_state_updates(&self.db, &prepared);
             tracing::info!(
                 parent: &span,
@@ -893,6 +906,7 @@ impl Pipeline {
                     );
 
                     let db = self.db.clone();
+                    let task_catalog = self.catalog.clone();
                     let task_prepared = prepared;
                     let task_candidate = candidate;
                     let task_slot = slot.clone();
@@ -903,6 +917,7 @@ impl Pipeline {
                     tokio::spawn(async move {
                         forward_stream(
                             db,
+                            task_catalog,
                             task_prepared,
                             task_candidate,
                             task_slot,
@@ -971,6 +986,14 @@ impl Pipeline {
         }
 
         let failure = last_failure.unwrap_or(no_attempt_failure());
+        let failed_facts = build_failed_facts(
+            &self.catalog,
+            &prepared,
+            Some(failure.class),
+            failure.status,
+            failure.message.as_deref(),
+            &attempts,
+        );
         let ledger = build_ledger(
             &prepared.ledger_input(DispatchSource::Failover),
             attempts,
@@ -981,7 +1004,7 @@ impl Pipeline {
         );
         let breakers: Vec<_> = breakers.into_iter().collect();
         let request_id = ledger.request_id;
-        store::commit(&self.db, None, &breakers, &ledger, None)?;
+        store::commit(&self.db, failed_facts.as_ref(), &breakers, &ledger, None)?;
         persist_state_updates(&self.db, &prepared);
         tracing::info!(
             parent: &span,
@@ -1087,6 +1110,8 @@ impl Prepared {
             provider: format!("{:?}", candidate.upstream.provider),
             thinking_level: slot.thinking_level.clone(),
         });
+        // 成功后清空失败派发：Retry 不应复用已经失败的候选。
+        facts.last_failed = None;
         facts.last_served_slot = Some(SlotRef {
             candidate_id: candidate.id.clone(),
             preference_index: self
@@ -1213,6 +1238,7 @@ fn decision_span(prepared: &Prepared) -> tracing::Span {
 #[allow(clippy::too_many_arguments)]
 async fn forward_stream(
     db: std::sync::Arc<Db>,
+    catalog: std::sync::Arc<Catalog>,
     prepared: Prepared,
     candidate: Candidate,
     slot: Slot,
@@ -1302,6 +1328,18 @@ async fn forward_stream(
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;
+    let failed_facts = if outcome == OutcomeKind::UpstreamError {
+        build_failed_facts(
+            &catalog,
+            &prepared,
+            attempts.last().and_then(|attempt| attempt.error_class),
+            attempts.last().and_then(|attempt| attempt.http_status),
+            error_message.as_deref(),
+            &attempts,
+        )
+    } else {
+        None
+    };
     let ledger = build_ledger(
         &prepared.ledger_input(prepared.plan.dispatch_source),
         attempts,
@@ -1325,7 +1363,7 @@ async fn forward_stream(
     let facts = if outcome == OutcomeKind::Success {
         Some(prepared.updated_facts(&candidate, &slot, usage.unwrap_or_default()))
     } else {
-        None
+        failed_facts
     };
     let route_state = facts
         .as_ref()
@@ -1631,6 +1669,38 @@ fn build_ledger(
         duration_ms,
         created_at: input.now_unix,
     }
+}
+
+/// 失败请求也要更新会话事实（P3-6）：`Retry` 需要知道上一次失败的候选。
+fn build_failed_facts(
+    catalog: &Catalog,
+    prepared: &Prepared,
+    class: Option<ErrorClass>,
+    status: Option<u16>,
+    message: Option<&str>,
+    attempts: &[AttemptRecord],
+) -> Option<SessionFacts> {
+    let attempt = attempts.last()?;
+    let candidate = catalog.candidate(&attempt.candidate_id);
+    let mut facts = prepared.facts.clone();
+    facts.last_failed = Some(tr_contracts::FailedDispatch {
+        dispatch: Dispatch {
+            physical_model: candidate
+                .map(|candidate| candidate.upstream.model.clone())
+                .unwrap_or_default(),
+            provider: candidate
+                .map(|candidate| format!("{:?}", candidate.upstream.provider))
+                .unwrap_or_default(),
+            thinking_level: prepared.thinking_level.clone(),
+        },
+        assistant_message: None,
+        error_class: class,
+        http_status: status,
+        error: message.map(str::to_string),
+        stop_reason: None,
+    });
+    facts.updated_at = prepared.now_unix;
+    Some(facts)
 }
 
 /// 是否允许本次请求尝试该候选（P0a-10 half-open 单探针）。

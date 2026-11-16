@@ -8,14 +8,16 @@
 //! 不可用时绝不阻塞请求：回退 Plan 并写明确 reason。
 
 use tr_contracts::{
-    Candidate, CandidateHealth, CandidateId, ContextHold, Dispatch, DispatchSource, InputModality,
-    ReasonCode, ReasonCodeKind, RequestReason,
+    Candidate, CandidateHealth, CandidateId, ContextHold, Dispatch, DispatchSource, FailedDispatch,
+    InputModality, ReasonCode, ReasonCodeKind, RequestReason,
 };
 
 /// 解析输入。
 pub struct DispatchContext<'a> {
     pub reason: RequestReason,
     pub previous: Option<&'a Dispatch>,
+    /// `Retry` 时上一请求的失败派发；优先级高于 `previous`。
+    pub failed: Option<&'a FailedDispatch>,
     pub hold: Option<&'a ContextHold>,
     pub candidates: &'a [Candidate],
     pub health: &'a CandidateHealth,
@@ -59,6 +61,19 @@ pub fn resolve(context: &DispatchContext<'_>) -> Resolution {
         return Resolution {
             candidate: None,
             source: DispatchSource::Strategy,
+            reasons,
+        };
+    }
+
+    // Retry：优先复用失败候选（StickyFailed）；过载/溢出不粘，避免必然失败。
+    if context.reason == RequestReason::Retry
+        && let Some(failed) = context.failed
+        && !failed.is_overload_or_overflow()
+        && let Some(resolved) = reusable(context, &failed.dispatch.physical_model, &mut reasons)
+    {
+        return Resolution {
+            candidate: Some(resolved),
+            source: DispatchSource::StickyFailed,
             reasons,
         };
     }
@@ -175,7 +190,7 @@ fn eligible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tr_contracts::{CapabilityProfile, ProviderKind, UpstreamRef};
+    use tr_contracts::{CapabilityProfile, ErrorClass, ProviderKind, UpstreamRef};
 
     fn candidate(id: &str, model: &str, strength: u8) -> Candidate {
         Candidate {
@@ -208,6 +223,7 @@ mod tests {
         DispatchContext {
             reason,
             previous,
+            failed: None,
             hold,
             candidates,
             health,
@@ -244,6 +260,78 @@ mod tests {
             &candidates,
             &health,
         ));
+        assert_eq!(resolution.candidate.as_deref(), Some("strong"));
+        assert_eq!(resolution.source, DispatchSource::StickyPrevious);
+    }
+
+    #[test]
+    fn retry_prefers_failed_candidate() {
+        let candidates = [
+            candidate("weak", "weak-physical", 10),
+            candidate("strong", "strong-physical", 80),
+        ];
+        let health = CandidateHealth::default();
+        let previous = Dispatch {
+            physical_model: "strong-physical".to_string(),
+            provider: "OpenAiCompatible".to_string(),
+            thinking_level: "off".to_string(),
+        };
+        let failed = FailedDispatch {
+            dispatch: Dispatch {
+                physical_model: "weak-physical".to_string(),
+                provider: "OpenAiCompatible".to_string(),
+                thinking_level: "off".to_string(),
+            },
+            error_class: Some(ErrorClass::Transport),
+            http_status: Some(500),
+            ..FailedDispatch::default()
+        };
+
+        let mut ctx = context(
+            RequestReason::Retry,
+            Some(&previous),
+            None,
+            &candidates,
+            &health,
+        );
+        ctx.failed = Some(&failed);
+        let resolution = resolve(&ctx);
+        assert_eq!(resolution.candidate.as_deref(), Some("weak"));
+        assert_eq!(resolution.source, DispatchSource::StickyFailed);
+    }
+
+    #[test]
+    fn retry_skips_overloaded_failed_candidate() {
+        let candidates = [
+            candidate("weak", "weak-physical", 10),
+            candidate("strong", "strong-physical", 80),
+        ];
+        let health = CandidateHealth::default();
+        let previous = Dispatch {
+            physical_model: "strong-physical".to_string(),
+            provider: "OpenAiCompatible".to_string(),
+            thinking_level: "off".to_string(),
+        };
+        let failed = FailedDispatch {
+            dispatch: Dispatch {
+                physical_model: "weak-physical".to_string(),
+                provider: "OpenAiCompatible".to_string(),
+                thinking_level: "off".to_string(),
+            },
+            error_class: Some(ErrorClass::Overloaded),
+            http_status: Some(503),
+            ..FailedDispatch::default()
+        };
+
+        let mut ctx = context(
+            RequestReason::Retry,
+            Some(&previous),
+            None,
+            &candidates,
+            &health,
+        );
+        ctx.failed = Some(&failed);
+        let resolution = resolve(&ctx);
         assert_eq!(resolution.candidate.as_deref(), Some("strong"));
         assert_eq!(resolution.source, DispatchSource::StickyPrevious);
     }

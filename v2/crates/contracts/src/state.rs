@@ -73,6 +73,8 @@ pub struct SessionFacts {
     pub selected_thinking_level: Option<ThinkingLevel>,
     /// 最近一次成功响应的派发（`Continuation` 的 StickyDispatch previous）。
     pub last_successful_dispatch: Option<Dispatch>,
+    /// 最近一次失败请求（`Retry` 的 StickyFailed 依据）；成功后清空。
+    pub last_failed: Option<crate::routing::FailedDispatch>,
     /// 软亲和，按虚拟模型索引（§4.9.1）。
     pub context_holds: BTreeMap<VirtualModelId, ContextHold>,
     pub last_served_slot: Option<SlotRef>,

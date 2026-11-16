@@ -589,19 +589,19 @@ cargo xtask fixture-probe
 | P3-3 Selection/Dispatch | 完成 | 两者入账与响应头；thinking level 按物理候选 clamp |
 | P3-4 多 slot Plan | 完成 | preference/failover 分离；Single 多候选仅接力 |
 | P3-5 RequestReason | 完成 | 协议形状推断 + `x-token-router-request-reason` 覆盖 |
-| P3-6 StickyDispatch | 完成（部分） | Continuation/Retry 复用 previous；`failed` 未跨请求持久化，Retry 只能回退 previous |
-| P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹 |
+| P3-6 StickyDispatch | 完成 | `SessionFacts.last_failed` 持久化失败派发；`Retry` 优先 `StickyFailed`（过载/溢出跳过），`Continuation` 用 previous；不可用回退并写四类 reason |
+| P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹；热路径直接读 `SessionFacts`（未加内存 LRU，避免双写失效；DB 读已是单次索引查询） |
 | P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
 | P3-9 每 VM state | 完成 | `agent::route_state` 成功后写 `virtual_model_states`；`x-token-router-branch` 驱动真实 fork 隔离；历史 16 条 compaction，`last_served`/`generation` 保留；外来 route state 不覆盖 |
 | P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
+| P3-11 VM state 非 sticky | 完成 | 预置“上次服务强档”的 route state，`direct` 请求仍按 Plan 派发弱档；`decision`/账本不读 state |
 | P3-12/13 审批 | 完成（规则路径） | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待。`DecisionModel` 驱动的风险分类留作 P4 扩展点 |
 | P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals,trust-tiers}`，admin token + 常量时间比较 |
 | P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval；`capture` 属设计 §11.3 附加项，未做 |
 | P3-18 新模型只改配置 | 完成 | 新增候选/虚拟模型的 e2e 测试 + `cargo xtask config-only-check`（CI 记录 core diff = 0） |
 
-**G5 结论**：虚拟模型、sticky/hold、控制面、审批记录完成；审批实时拦截、VM route state 写入、CI 的“core diff = 0”断言未做。
-P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
+**G5 结论**：虚拟模型、sticky/hold、控制面、审批实时拦截、VM route state（branch 隔离 + compaction）、信任别名、CI 的“core diff = 0”断言均已完成；P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
 
 ---
 
@@ -656,6 +656,13 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P1-2 判官服务契约 | 完成 | `JudgeQuestionDefinition` 三型（Boolean/Ordinal/Categorical）+ `question_protocol_digest`；HTTP 信封补 `service_revision`/`protocol_digest`/`context_digest`/`questions`/`input`；响应兼容 `answers[]` 与单 `answer`；digest 写入 `JudgeTrace`/`judge_calls` |
 | S0-5 产物 | 占位 | `docs/s0-client-smoke.md` 给出三客户端流式/非流式步骤与记录表；执行仍待环境 |
 
+### 2026-11-16：P3-6/P3-11 补齐（StickyFailed 与非 sticky 证据）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P3-6 StickyFailed | 完成 | 失败请求把 `FailedDispatch` 写入 `SessionFacts.last_failed`（流式/非流式/后台收尾三路径）；`Retry` 优先失败候选，`Overloaded`/`ContextOverflow` 跳过；成功清空 |
+| P3-11 非 sticky | 完成 | 预置 route state 指向强档后，`direct` 请求仍按 Plan 派发弱档，证明 state 不参与 sticky |
+
 ### 总体状态（截至本次收口）
 
 | 阶段 | 状态 | 主要缺口 |
@@ -668,4 +675,4 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：214 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：218 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

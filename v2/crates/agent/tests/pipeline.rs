@@ -761,6 +761,90 @@ async fn client_disconnect_cancels_stream_and_marks_ledger() {
     mock.shutdown();
 }
 
+#[tokio::test]
+async fn retry_reuses_failed_candidate() {
+    let mock = MockUpstream::start(vec![
+        Reply::error(500, "server_error", "upstream blew up"),
+        Reply::ok("recovered"),
+    ])
+    .await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let session = RequestContext {
+        server_session_id: Some("sess-retry".to_string()),
+        ..RequestContext::default()
+    };
+    pipeline
+        .handle(chat_request("hi"), session)
+        .await
+        .expect_err("first attempt fails");
+
+    let retry = RequestContext {
+        server_session_id: Some("sess-retry".to_string()),
+        request_reason: Some(tr_contracts::RequestReason::Retry),
+        ..RequestContext::default()
+    };
+    let result = pipeline
+        .handle(chat_request("hi"), retry)
+        .await
+        .expect("retry succeeds");
+    assert_eq!(result.headers.dispatch_source, "sticky_failed");
+    assert_eq!(result.headers.served_model, "physical-a");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn virtual_model_state_is_not_sticky_for_direct() {
+    let mock = MockUpstream::start(vec![Reply::ok("weak")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a", "b"]));
+
+    let request = chat_request("hi");
+    let context = RequestContext {
+        server_session_id: Some("sess-non-sticky".to_string()),
+        request_reason: Some(tr_contracts::RequestReason::Direct),
+        ..RequestContext::default()
+    };
+    let input = tr_agent::session::build_input(&request, Some("sess-non-sticky".to_string()));
+    let session_key = tr_agent::session::derive(&input).key;
+
+    // 预置一个“上次服务 b”的 route state；它不得把 Direct 请求拉回 b。
+    store::strategy::save_virtual_model_state(
+        pipeline.db(),
+        &tr_contracts::VirtualModelState {
+            session_key: session_key.clone(),
+            branch_id: "main".to_string(),
+            virtual_model_id: "auto".to_string(),
+            state: serde_json::json!({
+                "schema": tr_agent::route_state::ROUTE_STATE_SCHEMA,
+                "generation": 1,
+                "last_served": {
+                    "candidate_id": "b",
+                    "physical_model": "physical-b",
+                    "provider": "OpenAiCompatible",
+                    "thinking_level": "off",
+                    "request_reason": "user",
+                    "dispatch_source": "strategy",
+                    "switches": 0,
+                    "at": now_secs()
+                },
+                "history": [],
+                "updated_at": now_secs()
+            }),
+            version: 0,
+        },
+    )
+    .expect("seed route state");
+
+    let result = pipeline.handle(request, context).await.expect("handle");
+    assert_eq!(result.headers.dispatch_source, "strategy");
+    assert_eq!(result.headers.served_model, "physical-a");
+
+    mock.shutdown();
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
