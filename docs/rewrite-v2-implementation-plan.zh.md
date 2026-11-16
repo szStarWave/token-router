@@ -592,7 +592,7 @@ cargo xtask fixture-probe
 | P3-6 StickyDispatch | 完成（部分） | Continuation/Retry 复用 previous；`failed` 未跨请求持久化，Retry 只能回退 previous |
 | P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹 |
 | P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
-| P3-9 每 VM state | 完成 | `agent::route_state` 成功后写 `virtual_model_states`；branch 隔离测试；历史 16 条 compaction，`last_served`/`generation` 保留；外来 route state 不覆盖 |
+| P3-9 每 VM state | 完成 | `agent::route_state` 成功后写 `virtual_model_states`；`x-token-router-branch` 驱动真实 fork 隔离；历史 16 条 compaction，`last_served`/`generation` 保留；外来 route state 不覆盖 |
 | P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
 | P3-12/13 审批 | 完成 | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待 |
 | P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
@@ -634,4 +634,4 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 | P3 | 完成 | 审批实时拦截、VM route state、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：200 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：201 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

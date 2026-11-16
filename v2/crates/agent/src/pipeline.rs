@@ -32,6 +32,8 @@ use crate::store::{self, Db, StoreError, sessions::SaveOutcome};
 pub struct RequestContext {
     pub server_session_id: Option<String>,
     pub request_reason: Option<RequestReason>,
+    /// 分支 id（fork/`/tree`）；默认 `main`。状态与账本都按它隔离。
+    pub branch_id: Option<String>,
 }
 
 /// 决策解释头（§11.1）。
@@ -161,7 +163,11 @@ impl Pipeline {
     ) -> Result<Prepared, PipelineError> {
         let now_unix = now_secs();
 
-        let branch_id = "main".to_string();
+        let branch_id = context
+            .branch_id
+            .clone()
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or_else(|| "main".to_string());
         let task_id = String::new();
 
         let session_input = session::build_input(&request, context.server_session_id.clone());

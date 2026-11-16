@@ -187,6 +187,7 @@ async fn handle_ingress(
         request_reason: header_string(&headers, "x-token-router-request-reason")
             .as_deref()
             .and_then(tr_agent::reason::parse_header),
+        branch_id: header_string(&headers, "x-token-router-branch"),
     };
     // 信任档位别名（P3-14）：header → meta，只影响 profile 解析。
     request.meta.trust_tier = header_string(&headers, "x-token-router-trust");

@@ -786,6 +786,7 @@ ContextHold 的细节：
 - `last_served` + 最近 `HISTORY_LIMIT = 16` 条历史；每次写入 `generation += 1`；
 - **compaction**：历史超限只丢最旧条目，`last_served`/`generation` 永久保留；会话键由 `server_session_id` 保持稳定时，客户端压缩消息历史不会重置 state；
 - 写入与 `ledger + sessions + breakers` 同事务；CAS 冲突说明另一请求写了更新版本，直接丢弃本次写入，不影响请求；
+- 分支来自请求头 `x-token-router-branch`（缺省 `main`）：`SessionFacts`、`StrategyState`、`VirtualModelState` 与账本都按该 branch 隔离；
 - 已有 state 没有 `schema` 标记时视为其他 route 插件所有，内核**不覆盖**。
 
 ---

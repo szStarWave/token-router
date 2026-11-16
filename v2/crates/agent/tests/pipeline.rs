@@ -667,6 +667,44 @@ strict = "single"
     mock.shutdown();
 }
 
+#[tokio::test]
+async fn route_state_is_branch_scoped() {
+    let mock = MockUpstream::start(vec![Reply::ok("main"), Reply::ok("fork")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut results = Vec::new();
+    for branch in ["main", "fork"] {
+        let context = RequestContext {
+            server_session_id: Some("sess-branches".to_string()),
+            branch_id: Some(branch.to_string()),
+            ..RequestContext::default()
+        };
+        results.push(
+            pipeline
+                .handle(chat_request("hi"), context)
+                .await
+                .expect("handle"),
+        );
+    }
+
+    assert_eq!(results[0].ledger.branch_id, "main");
+    assert_eq!(results[1].ledger.branch_id, "fork");
+    for branch in ["main", "fork"] {
+        let state = store::strategy::load_virtual_model_state(
+            pipeline.db(),
+            &results[0].ledger.session_key,
+            branch,
+            "auto",
+        )
+        .expect("load")
+        .expect("route state");
+        assert_eq!(state.state["generation"], 1, "branch {branch}");
+    }
+
+    mock.shutdown();
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
