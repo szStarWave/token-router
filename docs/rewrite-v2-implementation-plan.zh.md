@@ -714,8 +714,8 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | S0 | 通过 | 三客户端真实冒烟完成；仅 Codex/Claude 的“非流式”由协议层覆盖 |
 | P0a | 通过 | 真实 Hermes 非流式 e2e 通过；mock 回归保留 |
 | P0b | 通过 | 三客户端真实流式通过；协议兼容修复已入单测 |
-| P1 | 完成 | 556 条真实 shadow；P95 315ms 未达 active 门槛，D-1 按设计保持 `off` |
-| P2 | 完成（闸保持 shadow） | 真实三列表已落盘；校准 MAPE 116.9% 不达标，按设计成本闸保持 shadow；false deny 无拒绝样本 |
+| P1 | 完成（G3 未达 active 门槛） | 556 条真实 shadow；P95 315ms > 300ms，D-1 按门禁保持 `off` |
+| P2 | 完成（G4 未达校准门槛） | 真实三列表已落盘；MAPE 116.9% > 25%，成本闸按门禁保持 `shadow`；false deny 无拒绝样本 |
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；真实客户端与 shadow 数据已验证 |
 | P4 | 范围外（TBD） | 计划本身把 P4 定义为不排期；入口条件（≥4 周 dogfood、真实客户端无回归、管理面可定位坏决策）未满足，本次不实现、不验收 |
 
@@ -738,8 +738,8 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | G0 协议 spike | 通过 | 19 fixtures、三协议请求字段 100%；Hermes/Codex/Claude Code 真实请求通过 |
 | G1 P0a 切片 | 通过 | 非流式 e2e（真实 Hermes + mock 回归）、快照投影一致、头/账本一致 |
 | G2 P0b 流式 | 通过 | 语义提交、SSE 顺序、断连取消、三协议端到端 |
-| G3 判官/棘轮 | 通过（D-1 保持 off） | latch 行为测试；556 条 shadow；P95 315ms > 300ms，按设计不 active |
-| G4 成本闸/评测 | 通过（闸保持 shadow） | 33 任务三列表落盘；校准 MAPE 116.9% > 25%，按设计不 active |
+| G3 判官/棘轮 | 未达 active 门槛（按门禁保持 off） | latch 行为测试；556 条 shadow；P95 315ms > 300ms |
+| G4 成本闸/评测 | 未达校准门槛（按门禁保持 shadow） | 33 任务三列表落盘；MAPE 116.9% > 25%；false deny 无拒绝样本 |
 | G5 依赖/配置门禁 | 通过 | `check-deps`、`fixtures-check`、`config-only-check` 常绿 |
 
 ### D.3 按设计判定的“未达标”项
