@@ -297,3 +297,33 @@ fn strategy_and_virtual_model_state_use_cas() {
         .expect("vm state");
     assert_eq!(loaded.state["model"], "deepseek");
 }
+
+#[test]
+fn virtual_model_state_is_branch_scoped() {
+    let temp = TempDb::new("branches");
+    let db = temp.db();
+    let session = "e".repeat(64);
+
+    for (branch, model) in [("main", "a"), ("fork", "b")] {
+        let state = VirtualModelState {
+            session_key: session.clone(),
+            branch_id: branch.to_string(),
+            virtual_model_id: "auto".to_string(),
+            state: serde_json::json!({ "model": model }),
+            version: 0,
+        };
+        assert_eq!(
+            strategy::save_virtual_model_state(db, &state).unwrap(),
+            SaveOutcome::Saved { version: 1 }
+        );
+    }
+
+    let main_state = strategy::load_virtual_model_state(db, &session, "main", "auto")
+        .unwrap()
+        .expect("main state");
+    let fork_state = strategy::load_virtual_model_state(db, &session, "fork", "auto")
+        .unwrap()
+        .expect("fork state");
+    assert_eq!(main_state.state["model"], "a");
+    assert_eq!(fork_state.state["model"], "b");
+}

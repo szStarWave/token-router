@@ -549,7 +549,7 @@ cargo xtask fixture-probe
 | P1-9 Escalation 状态机 | 完成 | 四态 + 强档计数 + 硬上限 + 冷却 |
 | P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
 | P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
-| P1-12 无会话键退化 | 部分 | `SessionKeySource::Fallback` + `collision_suspect` 已落账；“每键只 warn 一次”未实现 |
+| P1-12 无会话键退化 | 完成 | `Fallback` + `collision_suspect` 落账；同键只 warn 一次 |
 | P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条），属环境依赖 |
 | P1-14 预算熔断观测 | 部分 | 预算拒绝已入 `judge_calls`；指标在 P2 |
 | P1-15 D-1 决策 | **待数据** | 按设计保持默认 off，shadow 达标后再评估 active |
@@ -592,13 +592,13 @@ cargo xtask fixture-probe
 | P3-6 StickyDispatch | 完成（部分） | Continuation/Retry 复用 previous；`failed` 未跨请求持久化，Retry 只能回退 previous |
 | P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹 |
 | P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
-| P3-9 每 VM state | 部分 | 存储/读取就绪；无 route 插件，内核不写 `virtual_model_states` |
+| P3-9 每 VM state | 部分 | 存储/读取/branch 隔离测试完成；无 route 插件，内核不写 `virtual_model_states`，compaction 保留未实现 |
 | P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
 | P3-12/13 审批 | 部分 | 风险分级 + `approvals` 表 + 控制面记录；**未做实时拦截** |
 | P3-14 信任档位别名 | 未做 | P4 UI 层映射（trial/familiar/trusted） |
 | P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals}`，admin token + 常量时间比较 |
 | P3-16 CLI | 完成（除 capture） | config/replay/shadow-report/judge-test/doctor/eval；`capture` 未做 |
-| P3-18 新模型只改配置 | 结构成立 | 候选/虚拟模型均为配置驱动；未建 CI 断言 |
+| P3-18 新模型只改配置 | 完成（结构性） | 新增候选/虚拟模型仅改配置的 e2e 测试；未建“core diff=0”的 CI 断言 |
 
 **G5 结论**：虚拟模型、sticky/hold、控制面、审批记录完成；审批实时拦截、VM route state 写入、CI 的“core diff = 0”断言未做。
 P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。

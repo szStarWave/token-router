@@ -98,6 +98,8 @@ pub struct Pipeline {
     upstream: HttpUpstream,
     judge: std::sync::Arc<crate::judge::JudgeRuntime>,
     cost_gate: crate::gate::CostGateMode,
+    /// 会话键退化告警去重：每个键只 warn 一次（§8.1）。
+    warned_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Pipeline {
@@ -118,6 +120,7 @@ impl Pipeline {
             upstream,
             judge: std::sync::Arc::new(judge),
             cost_gate,
+            warned_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -151,6 +154,20 @@ impl Pipeline {
 
         let session_input = session::build_input(&request, context.server_session_id.clone());
         let derived = session::derive(&session_input);
+
+        // 退化键只 warn 一次，避免每个请求刷屏（§8.1 禁止静默失效）。
+        if derived.collision_suspect {
+            let mut warned = self
+                .warned_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if warned.insert(derived.key.clone()) {
+                eprintln!(
+                    "session key fallback for {}: content too sparse, per-turn state is degraded",
+                    derived.key
+                );
+            }
+        }
 
         let facts =
             store::sessions::load(&self.db, &derived.key, &branch_id)?.unwrap_or_else(|| {

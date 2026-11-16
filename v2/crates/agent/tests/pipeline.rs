@@ -341,6 +341,74 @@ async fn responses_success_stores_protocol_state() {
     mock.shutdown();
 }
 
+#[tokio::test]
+async fn new_virtual_model_only_needs_config() {
+    let mock = MockUpstream::start(vec![Reply::ok("premium answer")]).await;
+    let toml = format!(
+        r#"
+schema_version = 1
+
+[profiles.default]
+mode = "cascade"
+strength_order = ["local", "cloud"]
+
+[[candidates]]
+id = "weak"
+tier = "local"
+strength = 10
+provider = "openai"
+base_url = "{base}"
+model = "physical-weak"
+window = 32768
+input = ["text"]
+
+[[candidates]]
+id = "strong"
+tier = "cloud"
+strength = 80
+provider = "openai"
+base_url = "{base}"
+model = "physical-strong"
+window = 128000
+input = ["text"]
+
+[[virtual_models]]
+provider = "router"
+id = "auto"
+name = "Auto"
+profile = "default"
+candidate_pool = ["weak", "strong"]
+
+# 新增虚拟模型只改配置：单候选池 + 固定 profile。
+[[virtual_models]]
+provider = "router"
+id = "premium"
+name = "Premium"
+profile = "default"
+candidate_pool = ["strong"]
+"#,
+        base = mock.base_url()
+    );
+    let catalog = ConfigFile::parse(&toml)
+        .expect("parse")
+        .into_catalog()
+        .expect("catalog");
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog);
+
+    let mut request = chat_request("hi");
+    request.meta.virtual_model = Some("premium".to_string());
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("handle");
+
+    assert_eq!(result.headers.selected_model, "premium");
+    assert_eq!(result.headers.served_model, "physical-strong");
+
+    mock.shutdown();
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
