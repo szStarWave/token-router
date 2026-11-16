@@ -570,7 +570,7 @@ cargo xtask fixture-probe
 | P2-6 CompetenceGuard | 未做 | 设计里标为可选 |
 | P2-7 评测集与 checker | 完成（底座） | `v2/tests/eval/tasks.json` + `tr-cli eval`；checker 为 contains，非 LLM 判成功 |
 | P2-8 三列对照表 | **未产出** | 需要真实上游；mock 上游的对照没有意义 |
-| P2-9 成本闸校准 | **未执行** | 需要真实流量与价格数据（MAPE/false deny） |
+| P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
 | P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
 | P2-12 profile 版本化 | 完成 | `config_digest` + `profile.revision` 入账 |
@@ -620,7 +620,7 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 三列对照、P2-9 成本闸校准；P2-6 `CompetenceGuard` 为设计可选；P4 入口条件未满足。
+**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 三列对照、P2-9 真实观测集校准（工具已就绪）；P2-6 `CompetenceGuard` 为设计可选；P4 入口条件未满足。
 
 ### 总体状态（截至本次收口）
 
@@ -634,4 +634,4 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 | P3 | 完成 | 审批实时拦截、VM route state、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：197 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：200 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

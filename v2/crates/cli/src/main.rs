@@ -54,10 +54,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// 任务集评测（成功率/成本/时延）
+    /// 任务集评测（成功率/成本/时延）；`eval calibrate` 校准成本闸（P2-9）
     Eval {
+        /// 可选子模式：`calibrate` 读观测集校准成本闸，不跑任务
+        #[arg(value_name = "MODE")]
+        mode: Option<String>,
+        /// 校准观测集（JSON 数组，或 `{"observations": [...]}`）
         #[arg(long)]
-        config: PathBuf,
+        observations: Option<PathBuf>,
+        /// MAPE 上限
+        #[arg(long, default_value_t = 0.25)]
+        mape_max: f64,
+        /// false deny 上限
+        #[arg(long, default_value_t = 0.05)]
+        false_deny_max: f64,
+        /// 最少样本数；不足则不得 active
+        #[arg(long, default_value_t = 30)]
+        min_samples: usize,
+        #[arg(long)]
+        config: Option<PathBuf>,
         /// 任务集 JSON
         #[arg(long, default_value = "tests/eval/tasks.json")]
         tasks: PathBuf,
@@ -175,11 +190,23 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Doctor { config, db, json } => run_doctor(config, db, json),
         Command::Eval {
+            mode,
+            observations,
+            mape_max,
+            false_deny_max,
+            min_samples,
             config,
             tasks,
             json,
             db,
-        } => run_eval(config, tasks, json, db),
+        } => {
+            if mode.as_deref() == Some("calibrate") {
+                let path = observations.ok_or("eval calibrate 需要 --observations <path>")?;
+                return run_calibrate(&path, mape_max, false_deny_max, min_samples, json);
+            }
+            let config = config.ok_or("eval 需要 --config <path>")?;
+            run_eval(config, tasks, json, db)
+        }
     }
 }
 
@@ -444,4 +471,210 @@ fn run_eval(
         }
     }
     Ok(())
+}
+
+/// 成本闸校准观测（P2-9）。单位统一为 micros，币种由调用方保证一致。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CalibrationObservation {
+    #[serde(default)]
+    estimated_delta_micros: f64,
+    #[serde(default)]
+    actual_delta_micros: f64,
+    #[serde(default)]
+    denied: bool,
+    /// 被拒绝的切换事后是否本会成功（false deny 的判据）。
+    #[serde(default)]
+    would_have_succeeded: bool,
+}
+
+/// 校准报告。
+#[derive(Debug, Clone, PartialEq)]
+struct CalibrationReport {
+    samples: usize,
+    mape: Option<f64>,
+    denied: usize,
+    false_denies: usize,
+    false_deny_rate: Option<f64>,
+    mape_max: f64,
+    false_deny_max: f64,
+    min_samples: usize,
+    passed: bool,
+}
+
+impl CalibrationReport {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "samples": self.samples,
+            "mape": self.mape,
+            "denied": self.denied,
+            "false_denies": self.false_denies,
+            "false_deny_rate": self.false_deny_rate,
+            "thresholds": {
+                "mape_max": self.mape_max,
+                "false_deny_max": self.false_deny_max,
+                "min_samples": self.min_samples,
+            },
+            "passed": self.passed,
+            // 不达标时成本闸保持 shadow（§9.4）。
+            "cost_gate_mode": if self.passed { "active_allowed" } else { "shadow" },
+        })
+    }
+}
+
+/// 计算 MAPE 与 false deny。真实 delta 为 0 的样本不参与 MAPE（分母无意义）。
+fn calibrate(
+    observations: &[CalibrationObservation],
+    mape_max: f64,
+    false_deny_max: f64,
+    min_samples: usize,
+) -> CalibrationReport {
+    let comparable: Vec<f64> = observations
+        .iter()
+        .filter(|observation| observation.actual_delta_micros.abs() > f64::EPSILON)
+        .map(|observation| {
+            (observation.estimated_delta_micros - observation.actual_delta_micros).abs()
+                / observation.actual_delta_micros.abs()
+        })
+        .collect();
+    let mape = if comparable.is_empty() {
+        None
+    } else {
+        Some(comparable.iter().sum::<f64>() / comparable.len() as f64)
+    };
+
+    let denied: Vec<&CalibrationObservation> = observations
+        .iter()
+        .filter(|observation| observation.denied)
+        .collect();
+    let false_denies = denied
+        .iter()
+        .filter(|observation| observation.would_have_succeeded)
+        .count();
+    let false_deny_rate = if denied.is_empty() {
+        None
+    } else {
+        Some(false_denies as f64 / denied.len() as f64)
+    };
+
+    let passed = observations.len() >= min_samples
+        && mape.is_some_and(|mape| mape <= mape_max)
+        && false_deny_rate.unwrap_or(0.0) <= false_deny_max;
+
+    CalibrationReport {
+        samples: observations.len(),
+        mape,
+        denied: denied.len(),
+        false_denies,
+        false_deny_rate,
+        mape_max,
+        false_deny_max,
+        min_samples,
+        passed,
+    }
+}
+
+fn run_calibrate(
+    path: &std::path::Path,
+    mape_max: f64,
+    false_deny_max: f64,
+    min_samples: usize,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let items = match value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(mut object) => object
+            .remove("observations")
+            .and_then(|value| value.as_array().cloned())
+            .ok_or("观测集缺少 observations 数组")?,
+        _ => return Err("观测集必须是数组或 {observations: [...]}".into()),
+    };
+    let observations: Vec<CalibrationObservation> = items
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?;
+
+    let report = calibrate(&observations, mape_max, false_deny_max, min_samples);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+    } else {
+        println!(
+            "calibrate: samples={} mape={:?} false_deny={:?} passed={} gate={}",
+            report.samples,
+            report.mape,
+            report.false_deny_rate,
+            report.passed,
+            if report.passed {
+                "active_allowed"
+            } else {
+                "shadow"
+            }
+        );
+        if report.samples < report.min_samples {
+            println!(
+                "  insufficient samples: need >= {}, got {}",
+                report.min_samples, report.samples
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observation(
+        estimated: f64,
+        actual: f64,
+        denied: bool,
+        would_have_succeeded: bool,
+    ) -> CalibrationObservation {
+        CalibrationObservation {
+            estimated_delta_micros: estimated,
+            actual_delta_micros: actual,
+            denied,
+            would_have_succeeded,
+        }
+    }
+
+    #[test]
+    fn calibration_passes_within_thresholds() {
+        let observations: Vec<_> = (0..30)
+            .map(|index| observation(100.0 + index as f64, 110.0 + index as f64, false, false))
+            .collect();
+        let report = calibrate(&observations, 0.25, 0.05, 30);
+        assert!(report.passed, "{report:?}");
+        assert!(report.mape.expect("mape") < 0.25);
+        assert_eq!(report.denied, 0);
+    }
+
+    #[test]
+    fn calibration_fails_on_false_deny_and_low_samples() {
+        let observations = vec![
+            observation(100.0, 100.0, true, true),
+            observation(100.0, 100.0, true, false),
+        ];
+        let report = calibrate(&observations, 0.25, 0.05, 30);
+        assert!(!report.passed);
+        assert_eq!(report.false_deny_rate, Some(0.5));
+        assert_eq!(report.samples, 2);
+
+        // 足够样本但 false deny 超标也不通过。
+        let mut many: Vec<_> = (0..30)
+            .map(|index| observation(100.0 + index as f64, 110.0 + index as f64, false, false))
+            .collect();
+        many.push(observation(100.0, 100.0, true, true));
+        let report = calibrate(&many, 0.25, 0.05, 30);
+        assert!(!report.passed);
+    }
+
+    #[test]
+    fn zero_actual_delta_is_excluded_from_mape() {
+        let observations = vec![observation(50.0, 0.0, false, false)];
+        let report = calibrate(&observations, 0.25, 0.05, 1);
+        assert_eq!(report.mape, None);
+        assert!(!report.passed, "no comparable samples cannot calibrate");
+    }
 }
