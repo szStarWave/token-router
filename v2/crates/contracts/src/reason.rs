@@ -32,6 +32,7 @@ reason_kinds! {
     ModelInputUnsupported => "MODEL_INPUT_UNSUPPORTED",
     VirtualModelMissing => "VIRTUAL_MODEL_MISSING",
     VirtualModelChainRejected => "VIRTUAL_MODEL_CHAIN_REJECTED",
+    TrustTierUnknown => "TRUST_TIER_UNKNOWN",
     // 策略贡献
     BaselineOrder => "BASELINE_ORDER",
     // Plan 校验
@@ -64,6 +65,9 @@ reason_kinds! {
     EscalationCooldown => "ESCALATION_COOLDOWN",
     ClassifyPrefer => "CLASSIFY_PREFER",
     CoreFallback => "CORE_FALLBACK",
+    // 审批（HITL）
+    ApprovalRequired => "APPROVAL_REQUIRED",
+    ApprovalDenied => "APPROVAL_DENIED",
     // 状态/协议
     StateCasConflict => "STATE_CAS_CONFLICT",
     StateCasRetry => "STATE_CAS_RETRY",

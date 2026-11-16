@@ -423,6 +423,8 @@ pub struct Plan {
     pub reason_codes: Vec<ReasonCode>,
     /// 决策阶段暂存的状态变更，与 `on_outcome` 一起原子提交。
     pub state_updates: Vec<StateUpdate>,
+    /// 每条策略贡献及其归属（P2-11）：账本与 `decision` span 据此追到单个策略。
+    pub contributions: Vec<PlanContributionRecord>,
 }
 
 impl Plan {
@@ -472,6 +474,31 @@ pub enum PlanContribution {
     Note {
         reason: ReasonCode,
     },
+}
+
+/// 单条贡献的归属记录：哪个策略、什么优先级、贡献了什么。
+///
+/// 策略本身不感知 `priority`（由 `decide` 注入）；这里只是把合并时的上下文固化，
+/// 使一次请求的最终 Plan 可以逐条回溯到来源（P2-11）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanContributionRecord {
+    pub strategy_id: StrategyId,
+    pub priority: u8,
+    pub contribution: PlanContribution,
+}
+
+impl PlanContributionRecord {
+    /// 贡献对应的理由码（用于 span/日志的紧凑展示）。
+    pub fn reason(&self) -> &ReasonCode {
+        match &self.contribution {
+            PlanContribution::Filter { reason, .. }
+            | PlanContribution::Prefer { reason, .. }
+            | PlanContribution::Pin { reason, .. }
+            | PlanContribution::Mode { reason, .. }
+            | PlanContribution::CacheLoss { reason, .. }
+            | PlanContribution::Note { reason } => reason,
+        }
+    }
 }
 
 /// 判官请求：策略只说“需要”，由 `agent` 统一预算与去重。

@@ -51,7 +51,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
         &["tr-contracts", "tr-proto", "tr-core", "tr-agent"],
     ),
     ("mock-upstream", &[]),
-    ("xtask", &["tr-proto"]),
+    ("xtask", &["tr-proto", "tr-agent"]),
 ];
 
 /// `tr-core` 禁止出现的外部依赖：一旦出现就失去“纯函数可回放”。
@@ -67,6 +67,7 @@ fn main() {
     let code = match task.as_str() {
         "check-deps" => check_deps(),
         "fixtures-check" => fixtures_check(),
+        "config-only-check" => config_only_check(),
         "help" | "--help" | "-h" => {
             print_help();
             0
@@ -86,6 +87,7 @@ fn print_help() {
          \x20 check-deps      依赖方向门禁（§3.2）\n\
          \x20 fixtures-check  S0 协议覆盖 + 流式事件门禁（默认阈值 95%）\n\
          \x20                 --fixtures <dir> --report <path> --min-coverage <0..1>\n\
+         \x20 config-only-check  P3-18：只改 TOML 新增候选/虚拟模型，core diff = 0\n\
          \x20 help            显示本帮助"
     );
 }
@@ -435,4 +437,180 @@ fn write_gap_report(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, out)
+}
+
+/// P3-18：证明“新增候选/虚拟模型只改 TOML，`core` diff = 0”。
+///
+/// 做法：
+/// 1. 对 `crates/core/src` 与 `crates/contracts/src` 取内容指纹；
+/// 2. 在示例配置上**纯文本追加**一个新候选与一个新虚拟模型；
+/// 3. 用真实配置加载器校验结果；
+/// 4. 重新取指纹，必须与步骤 1 相同（检查过程没有改内核）。
+fn config_only_check() -> i32 {
+    let root = workspace_root();
+    let example = root.join("example/config.minimal.toml");
+    let baseline = match std::fs::read_to_string(&example) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("failed to read {}: {error}", example.display());
+            return 2;
+        }
+    };
+
+    let before = match kernel_digest(&root) {
+        Ok(digest) => digest,
+        Err(error) => {
+            eprintln!("failed to hash kernel sources: {error}");
+            return 2;
+        }
+    };
+
+    let baseline_catalog =
+        match tr_agent::config::ConfigFile::parse(&baseline).and_then(|file| file.into_catalog()) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                eprintln!("example config is invalid: {error}");
+                return 1;
+            }
+        };
+    let (base_candidates, base_models) = (
+        baseline_catalog.candidates.len(),
+        baseline_catalog.virtual_models.len(),
+    );
+
+    // 纯配置追加：不碰 Rust 源码。
+    let additions = r#"
+
+# config-only-check 追加：一个新候选 + 一个新虚拟模型。
+[[candidates]]
+id = "config-only-candidate"
+tier = "cloud"
+strength = 90
+provider = "openai"
+base_url = "https://config-only.example.com/v1"
+model = "config-only-model"
+window = 200000
+input = ["text"]
+
+[[virtual_models]]
+provider = "router"
+id = "config-only"
+name = "Config Only"
+profile = "default"
+candidate_pool = ["config-only-candidate"]
+"#;
+    let toml = format!("{baseline}{additions}");
+
+    let temp = std::env::temp_dir().join(format!(
+        "tr-config-only-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    if let Err(error) = std::fs::write(&temp, &toml) {
+        eprintln!("failed to write temporary config: {error}");
+        return 2;
+    }
+
+    let catalog = match tr_agent::config::load(&temp) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            eprintln!("config-only additions were rejected: {error}");
+            return 1;
+        }
+    };
+    let _ = std::fs::remove_file(&temp);
+
+    let mut failures = Vec::new();
+    if catalog.candidates.len() != base_candidates + 1 {
+        failures.push(format!(
+            "expected {} candidates after addition, got {}",
+            base_candidates + 1,
+            catalog.candidates.len()
+        ));
+    }
+    if catalog.virtual_models.len() != base_models + 1 {
+        failures.push(format!(
+            "expected {} virtual models after addition, got {}",
+            base_models + 1,
+            catalog.virtual_models.len()
+        ));
+    }
+    match catalog.candidate("config-only-candidate") {
+        Some(candidate) if candidate.upstream.model == "config-only-model" => {}
+        _ => failures.push("added candidate did not resolve".to_string()),
+    }
+    match catalog.virtual_model("config-only") {
+        Some(model)
+            if model.candidate_pool == vec!["config-only-candidate".to_string()]
+                && catalog.profile_for(model).is_some() => {}
+        _ => failures.push("added virtual model did not resolve to a profile".to_string()),
+    }
+
+    let after = match kernel_digest(&root) {
+        Ok(digest) => digest,
+        Err(error) => {
+            eprintln!("failed to hash kernel sources: {error}");
+            return 2;
+        }
+    };
+    if before != after {
+        failures.push("kernel sources changed during config-only check".to_string());
+    }
+
+    if failures.is_empty() {
+        println!(
+            "config-only-check: core diff = 0; candidates {base_candidates} -> {}, virtual models {base_models} -> {} (TOML only)",
+            base_candidates + 1,
+            base_models + 1
+        );
+        0
+    } else {
+        eprintln!("config-only-check FAILED:");
+        for failure in failures {
+            eprintln!("- {failure}");
+        }
+        1
+    }
+}
+
+/// `crates/core/src` + `crates/contracts/src` 的内容指纹（路径 + 字节）。
+fn kernel_digest(root: &Path) -> std::io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut files = Vec::new();
+    for relative in ["crates/core/src", "crates/contracts/src"] {
+        collect_files(&root.join(relative), &mut files)?;
+    }
+    files.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for file in files {
+        let relative = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .to_string();
+        relative.hash(&mut hasher);
+        std::fs::read(&file)?.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
+}
+
+fn collect_files(directory: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files(&path, out)?;
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }

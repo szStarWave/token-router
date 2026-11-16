@@ -40,6 +40,8 @@ jobs:
         run: cargo xtask check-deps
       - name: fixture coverage gate
         run: cargo xtask fixtures-check
+      - name: config-only gate (P3-18)
+        run: cargo xtask config-only-check
       - name: test
         run: cargo test --workspace
 
@@ -59,5 +61,7 @@ jobs:
         run: cargo xtask check-deps
       - name: fixture coverage gate
         run: cargo xtask fixtures-check
+      - name: config-only gate (P3-18)
+        run: cargo xtask config-only-check
       - name: test
         run: cargo test --workspace

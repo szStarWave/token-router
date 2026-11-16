@@ -45,6 +45,10 @@ pub struct Catalog {
     pub judge: JudgeSettings,
     /// 成本闸模式（P2 默认 shadow）。
     pub cost_gate: crate::gate::CostGateMode,
+    /// 审批实时拦截（P3 默认 off）。
+    pub approvals: crate::approval::ApprovalSettings,
+    /// 信任档位别名 → profile（P3-14）。只换别名，不改虚拟模型与内核。
+    pub trust_tiers: BTreeMap<String, ProfileId>,
     /// 规范化配置的 SHA-256，写入账本与快照。
     pub config_digest: String,
 }
@@ -69,6 +73,24 @@ impl Catalog {
 
     pub fn profile_for(&self, virtual_model: &VirtualModel) -> Option<&ProfileConfig> {
         self.profiles.get(&virtual_model.profile)
+    }
+
+    /// 按信任档位别名解析 profile（P3-14）。
+    ///
+    /// 未知/未配置别名回退虚拟模型自己的 profile；返回 `(profile, alias_applied)`。
+    pub fn profile_for_trust<'a>(
+        &'a self,
+        virtual_model: &'a VirtualModel,
+        trust_tier: Option<&str>,
+    ) -> Option<(&'a ProfileConfig, bool)> {
+        if let Some(alias) = trust_tier
+            && let Some(profile_id) = self.trust_tiers.get(alias)
+            && let Some(profile) = self.profiles.get(profile_id)
+        {
+            return Some((profile, true));
+        }
+        self.profile_for(virtual_model)
+            .map(|profile| (profile, false))
     }
 }
 
@@ -115,6 +137,37 @@ pub struct ConfigFile {
     pub judge: JudgeFile,
     #[serde(default)]
     pub cost_gate: CostGateFile,
+    #[serde(default)]
+    pub approvals: ApprovalFile,
+    /// 信任档位别名（P3-14）：`trial = "profile-id"`。
+    #[serde(default)]
+    pub trust_tiers: BTreeMap<String, ProfileId>,
+}
+
+/// 审批配置（§12）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApprovalFile {
+    /// `off` | `observe` | `enforce`
+    pub mode: String,
+    /// 审批结论有效期（秒）。
+    pub ttl_secs: u64,
+    /// 达到该风险等级才需要审批：`low` | `medium` | `high`。
+    pub min_risk: String,
+    /// `enforce` 下是否 fail-closed（默认 true）。
+    pub fail_closed: bool,
+}
+
+impl Default for ApprovalFile {
+    fn default() -> Self {
+        let settings = crate::approval::ApprovalSettings::default();
+        Self {
+            mode: settings.mode.as_str().to_string(),
+            ttl_secs: settings.ttl_secs,
+            min_risk: settings.min_risk.as_str().to_string(),
+            fail_closed: settings.fail_closed,
+        }
+    }
 }
 
 /// 成本闸配置。
@@ -446,6 +499,29 @@ impl ConfigFile {
                     self.cost_gate.mode
                 ))
             })?;
+        let approval_mode =
+            crate::approval::ApprovalMode::parse(&self.approvals.mode).ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "approvals.mode 只能是 off/observe/enforce，得到 `{}`",
+                    self.approvals.mode
+                ))
+            })?;
+        let min_risk = crate::store::approvals::RiskClass::parse(&self.approvals.min_risk)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "approvals.min_risk 只能是 low/medium/high，得到 `{}`",
+                    self.approvals.min_risk
+                ))
+            })?;
+
+        // 信任档位只做别名：目标 profile 必须存在，否则评审时看到的是“静默不生效”。
+        for (alias, profile_id) in &self.trust_tiers {
+            if !profiles.contains_key(profile_id) {
+                return Err(ConfigError::Invalid(format!(
+                    "trust_tiers.{alias} 引用了不存在的 profile `{profile_id}`"
+                )));
+            }
+        }
 
         Ok(Catalog {
             server: self.server,
@@ -455,6 +531,13 @@ impl ConfigFile {
             virtual_models,
             judge,
             cost_gate,
+            approvals: crate::approval::ApprovalSettings {
+                mode: approval_mode,
+                ttl_secs: self.approvals.ttl_secs,
+                min_risk,
+                fail_closed: self.approvals.fail_closed,
+            },
+            trust_tiers: self.trust_tiers,
             config_digest,
         })
     }
@@ -698,5 +781,36 @@ candidate_pool = ["qwen-local"]
             .into_catalog()
             .expect_err("must reject");
         assert!(error.to_string().contains("inbound_key"), "{error}");
+    }
+
+    #[test]
+    fn trust_tier_alias_resolves_profile() {
+        let toml = format!("{MINIMAL}\n[trust_tiers]\nstrict = \"default\"\n");
+        let catalog = ConfigFile::parse(&toml)
+            .expect("parse")
+            .into_catalog()
+            .expect("catalog");
+        let virtual_model = catalog.virtual_model("auto").expect("vm");
+        let (profile, applied) = catalog
+            .profile_for_trust(virtual_model, Some("strict"))
+            .expect("profile");
+        assert!(applied);
+        assert_eq!(profile.id, "default");
+
+        let (fallback, applied) = catalog
+            .profile_for_trust(virtual_model, Some("unknown"))
+            .expect("fallback");
+        assert!(!applied);
+        assert_eq!(fallback.id, "default");
+    }
+
+    #[test]
+    fn trust_tier_to_missing_profile_is_rejected() {
+        let toml = format!("{MINIMAL}\n[trust_tiers]\nstrict = \"nope\"\n");
+        let error = ConfigFile::parse(&toml)
+            .expect("parse")
+            .into_catalog()
+            .expect_err("must reject");
+        assert!(error.to_string().contains("trust_tiers.strict"), "{error}");
     }
 }

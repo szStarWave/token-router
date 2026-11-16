@@ -23,6 +23,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [workspace.lints.cargo]
 # P0a 阶段部分 crate 只有骨架、依赖已按目标架构声明（依赖方向门禁需要它们）。

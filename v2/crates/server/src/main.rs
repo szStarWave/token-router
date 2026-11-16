@@ -30,6 +30,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let args = Args::parse();
 
     let catalog = config::load(&args.config)?;
@@ -62,4 +63,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("token-router v2 listening on http://{addr}");
     tr_server::serve_router(app, addr).await?;
     Ok(())
+}
+
+/// 初始化 tracing（P2-11）。`RUST_LOG` 优先；默认只开本项目的 info。
+///
+/// 失败（例如外部已安装 subscriber）不影响服务启动。
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("tr_server=info,tr_agent=info,tr_control=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .try_init();
 }

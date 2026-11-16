@@ -87,6 +87,18 @@ pub enum PipelineError {
         message: Option<String>,
         request_id: Uuid,
     },
+    #[error("approval required for tool `{tool}` ({risk_class})")]
+    ApprovalRequired {
+        tool: String,
+        risk_class: String,
+        request_id: Uuid,
+    },
+    #[error("approval denied for tool `{tool}` ({risk_class})")]
+    ApprovalDenied {
+        tool: String,
+        risk_class: String,
+        request_id: Uuid,
+    },
     #[error("store: {0}")]
     Store(#[from] StoreError),
 }
@@ -197,13 +209,14 @@ impl Pipeline {
             .virtual_model(&virtual_model_id)
             .cloned()
             .ok_or_else(|| PipelineError::ModelNotFound(virtual_model_id.clone()))?;
-        let profile = self
+        // 信任档位别名（P3-14）：只解析到配置里已有的 profile，虚拟模型本身不变。
+        let (profile_ref, trust_tier_applied) = self
             .catalog
-            .profile_for(&virtual_model)
-            .cloned()
+            .profile_for_trust(&virtual_model, request.meta.trust_tier.as_deref())
             .ok_or_else(|| {
                 PipelineError::ModelNotFound(format!("profile:{}", virtual_model.profile))
             })?;
+        let profile = profile_ref.clone();
         let thinking_level = request
             .meta
             .thinking_level
@@ -266,7 +279,7 @@ impl Pipeline {
             previous: facts.last_successful_dispatch.clone(),
             failed: None,
             context_hold: facts.context_holds.get(&virtual_model.id).cloned(),
-            router_state,
+            router_state: router_state.clone(),
         };
 
         // 两阶段：draft 产出 Plan 与判官请求；active 模式下 refine 覆盖 Plan。
@@ -274,6 +287,15 @@ impl Pipeline {
         let plan_revision = plan_revision(&group_digest);
         let strategies = strategy_set(&virtual_model);
         let (mut plan, requests) = tr_core::decide_and_collect(&snapshot, &strategies);
+        // 未知档位不报错（客户端可能先于配置升级），回退虚拟模型 profile 并留下审计理由。
+        if let Some(tier) = request.meta.trust_tier.as_deref()
+            && !trust_tier_applied
+        {
+            plan.reason_codes.push(ReasonCode::with_detail(
+                ReasonCodeKind::TrustTierUnknown,
+                tier,
+            ));
+        }
         let plan_uuid = Uuid::new_v4().simple().to_string();
         let plan_id = format!("plan-{}", &plan_uuid[..12]);
 
@@ -395,6 +417,7 @@ impl Pipeline {
                     now_unix,
                     judge: Some(plan.judge.clone()),
                     routing_cost: routing_cost.clone(),
+                    contributions: plan.contributions.clone(),
                 },
                 Vec::new(),
                 None,
@@ -402,10 +425,108 @@ impl Pipeline {
                 Some(503),
                 0,
             );
-            store::commit(&self.db, None, &[], &ledger)?;
+            store::commit(&self.db, None, &[], &ledger, None)?;
             return Err(PipelineError::NoEligibleCandidate {
                 plan_id,
                 reason_codes: plan.reason_codes,
+            });
+        }
+
+        // 审批实时拦截（P3-12/13）：只在本地判定，不访问上游、不进入判官 deadline。
+        let approval = crate::approval::evaluate(
+            &self.db,
+            &self.catalog.approvals,
+            &derived.key,
+            &request,
+            now_unix,
+        )?;
+        let pending = match &approval {
+            crate::approval::ApprovalOutcome::Clear => None,
+            crate::approval::ApprovalOutcome::Required(tool) => {
+                plan.reason_codes.push(ReasonCode::with_detail(
+                    ReasonCodeKind::ApprovalRequired,
+                    format!("{}:{}", tool.tool_name, tool.risk.as_str()),
+                ));
+                Some((tool.clone(), 428u16, false))
+            }
+            crate::approval::ApprovalOutcome::Denied(tool) => {
+                plan.reason_codes.push(ReasonCode::with_detail(
+                    ReasonCodeKind::ApprovalDenied,
+                    format!("{}:{}", tool.tool_name, tool.risk.as_str()),
+                ));
+                Some((tool.clone(), 403u16, true))
+            }
+        };
+
+        // observe 只记录；enforce 且 fail_closed 才拒绝。审批与路由不共享预算池。
+        if let Some((tool, status, denied)) = pending
+            && self.catalog.approvals.mode == crate::approval::ApprovalMode::Enforce
+            && self.catalog.approvals.fail_closed
+        {
+            let ledger = build_ledger(
+                &LedgerInput {
+                    plan_id: plan_id.clone(),
+                    session_key: derived.key.clone(),
+                    branch_id: branch_id.clone(),
+                    task_id: task_id.clone(),
+                    session_key_source: derived.source,
+                    collision_suspect: derived.collision_suspect,
+                    ingress_protocol: request.meta.ingress_protocol,
+                    virtual_model_id: virtual_model.id.clone(),
+                    thinking_level: thinking_level.clone(),
+                    request_reason,
+                    plan_mode: plan.mode,
+                    preference: plan.preference_ids().into_iter().cloned().collect(),
+                    failover: plan
+                        .failover
+                        .iter()
+                        .map(|slot| slot.candidate_id.clone())
+                        .collect(),
+                    dispatch_source: plan.dispatch_source,
+                    reason_codes: plan.reason_codes.clone(),
+                    profile_revision: profile.revision.clone(),
+                    config_digest: self.catalog.config_digest.clone(),
+                    now_unix,
+                    judge: Some(plan.judge.clone()),
+                    routing_cost: routing_cost.clone(),
+                    contributions: plan.contributions.clone(),
+                },
+                Vec::new(),
+                None,
+                OutcomeKind::Rejected,
+                Some(status),
+                0,
+            );
+            let request_id = ledger.request_id;
+            if !denied {
+                // 记录“已拦截、等待人工”；pending 不是结论，不会让后续请求放行。
+                let _ = store::approvals::insert(
+                    &self.db,
+                    &store::approvals::ApprovalRecord {
+                        request_id: request_id.to_string(),
+                        session_key: Some(derived.key.clone()),
+                        tool_name: tool.tool_name.clone(),
+                        risk_class: tool.risk.as_str().to_string(),
+                        decision: "pending".to_string(),
+                        operator: None,
+                        wait_ms: None,
+                        created_at: now_unix,
+                    },
+                );
+            }
+            store::commit(&self.db, None, &[], &ledger, None)?;
+            return Err(if denied {
+                PipelineError::ApprovalDenied {
+                    tool: tool.tool_name,
+                    risk_class: tool.risk.as_str().to_string(),
+                    request_id,
+                }
+            } else {
+                PipelineError::ApprovalRequired {
+                    tool: tool.tool_name,
+                    risk_class: tool.risk.as_str().to_string(),
+                    request_id,
+                }
             });
         }
 
@@ -431,6 +552,7 @@ impl Pipeline {
             group_digest,
             plan_revision,
             routing_cost,
+            router_state,
         })
     }
 
@@ -529,6 +651,8 @@ impl Pipeline {
     ) -> Result<PipelineResponse, PipelineError> {
         let started = Instant::now();
         let prepared = self.prepare(request, context).await?;
+        let span = decision_span(&prepared);
+        tracing::info!(parent: &span, "plan");
 
         let mut attempts: Vec<AttemptRecord> = Vec::new();
         let mut breakers: BTreeMap<CandidateId, BreakerState> = BTreeMap::new();
@@ -585,8 +709,14 @@ impl Pipeline {
             );
             let breakers: Vec<_> = breakers.into_iter().collect();
             let request_id = ledger.request_id;
-            store::commit(&self.db, None, &breakers, &ledger)?;
+            store::commit(&self.db, None, &breakers, &ledger, None)?;
             persist_state_updates(&self.db, &prepared);
+            tracing::info!(
+                parent: &span,
+                outcome = "upstream_error",
+                error_class = %failure.class.as_str(),
+                attempts = ledger.attempts.len(),
+            );
             return Err(PipelineError::Upstream {
                 class: failure.class,
                 status: failure.status,
@@ -611,8 +741,15 @@ impl Pipeline {
         );
 
         let next_facts = prepared.updated_facts(&candidate, &slot, usage);
+        let route_state = prepared.next_route_state(&candidate, &slot, ledger.switches);
         let breakers: Vec<_> = breakers.into_iter().collect();
-        let session_outcome = store::commit(&self.db, Some(&next_facts), &breakers, &ledger)?;
+        let session_outcome = store::commit(
+            &self.db,
+            Some(&next_facts),
+            &breakers,
+            &ledger,
+            route_state.as_ref(),
+        )?;
         if matches!(session_outcome, Some(SaveOutcome::Conflict)) {
             store::ledger::replace_reason_codes(
                 &self.db,
@@ -626,6 +763,15 @@ impl Pipeline {
         persist_protocol_state(&self.db, &prepared, &response);
         persist_state_updates(&self.db, &prepared);
         persist_shadow(&self.db, &prepared, ledger.request_id);
+        tracing::info!(
+            parent: &span,
+            outcome = "success",
+            served = %candidate.id,
+            physical = %candidate.upstream.model,
+            switches = ledger.switches,
+            input_tokens = ledger.input_tokens,
+            output_tokens = ledger.output_tokens,
+        );
 
         Ok(PipelineResponse {
             response,
@@ -644,6 +790,8 @@ impl Pipeline {
     ) -> Result<StreamingResponse, PipelineError> {
         let started = Instant::now();
         let prepared = self.prepare(request, context).await?;
+        let span = decision_span(&prepared);
+        tracing::info!(parent: &span, "plan");
         let health = store::health::load(&self.db)?;
 
         let mut attempts: Vec<AttemptRecord> = Vec::new();
@@ -711,6 +859,15 @@ impl Pipeline {
                         prepared.plan.reason_codes.as_slice(),
                     );
                     let (tx, out_rx) = mpsc::channel(64);
+                    let switches = attempts.len().saturating_sub(1);
+                    tracing::info!(
+                        parent: &span,
+                        outcome = "stream_committed",
+                        served = %candidate.id,
+                        physical = %candidate.upstream.model,
+                        switches,
+                        ttft_ms,
+                    );
 
                     let db = self.db.clone();
                     let task_prepared = prepared;
@@ -799,8 +956,14 @@ impl Pipeline {
         );
         let breakers: Vec<_> = breakers.into_iter().collect();
         let request_id = ledger.request_id;
-        store::commit(&self.db, None, &breakers, &ledger)?;
+        store::commit(&self.db, None, &breakers, &ledger, None)?;
         persist_state_updates(&self.db, &prepared);
+        tracing::info!(
+            parent: &span,
+            outcome = "upstream_error",
+            error_class = %failure.class.as_str(),
+            attempts = ledger.attempts.len(),
+        );
         Err(PipelineError::Upstream {
             class: failure.class,
             status: failure.status,
@@ -834,6 +997,8 @@ struct Prepared {
     group_digest: String,
     plan_revision: u64,
     routing_cost: Option<Cost>,
+    /// 决策时读到的 route state（P3-9）：成功后据此写回新版本。
+    router_state: Option<tr_contracts::VirtualModelState>,
 }
 
 /// shadow 模式记录：判官建议 vs 内核结论。
@@ -883,6 +1048,7 @@ impl Prepared {
             now_unix: self.now_unix,
             judge: Some(self.plan.judge.clone()),
             routing_cost: self.routing_cost.clone(),
+            contributions: self.plan.contributions.clone(),
         }
     }
 
@@ -932,6 +1098,31 @@ impl Prepared {
         facts
     }
 
+    /// 成功派发后的 route state（P3-9）：写审计历史，不回头影响本轮 Plan。
+    fn next_route_state(
+        &self,
+        candidate: &Candidate,
+        slot: &Slot,
+        switches: u32,
+    ) -> Option<tr_contracts::VirtualModelState> {
+        crate::route_state::next_state(
+            self.router_state.as_ref(),
+            &self.session_key,
+            &self.branch_id,
+            &self.virtual_model.id,
+            crate::route_state::RouteStep {
+                candidate_id: candidate.id.clone(),
+                physical_model: candidate.upstream.model.clone(),
+                provider: format!("{:?}", candidate.upstream.provider),
+                thinking_level: slot.thinking_level.clone(),
+                request_reason: self.request_reason,
+                dispatch_source: self.plan.dispatch_source,
+                switches,
+                at: self.now_unix,
+            },
+        )
+    }
+
     fn headers(
         &self,
         candidate: &Candidate,
@@ -956,6 +1147,41 @@ impl Prepared {
             judge: "off",
         }
     }
+}
+
+/// `decision` span（P2-11）：一次请求的所有策略贡献、理由码与最终派发。
+///
+/// 不进入用户错误路径：span 只是观测，任何字段缺失都不影响决策。
+fn decision_span(prepared: &Prepared) -> tracing::Span {
+    let contributions: Vec<String> = prepared
+        .plan
+        .contributions
+        .iter()
+        .map(|record| format!("{}:{}", record.strategy_id, record.reason().code.as_str()))
+        .collect();
+    let reason_codes: Vec<&str> = prepared
+        .plan
+        .reason_codes
+        .iter()
+        .map(|reason| reason.code.as_str())
+        .collect();
+    let preference: Vec<&str> = prepared
+        .plan
+        .preference
+        .iter()
+        .map(|slot| slot.candidate_id.as_str())
+        .collect();
+    tracing::info_span!(
+        "decision",
+        plan_id = %prepared.plan_id,
+        session_key = %prepared.session_key,
+        virtual_model = %prepared.virtual_model.id,
+        request_reason = %prepared.request_reason.as_str(),
+        mode = %prepared.plan.mode.as_str(),
+        preference = ?preference,
+        reason_codes = ?reason_codes,
+        contributions = ?contributions,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,8 +1300,17 @@ async fn forward_stream(
     } else {
         None
     };
+    let route_state = facts
+        .as_ref()
+        .and_then(|_| prepared.next_route_state(&candidate, &slot, ledger.switches));
     let breakers: Vec<_> = breakers.into_iter().collect();
-    if let Err(error) = store::commit(&db, facts.as_ref(), &breakers, &ledger) {
+    if let Err(error) = store::commit(
+        &db,
+        facts.as_ref(),
+        &breakers,
+        &ledger,
+        route_state.as_ref(),
+    ) {
         eprintln!(
             "stream ledger commit failed plan_id={}: {error}",
             ledger.plan_id
@@ -1225,6 +1460,7 @@ struct LedgerInput {
     now_unix: u64,
     judge: Option<tr_contracts::JudgeTrace>,
     routing_cost: Option<Cost>,
+    contributions: Vec<tr_contracts::PlanContributionRecord>,
 }
 
 struct Served {
@@ -1314,6 +1550,7 @@ fn build_ledger(
             .map(u64::from),
         attempts,
         judge: input.judge.clone(),
+        contributions: input.contributions.clone(),
         answer_cost,
         routing_cost,
         cost_equiv,

@@ -147,8 +147,16 @@ pub fn save_virtual_model_state(
     db: &Db,
     state: &VirtualModelState,
 ) -> Result<SaveOutcome, StoreError> {
-    let state_json = serde_json::to_string(&state.state)?;
     let connection = db.write();
+    save_virtual_model_state_with(&connection, state)
+}
+
+/// 事务内版本（`commit` 使用）：与会话/账本同事务写入。
+pub(crate) fn save_virtual_model_state_with(
+    connection: &rusqlite::Connection,
+    state: &VirtualModelState,
+) -> Result<SaveOutcome, StoreError> {
+    let state_json = serde_json::to_string(&state.state)?;
 
     if state.version == 0 {
         let inserted = connection.execute(

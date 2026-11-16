@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::store::StoreError;
 
 /// 按序号应用的迁移；index + 1 == version。
-pub(crate) const MIGRATIONS: &[&str] = &[M1_BASELINE, M2_LEDGER_JUDGE];
+pub(crate) const MIGRATIONS: &[&str] = &[M1_BASELINE, M2_LEDGER_JUDGE, M3_LEDGER_CONTRIBUTIONS];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
@@ -234,3 +234,6 @@ CREATE TABLE approvals (
 
 /// migration 2：判官审计需要把 trace 落进账本（指标与对账同源）。
 const M2_LEDGER_JUDGE: &str = "ALTER TABLE ledger ADD COLUMN judge_json TEXT;";
+
+/// migration 3：每条策略贡献入账（P2-11 决策可追溯）。
+const M3_LEDGER_CONTRIBUTIONS: &str = "ALTER TABLE ledger ADD COLUMN contributions_json TEXT;";

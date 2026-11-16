@@ -67,12 +67,12 @@ fn facts(session_key: &str) -> SessionFacts {
 #[test]
 fn migrate_is_idempotent_across_reopen() {
     let temp = TempDb::new("migrate");
-    assert_eq!(temp.db().schema_version().unwrap(), 2);
+    assert_eq!(temp.db().schema_version().unwrap(), 3);
 
     let path = temp.into_path();
 
     let reopened = Db::open(&path).expect("reopen");
-    assert_eq!(reopened.schema_version().unwrap(), 2);
+    assert_eq!(reopened.schema_version().unwrap(), 3);
     drop(reopened);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
@@ -98,7 +98,7 @@ fn newer_schema_refuses_to_start() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 2
+            supported: 3
         }
     ));
 
@@ -173,6 +173,7 @@ fn ledger_record() -> LedgerRecord {
             ..AttemptRecord::default()
         }],
         judge: None,
+        contributions: Vec::new(),
         input_tokens: Some(10),
         output_tokens: Some(4),
         cache_read_tokens: None,
@@ -222,6 +223,63 @@ fn ledger_insert_round_trip() {
     failed.http_status = Some(502);
     ledger::insert(db, &failed).unwrap();
     assert_eq!(ledger::count(db).unwrap(), 2);
+}
+
+#[test]
+fn stats_count_rejections_and_judge_budget_denials() {
+    let temp = TempDb::new("stats");
+    let db = temp.db();
+
+    let mut rejected = ledger_record();
+    rejected.outcome = OutcomeKind::Rejected;
+    rejected.served_physical_model = None;
+    ledger::insert(db, &rejected).unwrap();
+
+    tr_agent::store::judge::insert_call(
+        db,
+        &tr_agent::store::judge::JudgeCallRecord {
+            request_id: rejected.request_id,
+            question_id: "q1".to_string(),
+            service_id: "local".to_string(),
+            revision: 1,
+            protocol_digest: None,
+            effective_source: "disabled".to_string(),
+            outcome: "budget_exceeded".to_string(),
+            failure_code: Some("PerMinute".to_string()),
+            latency_ms: 0,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cost_micros: None,
+            created_at: 1_700_000_000,
+        },
+    )
+    .unwrap();
+    tr_agent::store::judge::insert_call(
+        db,
+        &tr_agent::store::judge::JudgeCallRecord {
+            request_id: rejected.request_id,
+            question_id: "q2".to_string(),
+            service_id: "local".to_string(),
+            revision: 1,
+            protocol_digest: None,
+            effective_source: "fallback".to_string(),
+            outcome: "failed".to_string(),
+            failure_code: Some("Timeout".to_string()),
+            latency_ms: 3,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            cost_micros: Some(7),
+            created_at: 1_700_000_001,
+        },
+    )
+    .unwrap();
+
+    let stats = tr_agent::store::stats::stats(db).unwrap();
+    assert_eq!(stats.rejected, 1);
+    assert_eq!(stats.judge_calls, 2);
+    assert_eq!(stats.judge_budget_denied, 1);
+    assert_eq!(stats.judge_failed, 1);
+    assert_eq!(stats.judge_cost_micros, 7);
 }
 
 #[test]

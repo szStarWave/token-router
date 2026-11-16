@@ -454,6 +454,7 @@ v2-check:
 	$(CARGO) fmt --manifest-path $(V2_MANIFEST) --all -- --check
 	$(CARGO) clippy --manifest-path $(V2_MANIFEST) --all-targets -- -D warnings
 	$(CARGO) run --manifest-path $(V2_XTASK) -- check-deps
+	$(CARGO) run --manifest-path $(V2_XTASK) -- config-only-check
 
 v2-test:
 	$(CARGO) test --manifest-path $(V2_MANIFEST) --workspace

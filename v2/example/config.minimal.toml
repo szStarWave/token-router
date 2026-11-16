@@ -1,0 +1,44 @@
+# v2 最小可用配置示例。
+#
+# 只作为 `cargo xtask config-only-check` 的基线与本地起点：
+# - 新增物理候选 = 只加一个 `[[candidates]]`；
+# - 新增虚拟模型 = 只加一个 `[[virtual_models]]`；
+# 内核与契约源码 diff 必须为 0（P3-18）。
+
+schema_version = 1
+default_virtual_model = "auto"
+
+[server]
+listen = "127.0.0.1:16621"
+
+[profiles.default]
+mode = "cascade"
+strength_order = ["local", "cloud"]
+
+[[candidates]]
+id = "local-fast"
+tier = "local"
+strength = 20
+provider = "openai"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen2.5:14b"
+window = 32768
+input = ["text"]
+
+[[candidates]]
+id = "cloud-strong"
+tier = "cloud"
+strength = 80
+provider = "openai"
+base_url = "https://api.example.com/v1"
+model = "example-strong"
+credential = "env:EXAMPLE_API_KEY"
+window = 128000
+input = ["text"]
+
+[[virtual_models]]
+provider = "router"
+id = "auto"
+name = "Auto"
+profile = "default"
+candidate_pool = ["local-fast", "cloud-strong"]

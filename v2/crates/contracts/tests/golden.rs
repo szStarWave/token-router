@@ -36,7 +36,8 @@ fn plan_json_shape_is_stable() {
             "usage": null
         },
         "reason_codes": [],
-        "state_updates": []
+        "state_updates": [],
+        "contributions": []
     });
 
     assert_eq!(value, expected);

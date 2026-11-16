@@ -16,6 +16,10 @@ use tr_contracts::{
 };
 
 fn catalog(mock_base_url: &str, candidate_ids: &[&str]) -> Catalog {
+    catalog_with(mock_base_url, candidate_ids, "")
+}
+
+fn catalog_with(mock_base_url: &str, candidate_ids: &[&str], extra: &str) -> Catalog {
     let candidates = candidate_ids
         .iter()
         .enumerate()
@@ -61,6 +65,8 @@ id = "auto"
 name = "Auto"
 profile = "default"
 candidate_pool = [{pool}]
+
+{extra}
 "#
     );
 
@@ -111,6 +117,17 @@ async fn success_writes_ledger_and_session() {
     assert_eq!(result.ledger.input_tokens, Some(12));
     assert!(result.ledger.answer_cost.as_ref().expect("cost").micros > 0);
     assert_eq!(result.ledger.switches, 0);
+    // P2-11：每条策略贡献带来源入账，可追到“为什么是这个顺序”。
+    assert!(
+        result
+            .ledger
+            .contributions
+            .iter()
+            .any(|record| record.strategy_id == "baseline"
+                && record.reason().code == tr_contracts::ReasonCodeKind::BaselineOrder),
+        "expected baseline contribution, got {:?}",
+        result.ledger.contributions
+    );
 
     let db = pipeline.db();
     assert_eq!(store::ledger::count(db).expect("count"), 1);
@@ -405,6 +422,247 @@ candidate_pool = ["strong"]
 
     assert_eq!(result.headers.selected_model, "premium");
     assert_eq!(result.headers.served_model, "physical-strong");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn route_state_is_written_and_survives_compaction() {
+    let mock = MockUpstream::start(vec![Reply::ok("first"), Reply::ok("second")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    // 相同的 server_session_id：即使客户端 compaction 改写了消息历史，状态仍归同一行。
+    let context = RequestContext {
+        server_session_id: Some("sess-route-state".to_string()),
+        ..RequestContext::default()
+    };
+    let first = pipeline
+        .handle(chat_request("hi"), context.clone())
+        .await
+        .expect("first");
+
+    let state = store::strategy::load_virtual_model_state(
+        pipeline.db(),
+        &first.ledger.session_key,
+        "main",
+        "auto",
+    )
+    .expect("load")
+    .expect("route state exists");
+    assert_eq!(
+        state.state["schema"],
+        tr_agent::route_state::ROUTE_STATE_SCHEMA
+    );
+    assert_eq!(state.state["generation"], 1);
+    assert_eq!(state.state["last_served"]["candidate_id"], "a");
+    assert_eq!(state.state["last_served"]["physical_model"], "physical-a");
+
+    // 模拟 compaction：消息内容变了，但会话键不变。
+    let second = pipeline
+        .handle(chat_request("summarized history"), context)
+        .await
+        .expect("second");
+    assert_eq!(second.ledger.session_key, first.ledger.session_key);
+
+    let state = store::strategy::load_virtual_model_state(
+        pipeline.db(),
+        &second.ledger.session_key,
+        "main",
+        "auto",
+    )
+    .expect("load")
+    .expect("route state exists");
+    assert_eq!(state.state["generation"], 2);
+    assert_eq!(state.state["history"].as_array().expect("history").len(), 2);
+    assert_eq!(state.state["last_served"]["candidate_id"], "a");
+
+    mock.shutdown();
+}
+
+fn request_with_shell_tool() -> CanonicalRequest {
+    let mut request = chat_request("run this");
+    request.messages.push(CanonicalMessage {
+        role: CanonicalRole::Assistant,
+        blocks: vec![ContentBlock::ToolUse {
+            id: "call-1".to_string(),
+            name: "shell_exec".to_string(),
+            arguments: serde_json::json!({"cmd": "ls"}),
+        }],
+        ..CanonicalMessage::default()
+    });
+    request
+}
+
+#[tokio::test]
+async fn enforce_blocks_unapproved_high_risk_tool() {
+    let mock = MockUpstream::start(vec![Reply::ok("unused")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(
+        db,
+        catalog_with(
+            &mock.base_url(),
+            &["a"],
+            "[approvals]\nmode = \"enforce\"\nmin_risk = \"high\"\nfail_closed = true\n",
+        ),
+    );
+
+    let error = pipeline
+        .handle(request_with_shell_tool(), RequestContext::default())
+        .await
+        .expect_err("must be blocked");
+    let PipelineError::ApprovalRequired {
+        tool, request_id, ..
+    } = error
+    else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(tool, "shell_exec");
+
+    // 被拒绝也写账本（§8.4），且不访问上游。
+    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
+    assert_eq!(mock.remaining(), 1);
+
+    // 审计表留下 pending（等待人工），不是结论。
+    let rows = store::approvals::list(pipeline.db(), 10).expect("approvals");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["decision"], "pending");
+    assert_eq!(rows[0]["tool_name"], "shell_exec");
+    assert_eq!(rows[0]["request_id"], request_id.to_string());
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn observe_records_reason_but_forwards() {
+    let mock = MockUpstream::start(vec![Reply::ok("forwarded")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(
+        db,
+        catalog_with(
+            &mock.base_url(),
+            &["a"],
+            "[approvals]\nmode = \"observe\"\n",
+        ),
+    );
+
+    let result = pipeline
+        .handle(request_with_shell_tool(), RequestContext::default())
+        .await
+        .expect("observe must not block");
+    assert!(
+        result
+            .ledger
+            .reason_codes
+            .iter()
+            .any(|reason| { reason.code == tr_contracts::ReasonCodeKind::ApprovalRequired })
+    );
+    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn approval_unblocks_next_request() {
+    let mock = MockUpstream::start(vec![Reply::ok("unused"), Reply::ok("approved")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(
+        db,
+        catalog_with(
+            &mock.base_url(),
+            &["a"],
+            "[approvals]\nmode = \"enforce\"\nmin_risk = \"high\"\n",
+        ),
+    );
+    let context = RequestContext {
+        server_session_id: Some("sess-approval".to_string()),
+        ..RequestContext::default()
+    };
+
+    pipeline
+        .handle(request_with_shell_tool(), context.clone())
+        .await
+        .expect_err("first request blocked");
+
+    let input = tr_agent::session::build_input(
+        &request_with_shell_tool(),
+        Some("sess-approval".to_string()),
+    );
+    let session_key = tr_agent::session::derive(&input).key;
+    store::approvals::insert(
+        pipeline.db(),
+        &store::approvals::ApprovalRecord {
+            request_id: "manual-approval".to_string(),
+            session_key: Some(session_key),
+            tool_name: "shell_exec".to_string(),
+            risk_class: "high".to_string(),
+            decision: "approve".to_string(),
+            operator: Some("tester".to_string()),
+            wait_ms: Some(0),
+            created_at: now_secs(),
+        },
+    )
+    .expect("insert approval");
+
+    let result = pipeline
+        .handle(request_with_shell_tool(), context)
+        .await
+        .expect("approved request passes");
+    assert_eq!(result.ledger.outcome, OutcomeKind::Success);
+    // 两次回复只用掉一次：第一次被审批拦截，第二次真正访问了上游。
+    assert_eq!(mock.remaining(), 1);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn trust_tier_alias_changes_profile_without_touching_virtual_model() {
+    let mock = MockUpstream::start(vec![Reply::ok("ok"), Reply::ok("fallback")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(
+        db,
+        catalog_with(
+            &mock.base_url(),
+            &["a", "b"],
+            r#"
+[profiles.single]
+mode = "single"
+strength_order = ["local", "cloud"]
+
+[trust_tiers]
+strict = "single"
+"#,
+        ),
+    );
+
+    let mut request = chat_request("hi");
+    request.meta.trust_tier = Some("strict".to_string());
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("handle");
+    assert_eq!(result.headers.mode, "single");
+    assert_eq!(result.headers.selected_model, "auto");
+    assert_eq!(
+        result.ledger.profile_revision.as_deref().map(str::len),
+        Some(16)
+    );
+
+    // 未知档位不报错，回退虚拟模型 profile 并记录理由。
+    let mut request = chat_request("hi");
+    request.meta.trust_tier = Some("gold".to_string());
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("fallback");
+    assert_eq!(result.headers.mode, "cascade");
+    assert!(
+        result
+            .ledger
+            .reason_codes
+            .iter()
+            .any(|reason| { reason.code == tr_contracts::ReasonCodeKind::TrustTierUnknown })
+    );
 
     mock.shutdown();
 }

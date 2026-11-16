@@ -128,7 +128,7 @@ fn apply_pragmas(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// 一次请求的持久化提交：会话事实（CAS）+ 熔断状态 + 账本，同事务。
+/// 一次请求的持久化提交：会话事实（CAS）+ 熔断状态 + 账本 + route state，同事务。
 ///
 /// 返回会话 CAS 结果；冲突时调用方仍需保留账本（账本已在同一事务里写入），
 /// 并补 `STATE_CAS_CONFLICT` 理由码。
@@ -137,6 +137,7 @@ pub fn commit(
     facts: Option<&tr_contracts::SessionFacts>,
     breakers: &[(tr_contracts::CandidateId, tr_contracts::BreakerState)],
     ledger: &tr_contracts::LedgerRecord,
+    route_state: Option<&tr_contracts::VirtualModelState>,
 ) -> Result<Option<sessions::SaveOutcome>, StoreError> {
     let mut connection = db.write();
     let transaction = connection.transaction()?;
@@ -149,6 +150,11 @@ pub fn commit(
         health::upsert_with(&transaction, candidate_id, state)?;
     }
     ledger::insert_with(&transaction, ledger)?;
+    // route state 只做审计/供 route 插件读取；CAS 冲突说明另一请求写了更新版本，
+    // 不覆盖、也不让请求失败（§7：它不是 sticky，丢了不影响本轮决策）。
+    if let Some(state) = route_state {
+        let _ = strategy::save_virtual_model_state_with(&transaction, state)?;
+    }
 
     transaction.commit()?;
     Ok(session)

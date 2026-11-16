@@ -11,6 +11,7 @@ use crate::store::{Db, StoreError};
 #[derive(Debug, Clone)]
 pub struct ApprovalRecord {
     pub request_id: String,
+    pub session_key: Option<String>,
     pub tool_name: String,
     pub risk_class: String,
     pub decision: String,
@@ -24,10 +25,11 @@ pub fn insert(db: &Db, record: &ApprovalRecord) -> Result<(), StoreError> {
     let connection = db.write();
     connection.execute(
         "INSERT INTO approvals (
-            request_id, tool_name, risk_class, decision, operator, wait_ms, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            request_id, session_key, tool_name, risk_class, decision, operator, wait_ms, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             record.request_id,
+            record.session_key,
             record.tool_name,
             record.risk_class,
             record.decision,
@@ -39,11 +41,35 @@ pub fn insert(db: &Db, record: &ApprovalRecord) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// 最近一次针对 `(session, tool)` 的审批结论与时间（P3-12/13 实时拦截）。
+///
+/// `pending` 不是结论：它表示“已拦截、等待人工”，不应让后续请求放行。
+/// `session_key IS NULL` 的记录视为运维显式设置的全局审批。
+pub fn latest_decision(
+    db: &Db,
+    session_key: &str,
+    tool_name: &str,
+) -> Result<Option<(String, u64)>, StoreError> {
+    let connection = db.read();
+    let mut statement = connection.prepare(
+        "SELECT decision, created_at FROM approvals
+          WHERE (session_key = ?1 OR session_key IS NULL) AND tool_name = ?2
+          ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = statement.query(params![session_key, tool_name])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let decision: String = row.get(0)?;
+    let created_at: i64 = row.get(1)?;
+    Ok(Some((decision, created_at.max(0) as u64)))
+}
+
 /// 最近审批记录。
 pub fn list(db: &Db, limit: u32) -> Result<Vec<Value>, StoreError> {
     let connection = db.read();
     let mut statement = connection.prepare(
-        "SELECT request_id, tool_name, risk_class, decision, operator, wait_ms, created_at
+        "SELECT request_id, session_key, tool_name, risk_class, decision, operator, wait_ms, created_at
            FROM approvals ORDER BY id DESC LIMIT ?1",
     )?;
     let mut rows = statement.query(params![i64::from(limit)])?;
@@ -51,12 +77,13 @@ pub fn list(db: &Db, limit: u32) -> Result<Vec<Value>, StoreError> {
     while let Some(row) = rows.next()? {
         out.push(json!({
             "request_id": row.get::<_, String>(0)?,
-            "tool_name": row.get::<_, String>(1)?,
-            "risk_class": row.get::<_, String>(2)?,
-            "decision": row.get::<_, String>(3)?,
-            "operator": row.get::<_, Option<String>>(4)?,
-            "wait_ms": row.get::<_, Option<i64>>(5)?,
-            "created_at": row.get::<_, i64>(6)?,
+            "session_key": row.get::<_, Option<String>>(1)?,
+            "tool_name": row.get::<_, String>(2)?,
+            "risk_class": row.get::<_, String>(3)?,
+            "decision": row.get::<_, String>(4)?,
+            "operator": row.get::<_, Option<String>>(5)?,
+            "wait_ms": row.get::<_, Option<i64>>(6)?,
+            "created_at": row.get::<_, i64>(7)?,
         }));
     }
     Ok(out)
@@ -76,6 +103,24 @@ impl RiskClass {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+        }
+    }
+
+    /// 风险等级：数值越大越危险。
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
         }
     }
 }

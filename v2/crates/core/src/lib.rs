@@ -55,18 +55,19 @@ pub fn decide_with_verdicts(
     verdicts: &[Verdict],
 ) -> Plan {
     let view = snapshot.view();
-    let mut drafts: Vec<(u8, PlanDraft)> = Vec::with_capacity(strategies.len() * 2);
+    let mut drafts: Vec<(tr_contracts::StrategyId, u8, PlanDraft)> =
+        Vec::with_capacity(strategies.len() * 2);
 
     for strategy in strategies {
         let id = strategy.id();
         let config = StrategyConfig::enabled(id.clone());
         let state: StrategyState = snapshot.strategy_state(&id).cloned().unwrap_or_default();
         let draft = strategy.draft(&view, &state, &config);
-        drafts.push((strategy.priority(), draft));
+        drafts.push((id.clone(), strategy.priority(), draft));
 
         if !verdicts.is_empty() {
             let refined = strategy.refine(&view, &state, verdicts, &config);
-            drafts.push((strategy.priority(), refined));
+            drafts.push((id, strategy.priority(), refined));
         }
     }
 
@@ -96,7 +97,8 @@ pub fn decide_and_collect(
     strategies: &[Box<dyn Strategy>],
 ) -> (Plan, Vec<JudgeRequest>) {
     let view = snapshot.view();
-    let mut drafts: Vec<(u8, PlanDraft)> = Vec::with_capacity(strategies.len());
+    let mut drafts: Vec<(tr_contracts::StrategyId, u8, PlanDraft)> =
+        Vec::with_capacity(strategies.len());
     let mut requests = Vec::new();
 
     for strategy in strategies {
@@ -105,7 +107,7 @@ pub fn decide_and_collect(
         let state: StrategyState = snapshot.strategy_state(&id).cloned().unwrap_or_default();
         let draft = strategy.draft(&view, &state, &config);
         requests.extend(draft.judge_requests.iter().cloned());
-        drafts.push((strategy.priority(), draft));
+        drafts.push((id, strategy.priority(), draft));
     }
 
     (merge::merge(&view, &drafts), requests)

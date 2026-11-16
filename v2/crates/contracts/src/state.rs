@@ -138,6 +138,8 @@ pub enum OutcomeKind {
     /// 来自 Verify / `ReleaseCheck`，不是传输错误（§18.4.2 约束 6）。
     QualityFail,
     Cancelled,
+    /// 本地策略拒绝（审批拦截），请求没有离开路由器（§12）。
+    Rejected,
 }
 
 impl OutcomeKind {
@@ -147,6 +149,7 @@ impl OutcomeKind {
             Self::UpstreamError => "upstream_error",
             Self::QualityFail => "quality_fail",
             Self::Cancelled => "cancelled",
+            Self::Rejected => "rejected",
         }
     }
 }

@@ -198,6 +198,9 @@ pub struct RequestMeta {
     pub previous_response_id: Option<String>,
     /// 工作区/项目路径提示，用于会话键推导（§8.1）。
     pub workspace_hint: Option<String>,
+    /// 信任档位别名（P3-14）：`trial` / `familiar` / `trusted`；
+    /// 只在配置里映射到 profile，内核不解释档位语义。
+    pub trust_tier: Option<String>,
 }
 
 /// 统一响应（非流式）。

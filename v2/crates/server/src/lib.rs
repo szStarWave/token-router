@@ -107,10 +107,15 @@ async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> Respo
             "upstream_errors": stats.upstream_errors,
             "quality_fails": stats.quality_fails,
             "cancelled": stats.cancelled,
+            "rejected": stats.rejected,
             "switches": stats.switches,
             "answer_cost_micros": stats.answer_cost_micros,
             "routing_cost_micros": stats.routing_cost_micros,
             "judge_fallbacks": stats.judge_fallbacks,
+            "judge_calls": stats.judge_calls,
+            "judge_budget_denied": stats.judge_budget_denied,
+            "judge_failed": stats.judge_failed,
+            "judge_cost_micros": stats.judge_cost_micros,
             "success_rate": stats.success_rate(),
         }))
         .into_response(),
@@ -183,6 +188,8 @@ async fn handle_ingress(
             .as_deref()
             .and_then(tr_agent::reason::parse_header),
     };
+    // 信任档位别名（P3-14）：header → meta，只影响 profile 解析。
+    request.meta.trust_tier = header_string(&headers, "x-token-router-trust");
 
     if request.output.stream {
         return stream_ingress(state, request, context).await;
@@ -305,6 +312,30 @@ fn map_error(error: PipelineError) -> Response {
                 message.as_deref().unwrap_or("upstream error"),
             )
         }
+        PipelineError::ApprovalRequired {
+            tool,
+            risk_class,
+            request_id,
+        } => approval_error(
+            StatusCode::PRECONDITION_REQUIRED,
+            "approval_required",
+            "required",
+            &tool,
+            &risk_class,
+            request_id,
+        ),
+        PipelineError::ApprovalDenied {
+            tool,
+            risk_class,
+            request_id,
+        } => approval_error(
+            StatusCode::FORBIDDEN,
+            "approval_denied",
+            "denied",
+            &tool,
+            &risk_class,
+            request_id,
+        ),
         PipelineError::Store(err) => {
             eprintln!("storage failure: {err}");
             error_response(
@@ -322,6 +353,39 @@ fn error_response(status: StatusCode, kind: &str, message: &str) -> Response {
         Json(json!({"error": {"type": kind, "message": message}})),
     )
         .into_response()
+}
+
+/// 审批拦截响应：带上工具与 request_id，客户端可据此发起/关联人工审批。
+fn approval_error(
+    status: StatusCode,
+    kind: &str,
+    signal: &str,
+    tool: &str,
+    risk_class: &str,
+    request_id: impl std::fmt::Display,
+) -> Response {
+    let mut response = (
+        status,
+        Json(json!({
+            "error": {
+                "type": kind,
+                "message": format!("tool `{tool}` requires approval ({risk_class})"),
+                "tool": tool,
+                "risk_class": risk_class,
+                "request_id": request_id.to_string(),
+            }
+        })),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(signal) {
+        response
+            .headers_mut()
+            .insert("x-token-router-approval", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(tool) {
+        response.headers_mut().insert("x-token-router-tool", value);
+    }
+    response
 }
 
 fn apply_decision_headers(headers: &mut HeaderMap, decision: &DecisionHeaders) {

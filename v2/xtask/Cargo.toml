@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 tr-proto = { path = "../crates/proto" }
+tr-agent = { path = "../crates/agent" }
 serde_json = { workspace = true }
 
 [lints]

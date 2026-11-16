@@ -12,7 +12,7 @@ use crate::ids::{
 };
 use crate::judge::JudgeTrace;
 use crate::reason::ReasonCode;
-use crate::routing::{Cost, DispatchSource, PlanMode, RequestReason};
+use crate::routing::{Cost, DispatchSource, PlanContributionRecord, PlanMode, RequestReason};
 use crate::state::{OutcomeKind, SessionKeySource, SlotRef};
 
 /// 账本事实完整度。部分覆盖不得当作完整和（§9.2）。
@@ -78,6 +78,8 @@ pub struct LedgerRecord {
     pub switches: u32,
     pub attempts: Vec<AttemptRecord>,
     pub judge: Option<JudgeTrace>,
+    /// 每条策略贡献及来源（P2-11）：事后可追到“为什么改成这个顺序”。
+    pub contributions: Vec<PlanContributionRecord>,
     /// 聚合用量（来自最终 attempt；失败请求可为 `None`）。
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,

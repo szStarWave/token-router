@@ -12,10 +12,17 @@ pub struct LedgerStats {
     pub upstream_errors: i64,
     pub quality_fails: i64,
     pub cancelled: i64,
+    /// 审批/策略在本地拒绝的请求（§12，`rejected`）。
+    pub rejected: i64,
     pub switches: i64,
     pub answer_cost_micros: i64,
     pub routing_cost_micros: i64,
     pub judge_fallbacks: i64,
+    /// 判官调用审计（与 `judge_calls` 同源，P1-14/P2-10）。
+    pub judge_calls: i64,
+    pub judge_budget_denied: i64,
+    pub judge_failed: i64,
+    pub judge_cost_micros: i64,
 }
 
 impl LedgerStats {
@@ -41,7 +48,8 @@ pub fn stats(db: &Db) -> Result<LedgerStats, StoreError> {
             COALESCE(SUM(switches), 0),
             COALESCE(SUM(answer_cost_micros), 0),
             COALESCE(SUM(routing_cost_micros), 0),
-            COALESCE(SUM(CASE WHEN json_extract(judge_json, '$.fallback_used') THEN 1 ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN json_extract(judge_json, '$.fallback_used') THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE outcome WHEN 'rejected' THEN 1 ELSE 0 END), 0)
          FROM ledger",
         [],
         |row| {
@@ -55,10 +63,36 @@ pub fn stats(db: &Db) -> Result<LedgerStats, StoreError> {
                 answer_cost_micros: row.get(6)?,
                 routing_cost_micros: row.get(7)?,
                 judge_fallbacks: row.get(8)?,
+                rejected: row.get(9)?,
+                ..LedgerStats::default()
             })
         },
     )?;
-    Ok(stats)
+
+    let judge = connection.query_row(
+        "SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE outcome WHEN 'budget_exceeded' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE outcome WHEN 'failed' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(cost_micros), 0)
+         FROM judge_calls",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    )?;
+    Ok(LedgerStats {
+        judge_calls: judge.0,
+        judge_budget_denied: judge.1,
+        judge_failed: judge.2,
+        judge_cost_micros: judge.3,
+        ..stats
+    })
 }
 
 #[cfg(test)]

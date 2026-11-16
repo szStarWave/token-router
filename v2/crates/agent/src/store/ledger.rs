@@ -28,6 +28,7 @@ pub(crate) fn insert_with(
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
+    let contributions_json = serde_json::to_string(&record.contributions)?;
 
     connection.execute(
         "INSERT INTO ledger (
@@ -40,7 +41,7 @@ pub(crate) fn insert_with(
             input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
             answer_cost_micros, routing_cost_micros, facts_completeness,
             profile_revision, config_digest, ttft_ms, duration_ms, created_at,
-            judge_json
+            judge_json, contributions_json
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8,
@@ -51,7 +52,7 @@ pub(crate) fn insert_with(
             ?23, ?24, ?25, ?26,
             ?27, ?28, ?29,
             ?30, ?31, ?32, ?33, ?34,
-            ?35
+            ?35, ?36
          )",
         params![
             record.request_id.to_string(),
@@ -88,7 +89,8 @@ pub(crate) fn insert_with(
             record.ttft_ms.map(|value| value as i64),
             record.duration_ms as i64,
             record.created_at as i64,
-            judge_json
+            judge_json,
+            contributions_json
         ],
     )?;
     Ok(())
@@ -141,12 +143,13 @@ pub fn recent(db: &Db, limit: u32) -> Result<Vec<serde_json::Value>, StoreError>
     let mut statement = connection.prepare(
         "SELECT request_id, plan_id, selection_model, dispatch_model, dispatch_source,
                 outcome, answer_cost_micros, routing_cost_micros, reason_codes_json,
-                duration_ms, created_at
+                contributions_json, duration_ms, created_at
            FROM ledger ORDER BY id DESC LIMIT ?1",
     )?;
     let mut rows = statement.query(params![i64::from(limit)])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
+        let contributions: Option<String> = row.get(9)?;
         out.push(serde_json::json!({
             "request_id": row.get::<_, String>(0)?,
             "plan_id": row.get::<_, String>(1)?,
@@ -157,8 +160,12 @@ pub fn recent(db: &Db, limit: u32) -> Result<Vec<serde_json::Value>, StoreError>
             "answer_cost_micros": row.get::<_, Option<i64>>(6)?,
             "routing_cost_micros": row.get::<_, Option<i64>>(7)?,
             "reason_codes": row.get::<_, String>(8)?,
-            "duration_ms": row.get::<_, i64>(9)?,
-            "created_at": row.get::<_, i64>(10)?,
+            "contributions": contributions
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .unwrap_or(serde_json::Value::Null),
+            "duration_ms": row.get::<_, i64>(10)?,
+            "created_at": row.get::<_, i64>(11)?,
         }));
     }
     Ok(out)

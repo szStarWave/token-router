@@ -9,15 +9,18 @@
 use std::collections::BTreeSet;
 
 use tr_contracts::{
-    Candidate, CandidateId, Cost, JudgeTrace, Plan, PlanContribution, PlanDraft, PlanMode,
-    ReasonCode, ReasonCodeKind, RequestView, Slot, StateUpdate, Usage,
+    Candidate, CandidateId, Cost, JudgeTrace, Plan, PlanContribution, PlanContributionRecord,
+    PlanDraft, PlanMode, ReasonCode, ReasonCodeKind, RequestView, Slot, StateUpdate, StrategyId,
+    Usage,
 };
 
 use crate::signals::estimate_input_tokens;
 use crate::strategy::{clamp_thinking_level, tier_rank};
 
 /// 合并多个策略的草稿。
-pub fn merge(view: &RequestView, drafts: &[(u8, PlanDraft)]) -> Plan {
+///
+/// `drafts` 携带策略 id 与优先级，合并时把每条贡献按来源记账（P2-11）。
+pub fn merge(view: &RequestView, drafts: &[(StrategyId, u8, PlanDraft)]) -> Plan {
     let estimated_input = estimate_input_tokens(view.canonical);
 
     let mut excluded: BTreeSet<CandidateId> = BTreeSet::new();
@@ -27,9 +30,15 @@ pub fn merge(view: &RequestView, drafts: &[(u8, PlanDraft)]) -> Plan {
     let mut cache_losses: Vec<Cost> = Vec::new();
     let mut reason_codes: Vec<ReasonCode> = Vec::new();
     let mut state_updates: Vec<StateUpdate> = Vec::new();
+    let mut contributions: Vec<PlanContributionRecord> = Vec::new();
 
-    for (priority, draft) in drafts {
+    for (strategy_id, priority, draft) in drafts {
         for contribution in &draft.contributions {
+            contributions.push(PlanContributionRecord {
+                strategy_id: strategy_id.clone(),
+                priority: *priority,
+                contribution: contribution.clone(),
+            });
             match contribution {
                 PlanContribution::Filter { exclude, reason } => {
                     excluded.extend(exclude.iter().cloned());
@@ -185,6 +194,7 @@ pub fn merge(view: &RequestView, drafts: &[(u8, PlanDraft)]) -> Plan {
         judge: JudgeTrace::default(),
         reason_codes,
         state_updates: merge_state_updates(state_updates),
+        contributions,
     }
 }
 

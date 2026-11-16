@@ -12,6 +12,10 @@ use tr_agent::store::{self, Db};
 use tr_server::{AppState, AuthMode, router};
 
 fn catalog(mock_base_url: &str) -> Catalog {
+    catalog_with(mock_base_url, "")
+}
+
+fn catalog_with(mock_base_url: &str, extra: &str) -> Catalog {
     let toml = format!(
         r#"
 schema_version = 1
@@ -37,6 +41,8 @@ id = "auto"
 name = "Auto"
 profile = "default"
 candidate_pool = ["a"]
+
+{extra}
 "#
     );
     ConfigFile::parse(&toml)
@@ -461,6 +467,58 @@ async fn anthropic_streaming_translates_events() {
     assert!(text.contains("event: content_block_delta"), "{text}");
     assert!(text.contains("hello"), "{text}");
     assert!(text.contains("event: message_stop"), "{text}");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn approval_required_maps_to_428() {
+    let mock = MockUpstream::start(vec![Reply::ok("unused")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_with(
+            &mock.base_url(),
+            "[approvals]\nmode = \"enforce\"\nmin_risk = \"high\"\n",
+        ),
+    ));
+    let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "auto",
+                "messages": [
+                    {"role": "user", "content": "run it"},
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "shell_exec", "arguments": "{}"}
+                        }]
+                    }
+                ]
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(response.headers()["x-token-router-approval"], "required");
+    assert_eq!(response.headers()["x-token-router-tool"], "shell_exec");
+
+    let text = body_text(response).await;
+    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(value["error"]["type"], "approval_required");
+    assert_eq!(value["error"]["tool"], "shell_exec");
+    assert_eq!(value["error"]["risk_class"], "high");
+
+    // 本地拒绝也入账；上游未被访问。
+    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
+    assert_eq!(mock.remaining(), 1);
 
     mock.shutdown();
 }

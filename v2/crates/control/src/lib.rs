@@ -41,6 +41,7 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/config", get(config))
         .route("/v2/admin/ledger", get(ledger))
         .route("/v2/admin/shadow", get(shadow))
+        .route("/v2/admin/trust-tiers", get(trust_tiers))
         .route("/v2/admin/approvals", get(approvals).post(record_approval))
         .with_state(state)
 }
@@ -129,6 +130,28 @@ async fn ledger(
     }
 }
 
+/// 信任档位映射（P3-14）：只展示别名 → profile，不暴露内核策略。
+async fn trust_tiers(State(state): State<ControlState>, headers: HeaderMap) -> Response {
+    if let Some(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let catalog = state.pipeline.catalog();
+    let tiers: Vec<Value> = catalog
+        .trust_tiers
+        .iter()
+        .map(|(alias, profile_id)| {
+            let profile = catalog.profiles.get(profile_id);
+            json!({
+                "alias": alias,
+                "profile": profile_id,
+                "revision": profile.map(|profile| profile.revision.clone()),
+                "mode": profile.map(|profile| profile.mode.as_str()),
+            })
+        })
+        .collect();
+    Json(json!({"tiers": tiers})).into_response()
+}
+
 async fn shadow(State(state): State<ControlState>, headers: HeaderMap) -> Response {
     if let Some(response) = require_admin(&state, &headers) {
         return response;
@@ -153,6 +176,8 @@ async fn shadow(State(state): State<ControlState>, headers: HeaderMap) -> Respon
 #[derive(Debug, Deserialize)]
 struct ApprovalBody {
     request_id: String,
+    #[serde(default)]
+    session_key: Option<String>,
     tool_name: String,
     risk_class: String,
     decision: String,
@@ -170,6 +195,7 @@ async fn record_approval(
     }
     let record = tr_agent::store::approvals::ApprovalRecord {
         request_id: body.request_id,
+        session_key: body.session_key,
         tool_name: body.tool_name,
         risk_class: body.risk_class,
         decision: body.decision,
