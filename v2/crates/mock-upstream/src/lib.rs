@@ -10,9 +10,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
@@ -26,6 +27,11 @@ pub enum Reply {
     Delay { millis: u64, body: Value },
     /// 原样返回 SSE 文本。
     RawSse { body: String },
+    /// 按固定间隔逐帧返回 SSE（用于测试客户端断开/取消）。
+    SlowSse {
+        delay_millis: u64,
+        frames: Vec<String>,
+    },
 }
 
 impl Reply {
@@ -103,6 +109,54 @@ impl Reply {
         body.push_str("data: [DONE]\n\n");
 
         Self::RawSse { body }
+    }
+
+    /// 慢速 Chat Completions 流：每帧间隔 `delay_millis`，用于取消语义测试。
+    pub fn slow_chat_stream(parts: &[&str], delay_millis: u64) -> Self {
+        let id = "chatcmpl-mock-slow";
+        let model = "mock-physical";
+        let mut frames = Vec::new();
+
+        let mut frame = |delta: Value, finish: Value| {
+            frames.push(format!(
+                "data: {}\n\n",
+                json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+                })
+            ));
+        };
+
+        frame(json!({"role": "assistant", "content": ""}), Value::Null);
+        for part in parts {
+            frame(json!({"content": part}), Value::Null);
+        }
+        frame(json!({}), json!("stop"));
+        frames.push(format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": parts.len() as u32,
+                    "total_tokens": 12 + parts.len() as u32,
+                    "prompt_tokens_details": {"cached_tokens": 0}
+                }
+            })
+        ));
+        frames.push("data: [DONE]\n\n".to_string());
+
+        Self::SlowSse {
+            delay_millis,
+            frames,
+        }
     }
 }
 
@@ -188,6 +242,22 @@ async fn chat(State(state): State<MockState>) -> impl IntoResponse {
             body,
         )
             .into_response(),
+        Reply::SlowSse {
+            delay_millis,
+            frames,
+        } => {
+            let stream = async_stream::stream! {
+                for frame in frames {
+                    tokio::time::sleep(Duration::from_millis(delay_millis)).await;
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
+                }
+            };
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .expect("sse response")
+        }
     }
 }
 

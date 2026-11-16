@@ -509,7 +509,7 @@ cargo xtask fixture-probe
 | 任务 | 状态 | 说明 |
 |---|---|---|
 | P0b-1 SSE 状态机与编码 | 完成 | 增量解码 `ChatStreamDecoder`；三协议 `StreamEncoder`；chat 编解码往返测试 |
-| P0b-2 流式转发 | 完成 | channel 背压；接收端丢弃即停上游（取消语义） |
+| P0b-2 流式转发 | 完成 | channel 背压；接收端丢弃即停上游（取消语义）；断连测试断言账本记 `cancelled` |
 | P0b-3 语义提交 | 完成 | 首事件到达才提交 headers；提交后不再换候选（测试覆盖） |
 | P0b-4 TTFT/时长 | 完成 | 首事件耗时写 `attempts` 与账本 `ttft_ms` |
 | P0b-5 Responses 编解码 | 完成 | `instructions`/`input` items/`previous_response_id`；三协议往返测试 |
@@ -668,4 +668,4 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：213 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：214 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

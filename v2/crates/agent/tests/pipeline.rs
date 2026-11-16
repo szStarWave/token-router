@@ -733,6 +733,34 @@ async fn authority_is_written_to_ledger_and_session() {
     mock.shutdown();
 }
 
+#[tokio::test]
+async fn client_disconnect_cancels_stream_and_marks_ledger() {
+    let mock = MockUpstream::start(vec![Reply::slow_chat_stream(&["a", "b", "c"], 50)]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut streaming = pipeline
+        .handle_stream(streaming_request("hi"), RequestContext::default())
+        .await
+        .expect("stream");
+    let first = streaming.events.recv().await.expect("first chunk");
+    assert!(matches!(first, StreamChunk::Event(_)));
+
+    // 客户端断开：接收端 drop 后，后台转发应停止并记 cancelled。
+    drop(streaming);
+    let mut cancelled = false;
+    for _ in 0..200 {
+        if store::stats::stats(pipeline.db()).expect("stats").cancelled == 1 {
+            cancelled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(cancelled, "disconnect must be recorded as cancelled");
+
+    mock.shutdown();
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
