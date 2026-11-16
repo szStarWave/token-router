@@ -60,9 +60,10 @@ async function request<T>(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  ifMatch?: string,
 ): Promise<T> {
   const response = await invoke<AdminResponse>(ADMIN_COMMAND, {
-    request: { method, path, body: body ?? null },
+    request: { method, path, body: body ?? null, if_match: ifMatch ?? null },
   });
   if (response.status >= 200 && response.status < 300 && response.body !== undefined) {
     return response.body as T;
@@ -78,10 +79,14 @@ async function request<T>(
 
 export const admin = {
   get: <T>(path: string) => request<T>("GET", path),
-  post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
+  post: <T>(path: string, body?: unknown, ifMatch?: string) =>
+    request<T>("POST", path, body, ifMatch),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
 };
+
+// 直接导出底层方法（approvals 等未类型化端点用）。
+export { request as adminRequest };
 
 // ---------------------------------------------------------------------------
 // 类型化端点封装（契约冻结 v1；类型来自 src/api/types.ts 的生成物）
@@ -89,7 +94,6 @@ export const admin = {
 
 import type {
   AdminScope,
-  ApplyRequest,
   ApplyResponse,
   ConfigAuditEntry,
   ConfigDocument,
@@ -115,11 +119,10 @@ export const api = {
   config: () => admin.get<ConfigDocument>("/v2/admin/config"),
   configValidate: (documentToml: string) =>
     admin.post<ValidateResponse>("/v2/admin/config/validate", { document_toml: documentToml }),
-  configApply: (revision: string, request: ApplyRequest) => ({
-    /** apply 需要 If-Match；代理命令暂不支持自定义头，apply 走显式命令 */
-    request,
-    revision,
-  }),
+  configApply: (revision: string, documentToml: string) =>
+    admin.post<ApplyResponse>("/v2/admin/config/apply", {
+      document_toml: documentToml,
+    }, revision),
   configRollback: () => admin.post<ApplyResponse>("/v2/admin/config/rollback"),
   configAudit: () => admin.get<{ items: ConfigAuditEntry[] }>("/v2/admin/config/audit"),
   requests: (query: string) => admin.get<Page<RequestSummary>>(`/v2/admin/requests${query}`),

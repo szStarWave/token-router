@@ -16,6 +16,9 @@ pub struct AdminRequest {
     pub path: String,
     #[serde(default)]
     pub body: Option<serde_json::Value>,
+    /// 可选 `If-Match`（config/apply CAS）。
+    #[serde(default)]
+    pub if_match: Option<String>,
 }
 
 /// admin 响应（成功 2xx 返回 200 + 原始 JSON；错误返回 status + 信封）。
@@ -77,6 +80,9 @@ pub async fn forward(
     let method = reqwest::Method::from_bytes(request.method.as_bytes())
         .unwrap_or(reqwest::Method::GET);
     let mut builder = client.request(method, &url).bearer_auth(token);
+    if let Some(if_match) = &request.if_match {
+        builder = builder.header("If-Match", if_match);
+    }
     if let Some(body) = &request.body {
         builder = builder.json(body);
     }

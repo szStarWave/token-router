@@ -1,65 +1,45 @@
+/** 页面骨架：侧栏 + 标题栏 + 内容。 */
 import { Outlet, useRouterState } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { TitleBar } from './TitleBar'
 import { Toast } from '../common/Toast'
-import { OnboardingProvider } from '../onboarding/OnboardingProvider'
-import { useI18n } from '../../hooks/useI18n'
-import { useEdgeSetupSync } from '../../hooks/useEdgeSetupSync'
-import { useCloudSetupSync } from '../../hooks/useCloudSetupSync'
-import { useAutoRefreshBalance } from '../../hooks/useAutoRefreshBalance'
-import { useStatsSync } from '../../hooks/useStatsSync'
 
-const PAGE_TITLE_KEYS: Record<string, string> = {
-  overview: 'page.overview',
-  upstream: 'page.upstream',
-  upstream_edge: 'page.upstreamEdge',
-  upstream_cloud: 'page.upstreamCloud',
-  routing: 'page.routing',
-  stats: 'page.stats',
-  agents: 'page.agents',
-  logs: 'page.logs',
-  settings: 'page.settings',
+const PAGE_TITLES: Record<string, string> = {
+  overview: '总览',
+  models: '候选模型',
+  'virtual-models': '虚拟模型',
+  requests: '请求',
+  stats: '统计',
+  logs: '日志',
+  tokens: 'Token',
+  approvals: '审批',
+  diagnostics: '诊断',
+  settings: '设置',
 }
 
 export function AppLayout() {
-  const { t } = useI18n()
-  useEdgeSetupSync()
-  useCloudSetupSync()
-  useAutoRefreshBalance()
-  useStatsSync()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-
-  const pageTitle = (() => {
-    const upstreamMatch = pathname.match(/^\/upstream\/(\w+)/)
-    if (upstreamMatch) {
-      const navId = upstreamMatch[1]
-      const key = navId === 'edge' || navId === 'cloud' ? `upstream_${navId}` : 'upstream'
-      return t(PAGE_TITLE_KEYS[key] ?? 'page.upstream')
-    }
-    const page = pathname.replace(/^\//, '').split('/')[0] || 'overview'
-    return t(PAGE_TITLE_KEYS[page] ?? 'page.overview')
-  })()
+  const page = pathname.replace(/^\//, '').split('/')[0] || 'overview'
+  const title = PAGE_TITLES[page] ?? '总览'
 
   return (
-    <OnboardingProvider>
-      <div className="app" id="app">
-        <Sidebar />
-        <div className="divider-v" />
-        <main className="main">
-          <header className="page-header">
-            <div className="page-title window-drag" id="page-title">
-              {pageTitle}
-            </div>
-            <div className="page-header-right">
-              <TitleBar />
-            </div>
-          </header>
-          <div className="page-content">
-            <Outlet />
+    <div className="app" id="app">
+      <Sidebar />
+      <div className="divider-v" />
+      <main className="main">
+        <header className="page-header">
+          <div className="page-title window-drag" id="page-title">
+            {title}
           </div>
-        </main>
-      </div>
+          <div className="page-header-right">
+            <TitleBar />
+          </div>
+        </header>
+        <div className="page-content">
+          <Outlet />
+        </div>
+      </main>
       <Toast />
-    </OnboardingProvider>
+    </div>
   )
 }

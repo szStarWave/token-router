@@ -1,7 +1,13 @@
+/**
+ * v2 app store（技术方案 §7.2 条款 5）：只保留 UI 偏好。
+ *
+ * 删除的服务端状态镜像：status/stats/connected/gatewayBase/authKey…
+ * 服务端状态一律走 `src/api/client.ts` + TanStack Query（queries/admin.ts）。
+ */
 import { create } from 'zustand'
 import type { Locale } from '../i18n/dict'
-import type { GatewayStatus, StatsSnapshot, ThemePref } from '../types/gateway'
-import { DEFAULT_GATEWAY_BASE } from '../constants/defaults'
+
+export type ThemePref = 'system' | 'light' | 'dark'
 
 export interface ToastItem {
   id: number
@@ -13,88 +19,57 @@ export interface ToastItem {
 interface AppState {
   themePref: ThemePref
   locale: Locale
-  gatewayBase: string
-  connected: boolean
-  siderWidth: number
   siderNarrow: boolean
   toasts: ToastItem[]
-  status: GatewayStatus | null
-  stats: StatsSnapshot | null
-  globalStats: StatsSnapshot | null
-  scope: 'session' | 'global'
-  uptimeAnchor: { secs: number; at: number } | null
-  gatewayAuthKeyPending: string | null
-  sessionSavedPoints: number | null
-  globalSavedPoints: number | null
   activePage: string
   activeNavId: string
-  routeTab: string
-  isTauriApp: boolean
 
   setThemePref: (pref: ThemePref) => void
   setLocale: (locale: Locale) => void
-  setGatewayBase: (base: string) => void
-  setConnected: (connected: boolean) => void
-  setSiderWidth: (width: number) => void
   setSiderNarrow: (narrow: boolean) => void
   showToast: (key: string, ok?: boolean, vars?: Record<string, string | number>) => void
   removeToast: (id: number) => void
-  setStatus: (status: GatewayStatus | null) => void
-  setStats: (stats: StatsSnapshot | null) => void
-  setGlobalStats: (stats: StatsSnapshot | null) => void
-  setScope: (scope: 'session' | 'global') => void
-  setUptimeAnchor: (anchor: { secs: number; at: number } | null) => void
-  setGatewayAuthKeyPending: (key: string | null) => void
-  setSavedPoints: (scope: 'session' | 'global', n: number | null) => void
   setActiveNav: (page: string, navId: string) => void
-  setRouteTab: (route: string) => void
-  setIsTauriApp: (v: boolean) => void
 }
 
-let toastId = 0
+let toastSeq = 1
 
-export const useAppStore = create<AppState>()((set, get) => ({
+const prefersDark = (): boolean =>
+  typeof window !== 'undefined' &&
+  window.matchMedia('(prefers-color-scheme: dark)').matches
+
+function initialLocale(): Locale {
+  if (typeof navigator !== 'undefined' && navigator.language.startsWith('zh')) return 'zh'
+  return 'en'
+}
+
+export const useAppStore = create<AppState>((set) => ({
   themePref: 'system',
-  locale: 'zh',
-  gatewayBase: DEFAULT_GATEWAY_BASE,
-  connected: false,
-  siderWidth: 330,
+  locale: initialLocale(),
   siderNarrow: false,
   toasts: [],
-  status: null,
-  stats: null,
-  globalStats: null,
-  scope: 'global',
-  uptimeAnchor: null,
-  gatewayAuthKeyPending: null,
-  sessionSavedPoints: null,
-  globalSavedPoints: null,
   activePage: 'overview',
   activeNavId: 'overview',
-  routeTab: 'auto',
-  isTauriApp: false,
 
-  setThemePref: (pref) => set({ themePref: pref }),
+  setThemePref: (themePref) => set({ themePref }),
   setLocale: (locale) => set({ locale }),
-  setGatewayBase: (base) => set({ gatewayBase: base }),
-  setConnected: (connected) => set({ connected }),
-  setSiderWidth: (width) => set({ siderWidth: width }),
-  setSiderNarrow: (narrow) => set({ siderNarrow: narrow }),
-  showToast: (key, ok = true, vars) => {
-    const id = ++toastId
-    set({ toasts: [...get().toasts, { id, key, vars, ok }] })
-    setTimeout(() => get().removeToast(id), 3000)
-  },
-  removeToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
-  setStatus: (status) => set({ status }),
-  setStats: (stats) => set({ stats }),
-  setGlobalStats: (stats) => set({ globalStats: stats }),
-  setScope: (scope) => set({ scope }),
-  setUptimeAnchor: (anchor) => set({ uptimeAnchor: anchor }),
-  setGatewayAuthKeyPending: (key) => set({ gatewayAuthKeyPending: key }),
-  setSavedPoints: (scope, n) =>
-    set(scope === 'session' ? { sessionSavedPoints: n } : { globalSavedPoints: n }),
-  setActiveNav: (page, navId) => set({ activePage: page, activeNavId: navId }),
-  setRouteTab: (route) => set({ routeTab: route }),
-  setIsTauriApp: (v) => set({ isTauriApp: v }),
+  setSiderNarrow: (siderNarrow) => set({ siderNarrow }),
+  showToast: (key, ok = true, vars) =>
+    set((state) => ({
+      toasts: [...state.toasts, { id: toastSeq++, key, ok, vars }],
+    })),
+  removeToast: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
+  setActiveNav: (activePage, activeNavId) => set({ activePage, activeNavId }),
 }))
+
+/** 命令式 toast（queries 层错误处理用）。 */
+export function toast(key: string, ok = true, vars?: Record<string, string | number>) {
+  useAppStore.getState().showToast(key, ok, vars)
+}
+
+/** 初始化主题（main.tsx 调用一次）。 */
+export function applyThemePref(pref: ThemePref) {
+  const effective = pref === 'system' ? (prefersDark() ? 'dark' : 'light') : pref
+  document.documentElement.dataset.effectiveTheme = effective
+}

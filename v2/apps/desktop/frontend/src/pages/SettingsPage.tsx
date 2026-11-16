@@ -1,318 +1,213 @@
-import { useEffect, useRef, useState } from 'react'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { useQueryClient } from '@tanstack/react-query'
-import { apiFetch, normalizeClientGatewayBase, refreshGatewayStatusAfterRestart } from '../lib/gateway'
+/**
+ * Settings（§7.3）：服务启停/重启、监听/鉴权编辑（validate+apply）、应用信息。
+ */
+import { useEffect, useState } from 'react'
 import {
-  gatewayRestart,
-  feedbackAppVersion,
-  invokeErrorMessage,
-  isTauri,
-  isOtaDesktop,
-  otaCheckNow,
-  type OtaEventPayload,
-} from '../lib/tauri'
-import { useGatewayControlMutations } from '../queries/gateway'
+  useStatusQuery,
+  useConfigQuery,
+  useConfigValidateMutation,
+  useConfigApplyMutation,
+} from '../queries/admin'
+import { QueryState, errorMessage } from '../components/common/QueryState'
 import { useAppStore } from '../stores/appStore'
-import { useSetupStore } from '../stores/setupStore'
-import { useAuthStore } from '../stores/authStore'
-import { useI18n, useTheme } from '../hooks/useI18n'
-import { usePrefs } from '../hooks/usePrefs'
-import { DEFAULT_GATEWAY_PORT } from '../constants/defaults'
-import { GatewayAuthKeysPanel } from '../components/settings/GatewayAuthKeysPanel'
-import { useOnboardingContext } from '../components/onboarding/OnboardingContext'
-import { clearOnboardingSeen, ONBOARDING_ENABLED } from '../lib/onboarding'
-import type { UpstreamSetupView } from '../types/gateway'
+import {
+  supervisorStart,
+  supervisorRestart,
+  supervisorStop,
+  supervisorStatus,
+  hostAppInfo,
+  isTauri,
+  invokeErrorMessage,
+  type SupervisorStatus,
+  type AppInfo,
+} from '../lib/tauri'
+import { draftFromDocument, draftToToml } from '../lib/config-edit'
 
 export function SettingsPage() {
-  const { t } = useI18n()
-  const { themePref, setThemePref } = useTheme()
-  const locale = useAppStore((s) => s.locale)
-  const setLocale = useAppStore((s) => s.setLocale)
-  const { savePrefs } = usePrefs()
-  const connected = useAppStore((s) => s.connected)
-  const gatewayBase = useAppStore((s) => s.gatewayBase)
-  const status = useAppStore((s) => s.status)
+  const statusQuery = useStatusQuery()
+  const configQuery = useConfigQuery()
+  const validateMutation = useConfigValidateMutation()
+  const applyMutation = useConfigApplyMutation()
   const showToast = useAppStore((s) => s.showToast)
-  const setGatewayBase = useAppStore((s) => s.setGatewayBase)
-  const setup = useSetupStore((s) => s.setup)
-  const setSetup = useSetupStore((s) => s.setSetup)
-  const logout = useAuthStore((s) => s.logout)
-  const { start, stop, restart } = useGatewayControlMutations()
-  const qc = useQueryClient()
-  const { restartTour } = useOnboardingContext()
 
-  const g = setup?.gateway
-  const [port, setPort] = useState(g?.listen_port ?? DEFAULT_GATEWAY_PORT)
-  const [lan, setLan] = useState(!!g?.listen_lan)
-  const [authEnabled, setAuthEnabled] = useState(!!g?.auth_enabled)
+  const [supervisor, setSupervisor] = useState<SupervisorStatus | null>(null)
+  const [info, setInfo] = useState<AppInfo | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [listen, setListen] = useState<string | null>(null)
+  const [validRevision, setValidRevision] = useState<string | null>(null)
+  const [confirmingRestart, setConfirmingRestart] = useState(false)
 
   useEffect(() => {
-    setPort(g?.listen_port ?? DEFAULT_GATEWAY_PORT)
-    setLan(!!g?.listen_lan)
-    setAuthEnabled(!!g?.auth_enabled)
-  }, [g])
-
-  const onTheme = (pref: 'light' | 'dark' | 'system') => {
-    setThemePref(pref)
-    savePrefs()
-  }
-
-  const onLang = (lang: 'zh' | 'en') => {
-    setLocale(lang)
-    savePrefs()
-  }
-
-  const saveGatewayEndpoint = async () => {
-    if (!connected) {
-      showToast('conn.offline', false)
-      return
-    }
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      showToast('toast.gatewayPortInvalid', false)
-      return
-    }
-    try {
-      const gateway = { listen_port: port, listen_lan: lan, auth_enabled: authEnabled }
-      const res = await apiFetch<{ message?: string; upstream: typeof setup }>('/v1/admin/setup', {
-        method: 'POST',
-        body: JSON.stringify({ gateway }),
-      })
-      if (res.upstream) setSetup(res.upstream)
-      if (isTauri()) {
-        const url = await gatewayRestart()
-        if (url) setGatewayBase(normalizeClientGatewayBase(url))
-        await refreshGatewayStatusAfterRestart()
-        showToast('toast.gatewayEndpointSaved')
-      } else {
-        showToast('toast.gatewayEndpointRestart')
-      }
-      const freshSetup = await apiFetch<UpstreamSetupView>('/v1/admin/setup')
-      setSetup(freshSetup)
-      void qc.invalidateQueries({ queryKey: ['gateway'] })
-    } catch (e) {
-      showToast('toast.saveFail', false, { msg: e instanceof Error ? e.message : String(e) })
-    }
-  }
-
-  const handleLogout = () => {
-    logout()
-    location.reload()
-  }
-
-  const handleRestartOnboarding = () => {
-    clearOnboardingSeen()
-    restartTour()
-    showToast('onboarding.restarted', true)
-  }
-
-  const gatewayRunning = status?.status === 'running'
-  const controlBusy = start.isPending || stop.isPending || restart.isPending
-  const canControl = isTauri()
-
-  return (
-    <section className="page active" id="page-settings">
-      <div className="panel">
-        <div className="panel-title">{t('settings.appearance')}</div>
-        <div className="setting-row">
-          <div className="setting-label">{t('settings.theme')}</div>
-          <div className="segment-tabs" id="theme-tabs">
-            {(['light', 'dark', 'system'] as const).map((pref) => (
-              <button key={pref} type="button" className={`segment-tab${themePref === pref ? ' active' : ''}`} data-theme-pref={pref} onClick={() => onTheme(pref)}>
-                {t(`theme.${pref}`)}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="setting-row">
-          <div className="setting-label">{t('settings.language')}</div>
-          <div className="segment-tabs" id="lang-tabs">
-            {(['zh', 'en'] as const).map((lang) => (
-              <button key={lang} type="button" className={`segment-tab${locale === lang ? ' active' : ''}`} data-lang={lang} onClick={() => onLang(lang)}>
-                {t(`lang.${lang}`)}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <input type="hidden" id="gateway_base" value={gatewayBase} readOnly />
-
-      <div className="panel">
-        <div className="panel-title">{t('settings.gatewayListen')}</div>
-        <div className="form-switches form-switches-stacked">
-          <div className="switch-row">
-            <span className="switch-row-label">{t('field.gatewayLanEnabled')}</span>
-            <label className="switch">
-              <input type="checkbox" id="gateway_lan_enabled" checked={lan} onChange={(e) => setLan(e.target.checked)} />
-              <span className="switch-slider" />
-            </label>
-          </div>
-          <div className="switch-row">
-            <span className="switch-row-label">{t('field.gatewayAuthEnabled')}</span>
-            <label className="switch">
-              <input type="checkbox" id="gateway_auth_enabled" checked={authEnabled} onChange={(e) => setAuthEnabled(e.target.checked)} />
-              <span className="switch-slider" />
-            </label>
-          </div>
-        </div>
-        <div className="gateway-endpoint-fields">
-          <div className="form-row">
-            <div>
-              <label>{t('field.gatewayPort')}</label>
-              <input id="gateway_port" type="number" min={1024} max={65535} step={1} value={port} onChange={(e) => setPort(Number(e.target.value))} />
-            </div>
-          </div>
-        </div>
-        <div className="upstream-actions">
-          <button type="button" className="btn btn-primary" onClick={() => void saveGatewayEndpoint()}>
-            {t('action.saveGatewayEndpoint')}
-          </button>
-        </div>
-      </div>
-
-      <GatewayAuthKeysPanel />
-
-      <div className="panel">
-        <div className="panel-title">{t('settings.gatewayControl')}</div>
-        <div className="gateway-control-actions">
-          <div className="gateway-control-group">
-            <button type="button" className="btn btn-primary" id="btn-gateway-start" disabled={!canControl || gatewayRunning || controlBusy} onClick={() => start.mutate()}>
-              {t('action.startGateway')}
-            </button>
-            <button type="button" className="btn btn-ghost" id="btn-gateway-stop" disabled={!canControl || !gatewayRunning || controlBusy} onClick={() => stop.mutate()}>
-              {t('action.stopGateway')}
-            </button>
-          </div>
-          <div className="gateway-control-group">
-            <button type="button" className="btn btn-ghost" id="btn-gateway-restart" disabled={!canControl || !gatewayRunning || controlBusy} onClick={() => restart.mutate()}>
-              {t('action.restartGateway')}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {ONBOARDING_ENABLED ? (
-        <div className="panel onboarding-settings-panel">
-          <div className="panel-title">{t('settings.guide')}</div>
-          <p className="setting-hint">{t('onboarding.settingsHint')}</p>
-          <button type="button" className="btn btn-primary btn-sm" id="btn-restart-onboarding" onClick={handleRestartOnboarding}>
-            {t('onboarding.restart')}
-          </button>
-        </div>
-      ) : null}
-
-      <div className="panel">
-        <div className="panel-title">{t('settings.account')}</div>
-        <button type="button" className="btn btn-ghost" id="btn-logout" onClick={handleLogout}>
-          {t('action.logout')}
-        </button>
-      </div>
-
-      <div className="panel">
-        <div className="panel-title">{t('settings.dataDir')}</div>
-        <div className="endpoint-box">
-          <code id="data-dir">{status?.data_dir ?? '—'}</code>
-        </div>
-      </div>
-
-      <AboutPanel />
-    </section>
-  )
-}
-
-function AboutPanel() {
-  const { t } = useI18n()
-  const showToast = useAppStore((s) => s.showToast)
-  const [version, setVersion] = useState('—')
-  const [checkingUpdate, setCheckingUpdate] = useState(false)
-  const manualCheckRef = useRef(false)
-
-  useEffect(() => {
-    if (isTauri()) {
-      void feedbackAppVersion()
-        .then(setVersion)
-        .catch(() => setVersion('—'))
-    }
+    if (!isTauri()) return
+    void supervisorStatus().then(setSupervisor).catch(() => setSupervisor(null))
+    void hostAppInfo().then(setInfo).catch(() => setInfo(null))
   }, [])
 
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined
-    void listen<OtaEventPayload>('ota:event', (event) => {
-      if (!manualCheckRef.current) return
+  const draft = configQuery.data && listen === null ? draftFromDocument(configQuery.data) : null
+  const effectiveListen = listen ?? draft?.server.listen ?? ''
 
-      const { message, data } = event.payload
-      switch (message) {
-        case 'ota.upToDate':
-          manualCheckRef.current = false
-          showToast('toast.checkUpdateUpToDate', true)
-          break
-        case 'ota.newVersion': {
-          manualCheckRef.current = false
-          const newVersion = typeof data?.new_version === 'string' ? data.new_version : ''
-          showToast('toast.checkUpdateNewVersion', true, { version: newVersion })
-          break
-        }
-        case 'ota.checkFailed':
-        case 'ota.compareFailed': {
-          manualCheckRef.current = false
-          const msg =
-            typeof data?.error === 'string'
-              ? data.error
-              : t(message === 'ota.checkFailed' ? 'ota.checkFailed' : 'ota.compareFailed')
-          showToast('toast.checkUpdateFail', false, { msg })
-          break
-        }
-      }
-    }).then((fn) => {
-      unlisten = fn
+  const applyServer = async () => {
+    if (!configQuery.data || !draft) return
+    const toml = draftToToml({
+      ...draft,
+      server: { ...draft.server, listen: effectiveListen },
     })
-    return () => {
-      void unlisten?.()
-    }
-  }, [showToast, t])
-
-  const checkUpdate = async () => {
-    if (checkingUpdate) return
-    if (!isOtaDesktop()) {
-      showToast('ota.installFailed', false)
-      return
-    }
-    manualCheckRef.current = true
-    setCheckingUpdate(true)
     try {
-      await otaCheckNow()
-    } catch (err) {
-      manualCheckRef.current = false
-      showToast('toast.checkUpdateFail', false, { msg: invokeErrorMessage(err) })
+      const response = await validateMutation.mutateAsync(toml)
+      if (!response.valid) {
+        showToast('config.invalid', false)
+        return
+      }
+      const applied = await applyMutation.mutateAsync({
+        revision: response.revision ?? configQuery.data.revision,
+        documentToml: toml,
+      })
+      showToast(`config.applied:${applied.revision.slice(0, 12)}|需重启生效`)
+      setValidRevision(applied.revision)
+    } catch (error) {
+      showToast(errorMessage(error), false)
+    }
+  }
+
+  const restart = async () => {
+    setBusy(true)
+    try {
+      await supervisorRestart()
+      setSupervisor(await supervisorStatus())
+      showToast('service.restarted')
+      setConfirmingRestart(false)
+    } catch (error) {
+      showToast(invokeErrorMessage(error), false)
     } finally {
-      setCheckingUpdate(false)
+      setBusy(false)
+    }
+  }
+
+  const stop = async () => {
+    setBusy(true)
+    try {
+      await supervisorStop()
+      setSupervisor(await supervisorStatus())
+    } catch (error) {
+      showToast(invokeErrorMessage(error), false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const start = async () => {
+    setBusy(true)
+    try {
+      await supervisorStart()
+      setSupervisor(await supervisorStatus())
+    } catch (error) {
+      showToast(invokeErrorMessage(error), false)
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
-    <div className="panel">
-      <div className="panel-title">{t('settings.about')}</div>
-      <div className="about-version-row">
-        <span className="about-version-label">{t('settings.appVersion')}</span>
-        <code className="about-version-code">{formatAppVersion(version)}</code>
-        {isOtaDesktop() && (
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={checkingUpdate}
-            aria-busy={checkingUpdate}
-            onClick={() => void checkUpdate()}
-          >
-            {checkingUpdate && <span className="btn-spinner" aria-hidden="true" />}
-            {checkingUpdate ? t('settings.checkUpdateStarted') : t('settings.checkUpdate')}
-          </button>
+    <div className="page">
+      <section className="card" aria-label="服务">
+        <h2>服务</h2>
+        {isTauri() && supervisor ? (
+          <>
+            <p>
+              状态：<span className={`pill pill-${supervisor.state === 'ready' ? 'closed' : 'open'}`}>{supervisor.state}</span>
+              {supervisor.listen && <> · <span className="mono">{supervisor.listen}</span></>}
+            </p>
+            <div className="card-actions">
+              {supervisor.state === 'ready' ? (
+                <>
+                  {confirmingRestart ? (
+                    <span className="confirm-inline">
+                      重启会打断在途请求，确认？
+                      <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void restart()}>
+                        确认重启
+                      </button>
+                      <button type="button" className="btn" onClick={() => setConfirmingRestart(false)}>
+                        取消
+                      </button>
+                    </span>
+                  ) : (
+                    <button type="button" className="btn" onClick={() => setConfirmingRestart(true)}>
+                      重启
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-danger" disabled={busy} onClick={() => void stop()}>
+                    停止
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void start()}>
+                  {busy ? '启动中…' : '启动'}
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="text-dim">浏览器模式：请用命令行管理服务（<code>tr-cli admin</code>）。</p>
         )}
-      </div>
+        {validRevision && (
+          <div className="banner banner-warn">
+            配置已应用但尚未重启；重启后生效（digest 以 /status 为准）。
+          </div>
+        )}
+      </section>
+
+      <QueryState loading={statusQuery.isLoading} error={statusQuery.error} onRetry={() => void statusQuery.refetch()}>
+        {statusQuery.data && (
+          <section className="card" aria-label="监听与鉴权">
+            <h2>监听与鉴权</h2>
+            <div className="form-row">
+              <label>
+                监听地址{' '}
+                <input
+                  className="mono"
+                  value={effectiveListen}
+                  onChange={(e) => setListen(e.target.value)}
+                  aria-label="监听地址"
+                />
+              </label>
+              <label>
+                鉴权模式{' '}
+                <select
+                  value={draft?.server.auth_mode ?? 'token_store'}
+                  disabled
+                  aria-label="鉴权模式（P4 固定 token_store）"
+                >
+                  <option value="token_store">token_store</option>
+                </select>
+              </label>
+            </div>
+            <button
+              type="button"
+              className="btn"
+              disabled={effectiveListen === draft?.server.listen || validateMutation.isPending}
+              onClick={() => void applyServer()}
+            >
+              {validateMutation.isPending ? '校验中…' : '校验并应用'}
+            </button>
+            <p className="text-dim">
+              管理 API 默认只监听 loopback；非 loopback 需要显式开启
+              <code> allow_remote_admin</code>（P4 暂不提供开关，保持安全默认）。
+            </p>
+          </section>
+        )}
+      </QueryState>
+
+      {info && (
+        <section className="card" aria-label="应用信息">
+          <h2>应用信息</h2>
+          <dl className="kv-grid">
+            <div><dt>壳版本</dt><dd>{info.version}</dd></div>
+            <div><dt>平台</dt><dd>{info.platform}</dd></div>
+            <div><dt>数据目录</dt><dd className="mono">{info.data_dir}</dd></div>
+            <div><dt>服务版本</dt><dd>{statusQuery.data?.version ?? '—'}</dd></div>
+          </dl>
+        </section>
+      )}
     </div>
   )
-}
-
-function formatAppVersion(version: string) {
-  if (!version || version === '—') return version
-  return version.startsWith('v') ? version : `v${version}`
 }
