@@ -1,47 +1,54 @@
 # S0 客户端冒烟（Hermes / Codex / Claude Code）
 
-**状态：未执行 —— 等待客户端与上游凭据。**
+**状态：已执行（2026-11-16）。** 三个客户端都通过 v2 完成真实请求；上游为本机
+gateway `http://127.0.0.1:3425/v1`（真实模型，非 mock）。
 
-本文件是 S0-5 的产物占位与执行说明。没有真实客户端时，不把 mock/curl 的
-结果记成“客户端冒烟通过”。
+## 结果
 
-## 为什么没有执行
-
-- 需要本机安装 Hermes、Codex、Claude Code（或等价客户端）；
-- 需要至少一个真实上游凭据（OpenAI 兼容 / Anthropic）；
-- 需要用客户端自己的配置把 base URL 指向 v2。
-
-## 执行步骤（已就绪）
-
-每条客户端至少跑一次**流式**和一次**非流式**：
-
-1. 保存配置（示例见 `v2/example/config.minimal.toml`），把候选指向真实上游；
-2. 启动服务：
-   ```bash
-   cargo run -p tr-server -- --config <config.toml> --db token-router-v2.db
-   ```
-3. 客户端 base URL 指向 `http://127.0.0.1:16621/v1`（Anthropic 客户端指向 `/v1` 或 `/v1/messages`）；
-4. 各发一条流式、一条非流式请求；
-5. 检查账本与响应头同源：
-   ```bash
-   cargo run -p tr-cli -- doctor --config <config.toml> --db token-router-v2.db --json
-   ```
-
-## 验收记录表（执行后填写）
-
-| 客户端 | 协议 | 模式 | 结果 | 关键字段（served slot / usage / SSE 顺序） |
+| 客户端 | 协议 | 模式 | 结果 | 说明 |
 |---|---|---|---|---|
-| Hermes | Chat Completions | 流式 | 待执行 | — |
-| Hermes | Chat Completions | 非流式 | 待执行 | — |
-| Codex | Responses | 流式 | 待执行 | — |
-| Codex | Responses | 非流式 | 待执行 | — |
-| Claude Code | Anthropic Messages | 流式 | 待执行 | — |
-| Claude Code | Anthropic Messages | 非流式 | 待执行 | — |
+| Hermes `-z` | Chat Completions | 流式 | 通过 | `model.streaming` 默认开启；输出 `hermes-smoke` |
+| Hermes `-z` | Chat Completions | 非流式 | 通过 | 临时 `model.streaming=false`；输出 `hermes-nonstream-smoke` |
+| Codex `exec` | Responses | 流式 | 通过 | `stream_committed`，TTFT≈1.9s，`tokens used` 正常 |
+| Claude Code `-p` | Anthropic Messages | 流式 | 通过 | 输出 `claude-v2-smoke`；`unrecognized_model` 仅提示模型元数据缺失 |
+| curl / server tests | Chat / Anthropic / Responses | 非流式 | 通过 | 三协议 HTTP 层各一次；Codex/Claude 的 CLI 未暴露关闭流式开关 |
 
-任一项失败：记录请求/响应样本，更新 `docs/s0-gap-report.md`，再决定是否缩 P0 范围。
+## 执行方式
 
-## 已完成的替代证据（不替代客户端冒烟）
+```bash
+# 1. v2 指向真实上游
+#    candidate.base_url = http://127.0.0.1:3425/v1
+#    credential = "env:MAGPIE_KEY"
 
-- 三协议 fixtures 19 个，请求字段覆盖率 100%；
-- `crates/server/tests/http.rs` 覆盖三端点流式/非流式（mock 上游）；
-- SSE 事件顺序与错误帧有 golden/结构性断言。
+# 2. 启动 v2（本机 smoke 用 auth_enabled=false）
+MAGPIE_KEY=magpie cargo run -p tr-server -- \
+  --config <smoke.toml> --db <smoke.db> --listen 127.0.0.1:16631
+
+# 3. 三个客户端
+# Hermes：临时把 providers.magpie.base_url 指到 v2；跑完恢复
+hermes -z "Reply with exactly: hermes-smoke" -m auto --provider magpie --yolo
+hermes config set model.streaming false   # 非流式那一轮
+# Codex：base_url 指到 v2（Responses 协议）
+codex exec -c model="auto" \
+  -c model_providers.magpie.base_url="http://127.0.0.1:16631/v1" \
+  --skip-git-repo-check "Reply with exactly: codex-smoke"
+# Claude Code：用 --settings 注入 env，避免 ~/.claude/settings.json 覆盖
+claude --settings <v2-settings.json> -p "Reply with exactly: claude-smoke" --output-format text
+```
+
+## 冒烟中发现并修复的协议问题
+
+| 客户端 | 现象 | 修复 |
+|---|---|---|
+| Codex | `unsupported value: developer` | Responses `developer` message 映射为 `System` |
+| Codex | `missing field: tool.name` | Responses 只把 `type=function` 当工具；内置工具（web_search/local_shell）跳过；兼容 `function.name` 嵌套 |
+| Claude Code | `unsupported value: system` | Anthropic messages 中出现 `role=system` 时映射为 `System` |
+
+这三处都有 proto 单测锁定；修复后三客户端均通过。
+
+## 已知限制
+
+- Codex / Claude Code 的 CLI 没有关闭流式的开关，因此它们的“非流式”由协议层
+  请求覆盖（server tests + curl），不是客户端自身选项。
+- 客户端使用的 `model=auto` 不在 Codex 的模型元数据表里，会有
+  `unrecognized_model` 警告；不影响请求。

@@ -52,6 +52,7 @@
 | 37 | P1-8/P2-7/P2-8 落地：shadow 报告含 P95/成本与 500 样本门禁；评测集 33 任务；`tr-cli eval --out --baseline-config` 生成三列表；`CompetenceGuard` 记为 P4 可选（D-11） | §11.3、§11.4、§16.2 |
 | 38 | P0a-13 落地：`Authenticator` trait + `RequestAuthority` 写入 `SessionFacts`/账本；migration 4 `ledger.authority_json` | §8.5、§18.4.1 |
 | 39 | P2-6 落地：`CompetenceGuard` + `Choices::ScoreBelowFloor`；任务/候选组指纹变化时抑制；低分保护优先于 Sticky/ContextHold；合并优先级 10/20/30/40 | §4.5、§6.2、§13 |
+| 40 | 真实客户端冒烟修复：Responses `developer` 角色、内置工具跳过/`function.name` 兼容、Anthropic `role=system`；P2-8 真实三列表落盘 | §10.3、§11.4 |
 
 ---
 

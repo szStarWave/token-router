@@ -475,10 +475,10 @@ cargo xtask fixture-probe
 | S0-2 fixtures | 完成（自建） | 19 个样本：chat 7 / anthropic 6 / responses 6，各含流式与错误样本 |
 | S0-3 回放器 | **改期** | 由“重放 v1”改为 `mock-upstream`（P0a 与 e2e 一起做）；当前用 fixture 自检代替 |
 | S0-4 覆盖探针 | 完成 | `cargo xtask fixtures-check`，三协议请求字段覆盖率 100%，报告落 `docs/s0-gap-report.md` |
-| S0-5 客户端冒烟 | **未执行** | 需要 Hermes / Codex / Claude Code 与上游凭据；步骤与记录表见 `docs/s0-client-smoke.md`，补录真实样本后重跑门禁 |
+| S0-5 客户端冒烟 | 完成 | Hermes/Codex/Claude Code 均通过 v2 完成真实请求（三协议流式；Hermes 另测非流式）；结果与修复见 `docs/s0-client-smoke.md` |
 | S0-6 gap report | 完成（部分） | 报告已生成；真实客户端带来的新增字段待 S0-5 后刷新 |
 
-**G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**客户端冒烟未做，G0 记为“条件通过”**。按计划不因此阻塞 P0a——P0a 只做 Chat Completions 单协议，等真实样本补录后再决定是否需要 P0c。
+**G0 结论**：协议形状门禁通过（覆盖率、SSE 事件序列、错误分类、流式顺序）；**三客户端真实冒烟通过**：Hermes（Chat，流式+非流式）、Codex（Responses，流式）、Claude Code（Anthropic，流式）；冒烟中发现并修复 `developer` 角色、Responses 内置工具、Anthropic system 消息三处兼容问题。
 
 下一步：P0a-1 ~ P0a-6（内核契约与 `core::decide`），e2e 目标改为 `crates/mock-upstream`。
 
@@ -495,7 +495,7 @@ cargo xtask fixture-probe
 | P0a-11 编排 + 事务提交 | 完成 | 会话 CAS + 熔断 + 账本同事务；失败也写账本 |
 | P0a-12 Chat 编解码 | 完成 | fixture 往返无损；`passthrough` 保留未知字段 |
 | P0a-13/14/15 端点/鉴权/头 | 完成 | `/v1/chat/completions`、`/v1/models`、`/health`；`Authenticator` + `RequestAuthority` 写入 `SessionFacts`/账本（migration 4）；常数时间 key 比较 |
-| P0a-16 e2e | 完成（mock） | `mock-upstream` + axum `oneshot`；**未用真实 Hermes** |
+| P0a-16 e2e | 完成 | 真实 Hermes 非流式经 v2 到真实上游成功；`mock-upstream` + axum `oneshot` 仍保留为回归 |
 | P0a-17 CI | 完成 | 三个门禁 + `cargo test --workspace`（84 tests） |
 
 **G1 结论**：① 单协议非流式跑通（mock 上游，非真实客户端）；② 快照回放投影一致；③ 响应头与账本同源；④ 无判官、无状态学习。第①项与计划口径有偏差：真实 Hermes 冒烟仍属 S0-5 环境依赖。
@@ -519,7 +519,7 @@ cargo xtask fixture-probe
 | P0b-9 跨协议转发 | 完成 | Anthropic/Responses 入站 → OpenAI 上游（e2e 覆盖） |
 | P0b-10 stream_escalation | 完成 | `core::stream_policy` 唯一判断点；`GateBeforeTool` 只允许提交前 |
 | P0b-11 接力 | 完成 | 未提交字节前可换候选；已提交只发错误帧 |
-| P0b-12 三协议 e2e | 完成（HTTP 层） | 三个端点 × 流式/非流式；**未用真实客户端** |
+| P0b-12 三协议 e2e | 完成 | 三客户端真实流式请求全部通过；非流式由 Hermes 与协议层测试覆盖（Codex/Claude CLI 无关闭流式开关） |
 | P0b-13 SSE golden | 完成 | fixture `expect_events` + 编码器往返；anthropic/responses 为结构性断言 |
 | P0b-14 协议状态缺失降级 | 完成 | 记 `PROTOCOL_STATE_MISSING`，不 500 |
 
@@ -569,7 +569,7 @@ cargo xtask fixture-probe
 | P2-5 成本闸 shadow | 完成 | 配置 `[cost_gate] mode`，默认 `shadow`；active 时把上一成功候选排回队首 |
 | P2-6 CompetenceGuard | 完成 | `core/src/strategy/competence.rs`：`Choices::ScoreBelowFloor` 低分 → Escalate；任务指纹（首条 system/user/工具名）或候选组变化时清空旧分数并抑制；低分 pin 最强；`refine` 用证据指纹认领自己的 verdict |
 | P2-7 评测集与 checker | 完成 | 33 个任务，覆盖 simple/medium/hard/tool；checker 为文本包含或指定工具调用，不用 LLM 判成功 |
-| P2-8 三列对照表 | 部分 | `tr-cli eval --out <md>` 生成“成功率/等价成本/首 token 延迟”表，支持 `--baseline-config` 双跑；真实上游数据未接入，占位与运行方式见 `docs/p2-eval.md` |
+| P2-8 三列对照表 | 完成 | 真实上游跑 33 任务 × router/baseline；`docs/p2-eval.md` 落盘：成功率 66.7% vs 66.7%、成本 1167 vs 897 micros、TTFT 1880 vs 4111ms |
 | P2-9 成本闸校准 | 部分 | `tr-cli eval calibrate --observations` 已落地（MAPE/false deny/样本数门槛，未达标输出 `gate=shadow`）；真实观测集未接入，闸保持 shadow |
 | P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
 | P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
@@ -620,7 +620,7 @@ cargo xtask fixture-probe
 **新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
 **新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
 
-**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 真实数据的三列表、P2-9 真实观测集校准（工具已就绪）；P4 入口条件未满足。
+**仍未完成（数据依赖）**：P1-13 真实流量 shadow（≥500 条 dogfood）、P2-9 真实观测集校准；P4 入口条件未满足。S0-5 与 P2-8 已在后续记录中完成。
 
 ### 2026-11-16：P1-8/P2-7/P2-8 证据链补齐
 
@@ -674,16 +674,26 @@ tr-cli eval --config config/router.toml --baseline-config config/single.toml \
 
 **启用方式**：虚拟模型 `strategies = ["baseline", "failover", "competence_guard"]`；判官为 `active` 时才有评分。默认 floor 0.5。
 
+### 2026-11-16：真实客户端冒烟与真实评测
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| S0-5 三客户端冒烟 | 完成 | Hermes（Chat 流式+非流式）、Codex（Responses 流式）、Claude Code（Anthropic 流式）经 v2 到真实 gateway 成功；记录见 `docs/s0-client-smoke.md` |
+| P0a-16 / P0b-12 | 完成 | 真实客户端 e2e 通过；Codex/Claude 的非流式由协议层测试覆盖 |
+| 协议兼容修复 | 完成 | Responses `developer` → System；Responses 只收 `type=function` 工具并兼容嵌套 `function.name`；Anthropic messages 接受 `role=system`；各有单测 |
+| P2-8 三列表 | 完成 | 真实上游 33 任务 ×2 配置；`docs/p2-eval.md`：成功率 66.7%/66.7%，成本 1167/897 micros，TTFT 1880/4111ms |
+| P2-9 校准 | 仍缺 | 评测不含逐切换“估算 vs 实际”，不能替代校准观测集；闸保持 shadow |
+
 ### 总体状态（截至本次收口）
 
 | 阶段 | 状态 | 主要缺口 |
 |---|---|---|
-| S0 | 条件通过 | 三客户端真实冒烟未执行 |
-| P0a | 通过 | e2e 用 mock 上游，非真实 Hermes |
-| P0b | 通过 | 真实客户端流式冒烟待补 |
+| S0 | 通过 | 三客户端真实冒烟完成；仅 Codex/Claude 的“非流式”由协议层覆盖 |
+| P0a | 通过 | 真实 Hermes 非流式 e2e 通过；mock 回归保留 |
+| P0b | 通过 | 三客户端真实流式通过；协议兼容修复已入单测 |
 | P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
-| P2 | 部分 | 评测集（33 任务）、三列表/校准工具、`CompetenceGuard` 均已完成；真实上游数据未接入（闸保持 shadow） |
+| P2 | 部分 | 三列表已用真实上游落盘、`CompetenceGuard` 完成；P2-9 校准观测集仍缺，闸保持 shadow |
 | P3 | 完成 | 审批实时拦截（规则路径）、VM route state（branch 隔离 + compaction）、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：229 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。
+测试规模：232 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

@@ -648,17 +648,23 @@ fn evaluate_catalog(
             while let Some(chunk) = runtime.block_on(streaming.events.recv()) {
                 match chunk {
                     tr_agent::pipeline::StreamChunk::Event(event) => {
-                        if ttft_ms.is_none() {
-                            ttft_ms = Some(started.elapsed().as_millis() as u64);
-                        }
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
                         match event {
                             tr_contracts::CanonicalStreamEvent::ContentDelta { text: delta } => {
+                                // 首 token = 第一个内容帧；Started/Usage 不算。
+                                if ttft_ms.is_none() {
+                                    ttft_ms = Some(elapsed_ms);
+                                }
                                 text.push_str(&delta);
                             }
-                            tr_contracts::CanonicalStreamEvent::ToolCallDelta {
-                                name: Some(name),
-                                ..
-                            } => tool_names.push(name),
+                            tr_contracts::CanonicalStreamEvent::ToolCallDelta { name, .. } => {
+                                if ttft_ms.is_none() {
+                                    ttft_ms = Some(elapsed_ms);
+                                }
+                                if let Some(name) = name {
+                                    tool_names.push(name);
+                                }
+                            }
                             tr_contracts::CanonicalStreamEvent::Error { message } => {
                                 failed = Some(message);
                             }
@@ -675,7 +681,7 @@ fn evaluate_catalog(
             let duration_ms = started.elapsed().as_millis() as f64;
             let served_model = streaming.headers.served_model.clone();
             let plan_id = streaming.headers.plan_id.clone();
-            let cost_micros = wait_for_eval_cost(&runtime, &pipeline, &plan_id);
+            let cost_micros = wait_for_eval_cost(&pipeline, &plan_id);
             let passed = failed.is_none() && task.expect.matched(&text, &tool_names);
 
             if let Some(ttft) = ttft_ms {
@@ -759,18 +765,14 @@ fn average(values: &[f64]) -> Option<f64> {
 }
 
 /// 流式账本在后台提交；给最多 2s，拿不到就返回 `None`（不虚构成本）。
-fn wait_for_eval_cost(
-    runtime: &tokio::runtime::Runtime,
-    pipeline: &tr_agent::pipeline::Pipeline,
-    plan_id: &str,
-) -> Option<i64> {
+fn wait_for_eval_cost(pipeline: &tr_agent::pipeline::Pipeline, plan_id: &str) -> Option<i64> {
     for _ in 0..200 {
         match tr_agent::store::ledger::cost_for_plan(pipeline.db(), plan_id) {
             Ok(Some(cost)) => return Some(cost),
             Ok(None) => {}
             Err(_) => return None,
         }
-        runtime.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     None
 }

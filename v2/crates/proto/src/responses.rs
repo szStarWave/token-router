@@ -58,7 +58,9 @@ pub fn decode_request(value: &Value) -> Result<CanonicalRequest, CodecError> {
 
     if let Some(tools) = object.get("tools").and_then(Value::as_array) {
         for tool in tools {
-            request.tools.push(decode_tool(tool)?);
+            if let Some(spec) = decode_tool(tool)? {
+                request.tools.push(spec);
+            }
         }
     }
 
@@ -169,7 +171,8 @@ fn decode_message_item(
 ) -> Result<(), CodecError> {
     let role = match object.get("role").and_then(Value::as_str) {
         Some("assistant") => CanonicalRole::Assistant,
-        Some("system") => CanonicalRole::System,
+        // Responses 的 developer message 等价于 system（o 系列/Codex 会发）。
+        Some("system") | Some("developer") => CanonicalRole::System,
         Some("user") | None => CanonicalRole::User,
         Some(other) => return Err(CodecError::Unsupported(other.to_string())),
     };
@@ -242,16 +245,51 @@ fn decode_output_content(value: Option<&Value>) -> Result<Vec<ContentBlock>, Cod
     }
 }
 
-fn decode_tool(value: &Value) -> Result<ToolSpec, CodecError> {
+/// 解码一个 tool。只接受 function 工具；内置工具（web_search / local_shell 等）
+/// 无法映射到 canonical，直接跳过（对话仍可正常进行，只是这些工具不由路由转发）。
+fn decode_tool(value: &Value) -> Result<Option<ToolSpec>, CodecError> {
     let object = value
         .as_object()
         .ok_or(CodecError::Invalid("tool: not an object"))?;
-    Ok(ToolSpec {
-        name: string(object, "name").ok_or(CodecError::MissingField("tool.name"))?,
-        description: string(object, "description"),
-        parameters: object.get("parameters").cloned().unwrap_or(Value::Null),
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("function");
+    if kind != "function" {
+        return Ok(None);
+    }
+    let name = string(object, "name")
+        .or_else(|| {
+            object
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or(CodecError::MissingField("tool.name"))?;
+    Ok(Some(ToolSpec {
+        name,
+        description: string(object, "description").or_else(|| {
+            object
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("description"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }),
+        parameters: object
+            .get("parameters")
+            .or_else(|| {
+                object
+                    .get("function")
+                    .and_then(Value::as_object)
+                    .and_then(|function| function.get("parameters"))
+            })
+            .cloned()
+            .unwrap_or(Value::Null),
         strict: object.get("strict").and_then(Value::as_bool),
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -602,5 +640,56 @@ fn insert_opt_f32(object: &mut Map<String, Value>, key: &str, value: Option<f32>
 fn insert_opt_u32(object: &mut Map<String, Value>, key: &str, value: Option<u32>) {
     if let Some(value) = value {
         object.insert(key.to_string(), json!(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn developer_role_maps_to_system() {
+        // Codex/o 系列会用 developer message；它等价于 system，不能拒绝。
+        let request = decode_request(&serde_json::json!({
+            "model": "auto",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "follow the rules"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }
+            ]
+        }))
+        .expect("decode developer message");
+
+        assert_eq!(request.messages[0].role, CanonicalRole::System);
+        assert_eq!(request.messages[1].role, CanonicalRole::User);
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_tools_are_skipped_and_function_names_are_read() {
+        let request = decode_request(&serde_json::json!({
+            "model": "auto",
+            "input": "hi",
+            "tools": [
+                {"type": "web_search_preview"},
+                {"type": "local_shell"},
+                {"type": "function", "function": {"name": "shell_exec", "parameters": {"type": "object"}}}
+            ]
+        }))
+        .expect("decode tools");
+
+        assert_eq!(request.tools.len(), 1);
+        assert_eq!(request.tools[0].name, "shell_exec");
     }
 }

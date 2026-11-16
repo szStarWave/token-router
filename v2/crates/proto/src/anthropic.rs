@@ -132,6 +132,8 @@ fn decode_message(value: &Value) -> Result<CanonicalMessage, CodecError> {
         .ok_or(CodecError::Invalid("message: not an object"))?;
     let role = match object.get("role").and_then(Value::as_str) {
         Some("assistant") => CanonicalRole::Assistant,
+        // 部分客户端（Claude Code）会把 system 作为消息发送；canonical 允许 System 消息。
+        Some("system") | Some("developer") => CanonicalRole::System,
         Some("user") | None => CanonicalRole::User,
         Some(other) => return Err(CodecError::Unsupported(other.to_string())),
     };
@@ -617,5 +619,25 @@ fn insert_opt_f32(object: &mut Map<String, Value>, key: &str, value: Option<f32>
 fn insert_opt_u32(object: &mut Map<String, Value>, key: &str, value: Option<u32>) {
     if let Some(value) = value {
         object.insert(key.to_string(), json!(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_role_in_messages_is_accepted() {
+        let request = decode_request(&serde_json::json!({
+            "model": "auto",
+            "max_tokens": 32,
+            "messages": [
+                {"role": "system", "content": "follow the rules"},
+                {"role": "user", "content": "hi"}
+            ]
+        }))
+        .expect("decode system message");
+        assert_eq!(request.messages[0].role, CanonicalRole::System);
+        assert_eq!(request.messages[1].role, CanonicalRole::User);
     }
 }
