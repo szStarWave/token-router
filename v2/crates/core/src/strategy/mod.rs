@@ -4,9 +4,13 @@
 //! `Plan.state_updates` 或 `on_outcome` 的返回值交给 `agent` 原子提交。
 
 pub mod baseline;
+pub mod classify;
+pub mod escalation;
 pub mod failover;
 
 pub use baseline::Baseline;
+pub use classify::Classify;
+pub use escalation::Escalation;
 pub use failover::Failover;
 
 use tr_contracts::{

@@ -533,3 +533,27 @@ cargo xtask fixture-probe
 架构修订：`upstream -> proto` 已在 §3.2 记录；`agent` 因流式任务需要 `Arc<Db>`/`tokio`，依赖方向未变。
 
 下一步：P1（判官与棘轮）。
+
+### 2026-11-16：P1 收口（判官与棘轮）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P1-1 DecisionModel/预算/deadline | 完成 | `tr-decide`；超预算记 `budget_exceeded`，deadline 硬生效 |
+| P1-2 判官服务契约 | 完成（精简） | 信封 + answer 解析 + 失败码；`JudgeQuestionDefinition` 完整目录留 P2 |
+| P1-3 LLM adapter | 完成 | 动态 JSON schema / json_mode / tool_call；`uncertain` 保留字校验 |
+| P1-4 本地兜底 + `judge test` | 完成 | `tr-cli judge-test` 对 local 后端 Passed |
+| P1-5 判官审计 | 完成 | `judge_calls` 只存结构化字段，不存 prompt |
+| P1-6 shadow 记录 | 完成 | `shadow_records` + `tr-cli shadow-report` |
+| P1-7 Classify shadow | 部分 | `mode=shadow` 只写 `Note` 理由，未建独立 suggestion 表 |
+| P1-8 shadow 报告 | 完成 | 一致率/延迟/样本数 |
+| P1-9 Escalation 状态机 | 完成 | 四态 + 强档计数 + 硬上限 + 冷却 |
+| P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
+| P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
+| P1-12 无会话键退化 | 部分 | `SessionKeySource::Fallback` + `collision_suspect` 已落账；“每键只 warn 一次”未实现 |
+| P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条），属环境依赖 |
+| P1-14 预算熔断观测 | 部分 | 预算拒绝已入 `judge_calls`；指标在 P2 |
+| P1-15 D-1 决策 | **待数据** | 按设计保持默认 off，shadow 达标后再评估 active |
+
+**G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；**真实流量 shadow 报告未产出**，D-1 维持“默认 off”。
+
+下一步：P2（成本闸与评测）。

@@ -58,6 +58,11 @@ reason_kinds! {
     // 判官/棘轮
     JudgeUnavailable => "JUDGE_UNAVAILABLE",
     LatchTargetUnavailable => "LATCH_TARGET_UNAVAILABLE",
+    EscalationConfirming => "ESCALATION_CONFIRMING",
+    EscalationLatched => "ESCALATION_LATCHED",
+    EscalationReleased => "ESCALATION_RELEASED",
+    EscalationCooldown => "ESCALATION_COOLDOWN",
+    ClassifyPrefer => "CLASSIFY_PREFER",
     CoreFallback => "CORE_FALLBACK",
     // 状态/协议
     StateCasConflict => "STATE_CAS_CONFLICT",

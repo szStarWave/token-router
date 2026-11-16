@@ -41,6 +41,7 @@
 | 26 | 融合 pi StickyDispatch 与 HiRoute ContextHold：硬复用/软亲和优先级、FailedDispatch、DispatchSource、回退与失效 | §4.9.1、§6.5、§8.2、§9.2 |
 | 27 | 补实施前置落地件：存储 DDL/迁移、错误分类与行为矩阵、仓库与 CI 形态、配置演进策略；`FailedDispatch` 增加 `ErrorClass` | §18.4、§4.9.1 |
 | 28 | P0a 实现修正：`DecisionSnapshot` 补齐 `RequestView` 全部输入（否则 sticky 无法回放）；包名统一 `tr-` 前缀避开 sysroot 的 `core` | §4.7、§18.4.3 |
+| 29 | P1 实现补充：`JudgeRequest` 携带 `category`/`evidence`；新增 `PlanContribution::Note`；`upstream -> proto` 依赖 | §4.5、§3.2 |
 
 ---
 
@@ -525,6 +526,9 @@ pub struct Budget {
 ```
 
 策略通过 `judge_requests` 表达“这里需要判官”，由 `agent` 统一预算与去重；`core` 不感知 `decide`。
+
+> 实现补充（P1）：`JudgeRequest` 增加 `category` 与 `evidence` 两个字段。它们由调用点计算并随请求下发，避免 `agent` 反向猜“这句话属于哪个故障类别”；模型自报的 `new_evidence` 仍然不被信任。
+> 另新增 `PlanContribution::Note { reason }`：只记录理由码（latch 计数、冷却、shadow 建议），不改变顺序；合并器只收集 `reason`。
 
 ### 4.6 Verdict 与判官答案
 

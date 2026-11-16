@@ -96,19 +96,37 @@ pub struct Pipeline {
     db: std::sync::Arc<Db>,
     catalog: std::sync::Arc<Catalog>,
     upstream: HttpUpstream,
+    judge: std::sync::Arc<crate::judge::JudgeRuntime>,
+    strategies: Vec<Box<dyn tr_core::strategy::Strategy>>,
 }
 
 impl Pipeline {
     pub fn new(db: Db, catalog: Catalog, upstream: HttpUpstream) -> Self {
+        // 判官构建失败（TLS/配置）只可能是进程级问题：降级为 off 并记录，请求仍可服务。
+        let judge = match crate::judge::JudgeRuntime::new(catalog.judge.clone()) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("judge disabled: {error}");
+                crate::judge::JudgeRuntime::new(crate::judge::JudgeSettings::default())
+                    .expect("off judge runtime")
+            }
+        };
         Self {
             db: std::sync::Arc::new(db),
             catalog: std::sync::Arc::new(catalog),
             upstream,
+            judge: std::sync::Arc::new(judge),
+            strategies: tr_core::default_strategies(),
         }
     }
 
     pub fn from_catalog(db: Db, catalog: Catalog) -> Self {
         Self::new(db, catalog, HttpUpstream::default())
+    }
+
+    /// 判官是否 enabled（诊断/测试）。
+    pub fn judge_mode(&self) -> crate::judge::JudgeMode {
+        self.judge.mode()
     }
 
     pub fn catalog(&self) -> &Catalog {
@@ -207,7 +225,7 @@ impl Pipeline {
             candidates: candidates.clone(),
             health,
             session: facts.clone(),
-            strategy_states,
+            strategy_states: strategy_states.clone(),
             ledger: Default::default(),
             profile: profile.clone(),
             now_unix,
@@ -224,9 +242,61 @@ impl Pipeline {
             router_state,
         };
 
-        let plan = tr_core::decide(&snapshot);
+        // 两阶段：draft 产出 Plan 与判官请求；active 模式下 refine 覆盖 Plan。
+        let (mut plan, requests) = tr_core::decide_and_collect(&snapshot, &self.strategies);
         let plan_uuid = Uuid::new_v4().simple().to_string();
         let plan_id = format!("plan-{}", &plan_uuid[..12]);
+
+        let mut shadow: Option<ShadowInfo> = None;
+        if !requests.is_empty() && self.judge.mode() != crate::judge::JudgeMode::Off {
+            let outcome = self
+                .judge
+                .consult(&derived.key, &plan_id, &snapshot, &requests)
+                .await;
+
+            if let Some(kind) = crate::judge::JudgeRuntime::unavailable_reason(&outcome) {
+                plan.reason_codes.push(ReasonCode::new(kind));
+            }
+
+            if self.judge.is_active() && !outcome.verdicts.is_empty() {
+                plan =
+                    tr_core::decide_with_verdicts(&snapshot, &self.strategies, &outcome.verdicts);
+            }
+
+            if let Some(trace) = outcome.traces.first().cloned() {
+                plan.judge = trace.clone();
+                if self.judge.is_shadow() {
+                    let kernel = plan.preference.first();
+                    let max_strength = candidates
+                        .iter()
+                        .map(|candidate| candidate.strength)
+                        .max()
+                        .unwrap_or(0);
+                    shadow = Some(ShadowInfo {
+                        kernel_choice: kernel
+                            .map(|slot| slot.candidate_id.clone())
+                            .unwrap_or_default(),
+                        kernel_is_strongest: kernel
+                            .is_some_and(|slot| slot.strength >= max_strength && max_strength > 0),
+                        verdict: outcome.verdicts.first().cloned(),
+                        value: outcome
+                            .first_value
+                            .as_ref()
+                            .and_then(|value| serde_json::to_value(value).ok()),
+                        question_id: requests.first().map(|request| request.id.clone()),
+                        effective_source: trace.effective_source.as_str().to_string(),
+                        latency_ms: outcome.latency_ms,
+                        snapshot_digest: snapshot.projection_digest().unwrap_or_default(),
+                    });
+                }
+            }
+
+            for call in &outcome.calls {
+                if let Err(error) = store::judge::insert_call(&self.db, call) {
+                    eprintln!("judge_calls insert failed: {error}");
+                }
+            }
+        }
 
         if plan.preference.is_empty() {
             let ledger = build_ledger(
@@ -253,6 +323,7 @@ impl Pipeline {
                     profile_revision: profile.revision.clone(),
                     config_digest: self.catalog.config_digest.clone(),
                     now_unix,
+                    judge: Some(plan.judge.clone()),
                 },
                 Vec::new(),
                 None,
@@ -284,6 +355,8 @@ impl Pipeline {
             facts,
             now_unix,
             protocol_state_missing,
+            strategy_states,
+            shadow,
         })
     }
 
@@ -352,6 +425,7 @@ impl Pipeline {
             let breakers: Vec<_> = breakers.into_iter().collect();
             let request_id = ledger.request_id;
             store::commit(&self.db, None, &breakers, &ledger)?;
+            persist_state_updates(&self.db, &prepared);
             return Err(PipelineError::Upstream {
                 class: failure.class,
                 status: failure.status,
@@ -389,6 +463,8 @@ impl Pipeline {
         let headers = prepared.headers(&candidate, &slot, index, &ledger.reason_codes);
 
         persist_protocol_state(&self.db, &prepared, &response);
+        persist_state_updates(&self.db, &prepared);
+        persist_shadow(&self.db, &prepared, ledger.request_id);
 
         Ok(PipelineResponse {
             response,
@@ -563,6 +639,7 @@ impl Pipeline {
         let breakers: Vec<_> = breakers.into_iter().collect();
         let request_id = ledger.request_id;
         store::commit(&self.db, None, &breakers, &ledger)?;
+        persist_state_updates(&self.db, &prepared);
         Err(PipelineError::Upstream {
             class: failure.class,
             status: failure.status,
@@ -590,6 +667,22 @@ struct Prepared {
     facts: SessionFacts,
     now_unix: u64,
     protocol_state_missing: bool,
+    strategy_states:
+        std::collections::BTreeMap<tr_contracts::StrategyId, tr_contracts::StrategyState>,
+    shadow: Option<ShadowInfo>,
+}
+
+/// shadow 模式记录：判官建议 vs 内核结论。
+#[derive(Debug, Clone)]
+struct ShadowInfo {
+    kernel_choice: String,
+    kernel_is_strongest: bool,
+    verdict: Option<tr_contracts::Verdict>,
+    value: Option<serde_json::Value>,
+    question_id: Option<String>,
+    effective_source: String,
+    latency_ms: u32,
+    snapshot_digest: String,
 }
 
 impl Prepared {
@@ -624,6 +717,7 @@ impl Prepared {
             profile_revision: self.profile.revision.clone(),
             config_digest: self.profile.config_digest.clone(),
             now_unix: self.now_unix,
+            judge: Some(self.plan.judge.clone()),
         }
     }
 
@@ -808,6 +902,8 @@ async fn forward_stream(
             ledger.plan_id
         );
     }
+    persist_state_updates(&db, &prepared);
+    persist_shadow(&db, &prepared, ledger.request_id);
 
     if outcome != OutcomeKind::Success
         && let Some(message) = error_message
@@ -859,6 +955,76 @@ fn persist_protocol_state(db: &Db, prepared: &Prepared, response: &CanonicalResp
     );
 }
 
+/// 把 `Plan.state_updates` 合并进策略状态（RFC 7386 风格，顶层层级）。
+///
+/// 失败路径也要写：latch 的“确认次数”必须跨失败请求保留，否则永远升不上去。
+fn persist_state_updates(db: &Db, prepared: &Prepared) {
+    for update in &prepared.plan.state_updates {
+        let mut state = prepared
+            .strategy_states
+            .get(&update.strategy_id)
+            .cloned()
+            .unwrap_or_else(|| tr_contracts::StrategyState {
+                branch_id: prepared.branch_id.clone(),
+                task_id: prepared.task_id.clone(),
+                virtual_model_id: prepared.virtual_model.id.clone(),
+                strategy_id: update.strategy_id.clone(),
+                ..tr_contracts::StrategyState::default()
+            });
+        state.blob = merge_patch(state.blob, update.patch.clone());
+        state.updated_at = prepared.now_unix;
+        if let Err(error) = store::strategy::save_strategy_state(db, &prepared.session_key, &state)
+        {
+            eprintln!("strategy state save failed: {error}");
+        }
+    }
+}
+
+fn merge_patch(target: serde_json::Value, patch: serde_json::Value) -> serde_json::Value {
+    match (target, patch) {
+        (serde_json::Value::Object(mut target), serde_json::Value::Object(patch)) => {
+            for (key, value) in patch {
+                match value {
+                    serde_json::Value::Null => {
+                        target.remove(&key);
+                    }
+                    other => {
+                        let existing = target.remove(&key).unwrap_or(serde_json::Value::Null);
+                        target.insert(key, merge_patch(existing, other));
+                    }
+                }
+            }
+            serde_json::Value::Object(target)
+        }
+        (_, patch) => patch,
+    }
+}
+
+fn persist_shadow(db: &Db, prepared: &Prepared, request_id: Uuid) {
+    let Some(shadow) = &prepared.shadow else {
+        return;
+    };
+    let record = store::judge::ShadowRecord {
+        request_id,
+        selection_model: prepared.virtual_model.id.clone(),
+        kernel_choice: shadow.kernel_choice.clone(),
+        judge_question_id: shadow.question_id.clone(),
+        judge_value: shadow.value.clone(),
+        agreement: crate::judge::JudgeRuntime::agreement(
+            shadow.verdict.as_ref(),
+            shadow.kernel_is_strongest,
+        ),
+        effective_source: Some(shadow.effective_source.clone()),
+        judge_latency_ms: Some(shadow.latency_ms),
+        judge_cost_micros: None,
+        snapshot_digest: shadow.snapshot_digest.clone(),
+        created_at: prepared.now_unix,
+    };
+    if let Err(error) = store::judge::insert_shadow(db, &record) {
+        eprintln!("shadow record insert failed: {error}");
+    }
+}
+
 struct LedgerInput {
     plan_id: String,
     session_key: String,
@@ -878,6 +1044,7 @@ struct LedgerInput {
     profile_revision: String,
     config_digest: String,
     now_unix: u64,
+    judge: Option<tr_contracts::JudgeTrace>,
 }
 
 struct Served {
@@ -958,7 +1125,7 @@ fn build_ledger(
             .and_then(|served| served.usage.cached_tokens)
             .map(u64::from),
         attempts,
-        judge: None,
+        judge: input.judge.clone(),
         answer_cost: answer_cost.clone(),
         routing_cost: None,
         cost_equiv: answer_cost,

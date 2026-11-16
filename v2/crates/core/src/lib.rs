@@ -16,28 +16,44 @@ pub mod strategy;
 pub mod stream_policy;
 
 use tr_contracts::{
-    CanonicalRequest, DecisionSnapshot, Plan, SessionFacts, Signals, StrategyState,
+    CanonicalRequest, DecisionSnapshot, JudgeRequest, Plan, PlanDraft, SessionFacts, Signals,
+    StrategyState, Verdict,
 };
 
-use crate::strategy::{Baseline, Failover, Strategy, StrategyConfig};
+use crate::strategy::{Baseline, Classify, Escalation, Failover, Strategy, StrategyConfig};
 
-/// P0a 内置策略集：Baseline + Failover（无判官、无状态学习）。
+/// P1 内置策略集：Baseline + Failover + Escalation + Classify（默认 off/shadow 由参数控制）。
 pub fn default_strategies() -> Vec<Box<dyn Strategy>> {
-    vec![Box::new(Baseline), Box::new(Failover)]
+    vec![
+        Box::new(Baseline),
+        Box::new(Failover),
+        Box::new(Escalation),
+        Box::new(Classify),
+    ]
 }
 
 /// 决策入口：从快照还原 `RequestView`，跑策略，合并并校验。
 ///
-/// P0a 不消费 `PlanDraft.judge_requests`：`agent` 在没有 `decide` 实现时直接丢弃，
-/// 并在 P1 接入判官后改用两阶段调用。
+/// 没有判官结论时等价于 `decide_with_verdicts(.., &[])`。
 pub fn decide(snapshot: &DecisionSnapshot) -> Plan {
     decide_with(snapshot, &default_strategies())
 }
 
 /// 与 [`decide`] 相同，但允许注入策略集（测试与后续 profile 使用）。
 pub fn decide_with(snapshot: &DecisionSnapshot, strategies: &[Box<dyn Strategy>]) -> Plan {
+    decide_with_verdicts(snapshot, strategies, &[])
+}
+
+/// 两阶段执行：`draft` →（可选 `refine`）→ 合并。
+///
+/// `refine` 的产出排在 `draft` 之后，因此同一策略的状态更新以 `refine` 为准。
+pub fn decide_with_verdicts(
+    snapshot: &DecisionSnapshot,
+    strategies: &[Box<dyn Strategy>],
+    verdicts: &[Verdict],
+) -> Plan {
     let view = snapshot.view();
-    let mut drafts = Vec::with_capacity(strategies.len());
+    let mut drafts: Vec<(u8, PlanDraft)> = Vec::with_capacity(strategies.len() * 2);
 
     for strategy in strategies {
         let id = strategy.id();
@@ -45,9 +61,52 @@ pub fn decide_with(snapshot: &DecisionSnapshot, strategies: &[Box<dyn Strategy>]
         let state: StrategyState = snapshot.strategy_state(&id).cloned().unwrap_or_default();
         let draft = strategy.draft(&view, &state, &config);
         drafts.push((strategy.priority(), draft));
+
+        if !verdicts.is_empty() {
+            let refined = strategy.refine(&view, &state, verdicts, &config);
+            drafts.push((strategy.priority(), refined));
+        }
     }
 
     merge::merge(&view, &drafts)
+}
+
+/// 只跑 `draft`，收集判官请求（供 `agent` 决定是否咨询判官）。
+pub fn draft_all(
+    snapshot: &DecisionSnapshot,
+    strategies: &[Box<dyn Strategy>],
+) -> Vec<JudgeRequest> {
+    let view = snapshot.view();
+    let mut requests = Vec::new();
+    for strategy in strategies {
+        let id = strategy.id();
+        let config = StrategyConfig::enabled(id.clone());
+        let state: StrategyState = snapshot.strategy_state(&id).cloned().unwrap_or_default();
+        let draft = strategy.draft(&view, &state, &config);
+        requests.extend(draft.judge_requests);
+    }
+    requests
+}
+
+/// 一次 draft 同时产出 Plan 与判官请求，避免 `agent` 重复跑策略。
+pub fn decide_and_collect(
+    snapshot: &DecisionSnapshot,
+    strategies: &[Box<dyn Strategy>],
+) -> (Plan, Vec<JudgeRequest>) {
+    let view = snapshot.view();
+    let mut drafts: Vec<(u8, PlanDraft)> = Vec::with_capacity(strategies.len());
+    let mut requests = Vec::new();
+
+    for strategy in strategies {
+        let id = strategy.id();
+        let config = StrategyConfig::enabled(id.clone());
+        let state: StrategyState = snapshot.strategy_state(&id).cloned().unwrap_or_default();
+        let draft = strategy.draft(&view, &state, &config);
+        requests.extend(draft.judge_requests.iter().cloned());
+        drafts.push((strategy.priority(), draft));
+    }
+
+    (merge::merge(&view, &drafts), requests)
 }
 
 /// 组装 `Signals`：核心字段 + 空的扩展信号包。

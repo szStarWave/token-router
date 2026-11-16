@@ -136,3 +136,98 @@ pub fn judge_cost(usage: &JudgeUsage, currency: &str) -> Cost {
         currency: currency.to_string(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// 判官输入/答案（§7.2、§7.3）
+// ---------------------------------------------------------------------------
+
+/// 判官输入：问题 + 已冻结的上下文 + 调用点计算的证据指纹。
+///
+/// `evidence` 由调用点计算（step_kind + tool + normalized_error + turn），不信任模型自报。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JudgeInput {
+    pub question: Question,
+    pub category: crate::verdict::Category,
+    pub evidence: crate::verdict::EvidenceRef,
+    pub context: JudgeContext,
+}
+
+/// 判官上下文（P0 只支持固定字符预算，§7.4）。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JudgeContext {
+    pub system: String,
+    pub task: String,
+    /// 由旧到新排列的窗口消息（已按单条字符上限截断）。
+    pub recent: Vec<String>,
+}
+
+/// 判官答案。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum JudgeValue {
+    Bool(bool),
+    /// 枚举选项 id；映射到 Verdict 由调用点配置决定。
+    Choice(String),
+    /// 分数；必须配合 `Choices::Score` 的阈值。
+    Score(f32),
+    /// 保留答案：模型不确定，或置信度低于闸门。
+    #[default]
+    Uncertain,
+}
+
+/// 一次判官回答。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JudgeAnswer {
+    pub value: JudgeValue,
+    pub confidence: Option<f32>,
+    /// 自然语言理由：只进审计，不参与算术。
+    pub reason: Option<String>,
+}
+
+/// 判官失败。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JudgeFailure {
+    pub code: JudgeFailureCode,
+    pub message: Option<String>,
+}
+
+impl Default for JudgeFailure {
+    fn default() -> Self {
+        Self {
+            code: JudgeFailureCode::SourceUnavailable,
+            message: None,
+        }
+    }
+}
+
+/// `judge test` 结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JudgeServiceTestResult {
+    pub outcome: TestOutcome,
+    pub latency_ms: u32,
+    pub failure: Option<JudgeFailure>,
+}
+
+impl Default for JudgeServiceTestResult {
+    fn default() -> Self {
+        Self {
+            outcome: TestOutcome::Failed,
+            latency_ms: 0,
+            failure: None,
+        }
+    }
+}
+
+/// 判官自检结论。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestOutcome {
+    Passed,
+    #[default]
+    Failed,
+}

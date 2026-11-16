@@ -30,6 +30,21 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// shadow 记录聚合（一致率/延迟）
+    ShadowReport {
+        #[arg(long)]
+        db: PathBuf,
+        /// JSON 输出
+        #[arg(long)]
+        json: bool,
+    },
+    /// 判官自检（按配置构造运行时，跑一次固定问题）
+    JudgeTest {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -73,6 +88,67 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 catalog.default_virtual_model,
                 catalog.config_digest
             );
+            Ok(())
+        }
+        Command::ShadowReport { db, json } => {
+            let db = tr_agent::store::Db::open(&db)?;
+            let summary = tr_agent::store::judge::shadow_summary(&db)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "total": summary.total,
+                        "agreed": summary.agreed,
+                        "disagreed": summary.disagreed,
+                        "unknown": summary.unknown,
+                        "agreement_rate": summary.agreement_rate(),
+                        "avg_latency_ms": summary.avg_latency_ms,
+                    }))?
+                );
+            } else {
+                println!(
+                    "shadow: total={} agreed={} disagreed={} unknown={} rate={:?} avg_latency_ms={:?}",
+                    summary.total,
+                    summary.agreed,
+                    summary.disagreed,
+                    summary.unknown,
+                    summary.agreement_rate(),
+                    summary.avg_latency_ms
+                );
+            }
+            Ok(())
+        }
+        Command::JudgeTest { config, json } => {
+            let catalog = tr_agent::config::load(&config)?;
+            let runtime = tr_agent::judge::JudgeRuntime::new(catalog.judge.clone())
+                .map_err(|error| format!("judge runtime: {error}"))?;
+            let runtime_tokio = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let result = runtime_tokio.block_on(runtime.self_test());
+            if json {
+                println!("{}", serde_json::to_string(&result)?);
+            } else {
+                println!(
+                    "judge test: {:?} ({}ms){}{}",
+                    result.outcome,
+                    result.latency_ms,
+                    result
+                        .failure
+                        .as_ref()
+                        .map(|failure| format!(" code={:?}", failure.code))
+                        .unwrap_or_default(),
+                    result
+                        .failure
+                        .as_ref()
+                        .and_then(|failure| failure.message.as_deref())
+                        .map(|message| format!(" message={message}"))
+                        .unwrap_or_default()
+                );
+            }
+            if result.outcome != tr_contracts::TestOutcome::Passed {
+                return Err("judge test failed".into());
+            }
             Ok(())
         }
     }

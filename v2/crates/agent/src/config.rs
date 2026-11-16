@@ -13,6 +13,10 @@ use tr_contracts::{
     ProfileId, ProviderKind, StreamEscalation, ThinkingLevel, UnknownPricePolicy, UpstreamRef,
     VirtualModel, VirtualModelId,
 };
+use tr_decide::budget::Budget;
+use tr_decide::llm::StructuredOutput;
+
+use crate::judge::{Backend, JudgeMode, JudgeSettings};
 
 /// 当前配置 schema 版本。
 pub const SCHEMA_VERSION: u32 = 1;
@@ -37,6 +41,8 @@ pub struct Catalog {
     pub profiles: BTreeMap<ProfileId, ProfileConfig>,
     pub candidates: BTreeMap<CandidateId, Candidate>,
     pub virtual_models: BTreeMap<VirtualModelId, VirtualModel>,
+    /// 判官配置（`off` 时 backend 不构造）。
+    pub judge: JudgeSettings,
     /// 规范化配置的 SHA-256，写入账本与快照。
     pub config_digest: String,
 }
@@ -103,6 +109,8 @@ pub struct ConfigFile {
     pub candidates: Vec<CandidateFile>,
     #[serde(default)]
     pub virtual_models: Vec<VirtualModelFile>,
+    #[serde(default)]
+    pub judge: JudgeFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +198,67 @@ pub struct VirtualModelFile {
 
 fn default_provider() -> String {
     "openai".to_string()
+}
+
+/// 判官配置（§18.2 `[judge]`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JudgeFile {
+    /// `off` | `shadow` | `active`
+    pub mode: String,
+    pub max_calls_per_turn: u32,
+    pub max_calls_per_minute: u32,
+    pub max_calls_per_session: u32,
+    pub deadline_ms: u32,
+    pub service: JudgeServiceFile,
+}
+
+impl Default for JudgeFile {
+    fn default() -> Self {
+        Self {
+            mode: "off".to_string(),
+            max_calls_per_turn: 1,
+            max_calls_per_minute: 30,
+            max_calls_per_session: 200,
+            deadline_ms: 300,
+            service: JudgeServiceFile::default(),
+        }
+    }
+}
+
+/// 判官服务配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JudgeServiceFile {
+    /// `local` | `http` | `llm`
+    pub kind: String,
+    pub endpoint: String,
+    pub model: String,
+    pub service_id: String,
+    pub revision: u64,
+    pub credential: Option<String>,
+    pub timeout_ms: u32,
+    /// `json_schema` | `json_mode` | `tool_call`
+    pub structured_output: String,
+    pub temperature: f32,
+    pub max_output_tokens: u32,
+}
+
+impl Default for JudgeServiceFile {
+    fn default() -> Self {
+        Self {
+            kind: "local".to_string(),
+            endpoint: String::new(),
+            model: String::new(),
+            service_id: "local-judge".to_string(),
+            revision: 1,
+            credential: None,
+            timeout_ms: 300,
+            structured_output: "json_mode".to_string(),
+            temperature: 0.0,
+            max_output_tokens: 256,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -340,15 +409,107 @@ impl ConfigFile {
             }
         }
 
+        let judge = build_judge_settings(&self.judge)?;
+
         Ok(Catalog {
             server: self.server,
             default_virtual_model,
             profiles,
             candidates,
             virtual_models,
+            judge,
             config_digest,
         })
     }
+}
+
+fn build_judge_settings(file: &JudgeFile) -> Result<JudgeSettings, ConfigError> {
+    let mode = JudgeMode::parse(&file.mode).ok_or_else(|| {
+        ConfigError::Invalid(format!(
+            "judge.mode 只能是 off/shadow/active，得到 `{}`",
+            file.mode
+        ))
+    })?;
+
+    let service = &file.service;
+    let credential = match &service.credential {
+        Some(reference) => resolve_credential(reference)?,
+        None => None,
+    };
+
+    let backend = match service.kind.as_str() {
+        "local" => Backend::Local,
+        "http" => {
+            if service.endpoint.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "judge.service.kind = http 时 endpoint 必填".to_string(),
+                ));
+            }
+            Backend::Http {
+                endpoint: service.endpoint.clone(),
+                service_id: service.service_id.clone(),
+                revision: service.revision,
+                credential,
+                timeout_ms: service.timeout_ms,
+            }
+        }
+        "llm" => {
+            if service.endpoint.is_empty() || service.model.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "judge.service.kind = llm 时 endpoint/model 必填".to_string(),
+                ));
+            }
+            Backend::Llm {
+                endpoint: service.endpoint.clone(),
+                model: service.model.clone(),
+                credential,
+                structured_output: match service.structured_output.as_str() {
+                    "json_schema" => StructuredOutput::JsonSchema,
+                    "tool_call" => StructuredOutput::ToolCall,
+                    "json_mode" => StructuredOutput::JsonMode,
+                    other => {
+                        return Err(ConfigError::Invalid(format!(
+                            "judge.service.structured_output 不支持 `{other}`"
+                        )));
+                    }
+                },
+                temperature: service.temperature,
+                max_output_tokens: service.max_output_tokens,
+                timeout_ms: service.timeout_ms,
+                service_id: service.service_id.clone(),
+            }
+        }
+        other => {
+            return Err(ConfigError::Invalid(format!(
+                "judge.service.kind 不支持 `{other}`"
+            )));
+        }
+    };
+
+    Ok(JudgeSettings {
+        mode,
+        budget: Budget {
+            max_calls_per_turn: file.max_calls_per_turn,
+            max_calls_per_minute: file.max_calls_per_minute,
+            max_calls_per_session: file.max_calls_per_session,
+            deadline_ms: file.deadline_ms,
+        },
+        backend,
+    })
+}
+
+/// 解析 `env:` / `file:` 引用；没有前缀时按字面量处理（仅用于测试）。
+fn resolve_credential(reference: &str) -> Result<Option<String>, ConfigError> {
+    if let Some(name) = reference.strip_prefix("env:") {
+        return std::env::var(name)
+            .map(Some)
+            .map_err(|_| ConfigError::Invalid(format!("判官凭据环境变量 `{name}` 未设置")));
+    }
+    if let Some(path) = reference.strip_prefix("file:") {
+        let value = std::fs::read_to_string(path)?;
+        return Ok(Some(value.trim().to_string()));
+    }
+    Ok(Some(reference.to_string()))
 }
 
 /// 从文件加载。

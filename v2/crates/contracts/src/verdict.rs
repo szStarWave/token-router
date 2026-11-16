@@ -25,10 +25,11 @@ pub enum Verdict {
 }
 
 /// 粗粒度分类。细分类（Repetition / Drift / ...）只作为 detail，避免 latch 抖动。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     ToolFailure,
+    #[default]
     QualityUncertain,
     ContextOverflow,
     PolicyRisk,

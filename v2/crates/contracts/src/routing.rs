@@ -468,6 +468,10 @@ pub enum PlanContribution {
         cost: Cost,
         reason: ReasonCode,
     },
+    /// 不改变顺序的理由记录（例如 latch 计数、冷却）；合并器只收集 reason。
+    Note {
+        reason: ReasonCode,
+    },
 }
 
 /// 判官请求：策略只说“需要”，由 `agent` 统一预算与去重。
@@ -479,6 +483,9 @@ pub struct JudgeRequest {
     /// `false` = 超时可跳过。
     pub required: bool,
     pub priority: u8,
+    /// 调用点计算的证据（判官输入需要，且不能由模型自报）。
+    pub category: crate::verdict::Category,
+    pub evidence: crate::verdict::EvidenceRef,
 }
 
 /// 判官预算（与审批预算池分离）。

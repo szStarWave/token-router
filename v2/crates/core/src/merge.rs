@@ -51,6 +51,9 @@ pub fn merge(view: &RequestView, drafts: &[(u8, PlanDraft)]) -> Plan {
                     cache_losses.push(cost.clone());
                     push_reason(&mut reason_codes, reason.clone());
                 }
+                PlanContribution::Note { reason } => {
+                    push_reason(&mut reason_codes, reason.clone());
+                }
             }
         }
         state_updates.extend(draft.state_updates.iter().cloned());
