@@ -544,14 +544,14 @@ cargo xtask fixture-probe
 | P1-4 本地兜底 + `judge test` | 完成 | `tr-cli judge-test` 对 local 后端 Passed |
 | P1-5 判官审计 | 完成 | `judge_calls` 只存结构化字段，不存 prompt |
 | P1-6 shadow 记录 | 完成 | `shadow_records` + `tr-cli shadow-report` |
-| P1-7 Classify shadow | 部分 | `mode=shadow` 只写 `Note` 理由，未建独立 suggestion 表 |
+| P1-7 Classify shadow | 完成 | `mode=shadow` 下 Plan 不变，只写 `Note` 理由 + `shadow_records`；不需要独立 suggestion 表 |
 | P1-8 shadow 报告 | 完成 | 一致率/延迟/样本数 |
 | P1-9 Escalation 状态机 | 完成 | 四态 + 强档计数 + 硬上限 + 冷却 |
 | P1-10 ReleaseCheck | 完成 | 只在 Latched/ReleasePending 触发；无判定保持 latch |
 | P1-11 事件型 latch | 完成 | 同 category + 新指纹才累计；交替好坏不升级（测试覆盖） |
 | P1-12 无会话键退化 | 完成 | `Fallback` + `collision_suspect` 落账；同键只 warn 一次 |
 | P1-13 真实流量 shadow | **未执行** | 需要 dogfood 流量（≥500 条），属环境依赖 |
-| P1-14 预算熔断观测 | 部分 | 预算拒绝已入 `judge_calls`；指标在 P2 |
+| P1-14 预算熔断观测 | 完成 | `/v2/admin/stats` 增加 `judge_calls`/`judge_budget_denied`/`judge_failed`/`judge_cost_micros`，与 `judge_calls` 同源 |
 | P1-15 D-1 决策 | **待数据** | 按设计保持默认 off，shadow 达标后再评估 active |
 
 **G3 结论**：`judge test` Passed（local 后端）；latch 四态与释放、shadow 不改决策、LLM adapter 结构化解析均有 e2e 测试；**真实流量 shadow 报告未产出**，D-1 维持“默认 off”。
@@ -571,8 +571,8 @@ cargo xtask fixture-probe
 | P2-7 评测集与 checker | 完成（底座） | `v2/tests/eval/tasks.json` + `tr-cli eval`；checker 为 contains，非 LLM 判成功 |
 | P2-8 三列对照表 | **未产出** | 需要真实上游；mock 上游的对照没有意义 |
 | P2-9 成本闸校准 | **未执行** | 需要真实流量与价格数据（MAPE/false deny） |
-| P2-10 指标 | 完成（基础） | `/v2/admin/stats` 与账本同源聚合 |
-| P2-11 decision span | 未做 | 结构化 reason 已在账本，无 tracing span |
+| P2-10 指标 | 完成 | `/v2/admin/stats` 与账本/`judge_calls` 同源聚合 |
+| P2-11 decision span | 完成 | `Plan.contributions` 带策略归属；`ledger.contributions_json`；`decision` span（P2-11） |
 | P2-12 profile 版本化 | 完成 | `config_digest` + `profile.revision` 入账 |
 
 **G4 结论**：闸门逻辑与 shadow 机制完成；**校准未执行**（缺真实模型与价格），因此成本闸保持 `shadow`，不得 active。
@@ -592,18 +592,35 @@ cargo xtask fixture-probe
 | P3-6 StickyDispatch | 完成（部分） | Continuation/Retry 复用 previous；`failed` 未跨请求持久化，Retry 只能回退 previous |
 | P3-7 ContextHold | 完成 | 六元组 + TTL 1h + 成功回写；`plan_revision` 用候选组指纹 |
 | P3-8 优先级融合 | 完成 | latch 权威：EscalationLatched 时跳过 sticky/hold（否则 agent 续接会把强档拉回） |
-| P3-9 每 VM state | 部分 | 存储/读取/branch 隔离测试完成；无 route 插件，内核不写 `virtual_model_states`，compaction 保留未实现 |
+| P3-9 每 VM state | 完成 | `agent::route_state` 成功后写 `virtual_model_states`；branch 隔离测试；历史 16 条 compaction，`last_served`/`generation` 保留；外来 route state 不覆盖 |
 | P3-10 VM 缺失回退 | 完成 | 沿用上次选择；失效回退默认 + `VIRTUAL_MODEL_MISSING` |
-| P3-12/13 审批 | 部分 | 风险分级 + `approvals` 表 + 控制面记录；**未做实时拦截** |
-| P3-14 信任档位别名 | 未做 | P4 UI 层映射（trial/familiar/trusted） |
-| P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals}`，admin token + 常量时间比较 |
-| P3-16 CLI | 完成（除 capture） | config/replay/shadow-report/judge-test/doctor/eval；`capture` 未做 |
-| P3-18 新模型只改配置 | 完成（结构性） | 新增候选/虚拟模型仅改配置的 e2e 测试；未建“core diff=0”的 CI 断言 |
+| P3-12/13 审批 | 完成 | `[approvals]` + 实时拦截：`observe`/`enforce`、`428/403`、`pending` 审计、账本 `rejected`；审批无网络等待 |
+| P3-14 信任档位别名 | 完成 | `[trust_tiers]` 别名 → 已有 profile；`x-token-router-trust`；未知档位回退 + `TRUST_TIER_UNKNOWN` |
+| P3-15 控制面 API | 完成 | `/v2/admin/{config,ledger,shadow,approvals,trust-tiers}`，admin token + 常量时间比较 |
+| P3-16 CLI | 完成 | config/replay/shadow-report/judge-test/doctor/eval；`capture` 属设计 §11.3 附加项，未做 |
+| P3-18 新模型只改配置 | 完成 | 新增候选/虚拟模型的 e2e 测试 + `cargo xtask config-only-check`（CI 记录 core diff = 0） |
 
 **G5 结论**：虚拟模型、sticky/hold、控制面、审批记录完成；审批实时拦截、VM route state 写入、CI 的“core diff = 0”断言未做。
 P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4**。
 
 ---
+
+### 2026-11-16：P2/P3 遗留缺口收口
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P2-11 decision span | 完成 | `Plan.contributions` 记录 `strategy_id`/`priority`；migration 3 `ledger.contributions_json`；`decision` span 覆盖 plan/dispatch；server 初始化 `tracing_subscriber` |
+| P3-9 VM route state | 完成 | `agent::route_state` 写 `route-state/v1`；compaction 保留 `last_served`/`generation`；branch 隔离与外来 state 不覆盖均有测试 |
+| P3-12/13 审批实时拦截 | 完成 | `[approvals]` off/observe/enforce；高风险 `ToolUse` 本地拦截（428/403）；`pending` 审计；账本 `rejected`；审批判定无网络等待 |
+| P3-14 信任档位别名 | 完成 | `[trust_tiers]` 只映射已有 profile；`x-token-router-trust`；未知档位回退并记 `TRUST_TIER_UNKNOWN`；控制面只读展示 |
+| P3-18 core diff = 0 | 完成 | 新增 `example/config.minimal.toml`；`cargo xtask config-only-check` 追加候选+虚拟模型并校验内核指纹不变；CI/Makefile 已接入 |
+| P1-14 预算指标 | 完成 | `stats` 增加判官调用/预算拒绝/失败/成本，均来自 `judge_calls` |
+
+**新增配置**：`[approvals]`、`[trust_tiers]`（设计 §18.2）。
+**新增门禁**：`cargo xtask config-only-check`（CI 两个平台都跑）。
+**新增指标**：`/v2/admin/stats` 的 `rejected`、`judge_calls`、`judge_budget_denied`、`judge_failed`、`judge_cost_micros`。
+
+**仍未完成（全部为环境/数据依赖）**：S0-5 三客户端冒烟、P1-13 真实流量 shadow、P2-8 三列对照、P2-9 成本闸校准；P2-6 `CompetenceGuard` 为设计可选；P4 入口条件未满足。
 
 ### 总体状态（截至本次收口）
 
@@ -612,9 +629,9 @@ P4 入口条件未满足（P3 尚未 dogfood 4 周），按计划**不启动 P4*
 | S0 | 条件通过 | 三客户端真实冒烟未执行 |
 | P0a | 通过 | e2e 用 mock 上游，非真实 Hermes |
 | P0b | 通过 | 真实客户端流式冒烟待补 |
-| P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据 |
-| P2 | 部分 | 三列对照表与成本闸校准未执行（保持 shadow） |
-| P3 | 部分 | 审批实时拦截、VM route state、信任别名、CI 断言 |
+| P1 | 部分 | 真实流量 shadow（≥500 条）/ D-1 active 待数据；实现项已全部落地 |
+| P2 | 部分 | 三列对照与成本闸校准未执行（保持 shadow）；`CompetenceGuard` 为可选未做 |
+| P3 | 完成 | 审批实时拦截、VM route state、信任别名、CI 断言均已落地；待真实流量 dogfood |
 | P4 | 未启动 | 计划明确为 TBD，且入口条件未满足 |
 
-测试规模：176 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿。
+测试规模：197 个测试（workspace），三协议 fixtures 覆盖率 100%，依赖方向门禁常绿，`config-only-check` 通过。

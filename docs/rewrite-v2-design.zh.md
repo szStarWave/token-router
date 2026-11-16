@@ -45,6 +45,10 @@
 | 30 | P2 实现补充：migration 2 增加 `ledger.judge_json`（判官 trace 与指标同源）；成本闸配置 `[cost_gate] mode`；`tr-cli eval` 评测底座 | §9.2、§18.3、§11.2 |
 | 31 | P3 实现补充：Escalation latch 权威高于 StickyDispatch（否则续接轮永远回弱档）；`server -> control` 用于挂载管理路由；控制面不提供在线改配置 | §4.9.1、§3.2、§11.1 |
 | 32 | P2-3 落地：判官适配器解析 `usage`，按 `[judge.service]` 价格折算写入 `routing_cost`；`judge_calls.cost_micros` 与账本同源 | §9.2、§18.2 |
+| 33 | P2-11 落地：`Plan.contributions` 带 `strategy_id`/`priority`；migration 3 增加 `ledger.contributions_json`；新增 `decision` span | §4.5、§11.2、§18.4 |
+| 34 | P3-9 落地：`agent` 作为默认 route 写 `virtual_model_states`（`route-state/v1`，compaction 保留 last_served/generation，外来 state 不覆盖） | §7.2 |
+| 35 | P3-12/13 落地：`[approvals]` 配置与实时拦截；新增 `OutcomeKind::Rejected`、`APPROVAL_REQUIRED`/`APPROVAL_DENIED`；`pending` 审批记录 | §12、§18.2 |
+| 36 | P3-14/P3-18 落地：`[trust_tiers]` 别名只映射 profile；`cargo xtask config-only-check`（CI 记录 core diff = 0） | §4.9、§18.2 |
 
 ---
 
@@ -776,6 +780,13 @@ ContextHold 的细节：
 - ContextHold **不是** latch，也没有升级/释放状态机。
 
 `VirtualModelState` 是 route 自己定义的通用 JSON，不是 sticky：它不会自动保持模型；只有 route 显式读取 state 并返回同一模型时才产生跨轮保持。`direct` 请求忽略 state。
+
+实现（P3-9）：在还没有独立 route 插件时，`agent` 作为默认 route 所有者，成功派发后写入 `token-router.route-state/v1`：
+
+- `last_served` + 最近 `HISTORY_LIMIT = 16` 条历史；每次写入 `generation += 1`；
+- **compaction**：历史超限只丢最旧条目，`last_served`/`generation` 永久保留；会话键由 `server_session_id` 保持稳定时，客户端压缩消息历史不会重置 state；
+- 写入与 `ledger + sessions + breakers` 同事务；CAS 冲突说明另一请求写了更新版本，直接丢弃本次写入，不影响请求；
+- 已有 state 没有 `schema` 标记时视为其他 route 插件所有，内核**不覆盖**。
 
 ---
 
@@ -1844,6 +1855,8 @@ pub struct ReasonCode {
 | `tr_state_cas_conflicts_total` | counter | — |
 
 - tracing spans：`decide`、`strategy.draft`、`judge.consult`、`plan.merge`、`upstream.attempt`、`agent.commit`。
+- 已实现 `decision` span（P2-11）：字段为 `plan_id` / `session_key` / `virtual_model` / `request_reason` / `mode` / `preference` / `reason_codes` / `contributions`（`strategy:REASON`），结束时补 `outcome` / `served` / `switches` / tokens。每条策略贡献另以 `contributions_json` 入账，span 与账本可互查。
+- 服务端 `tracing_subscriber` 由 `RUST_LOG` 控制；默认只开 `tr_server`/`tr_agent`/`tr_control` 的 `info`，日志写 stderr。
 - 判官 span 建议对齐 OTel GenAI / Strands：`gen_ai.operation.name="decision"`、`gen_ai.decision.questions`、`gen_ai.decision.answers`、`gen_ai.decision.latency_ms`、`gen_ai.usage.input_tokens/output_tokens`。
 - `/health` 返回版本、运行状态、候选数量、判官模式；不暴露密钥。
 - 日志默认脱敏消息正文与工具参数；调试模式需显式开启。
@@ -1899,6 +1912,15 @@ pub struct ReasonCode {
 - 审批调用点：工具风险分级、高风险操作放行。`min_confidence` 与保守方向由调用点声明（不确定 = 转人工，而不是自动拒绝）。
 - 审批结果写 `approvals` 审计表（P3），不进入路由账本的判官成本。
 - P0 只留 trait 与配置位置；P3/P4 接实现。
+
+实现（P3-12/13）：
+
+- 配置 `[approvals]`：`off`（默认，不检查）/ `observe`（只记录 `APPROVAL_REQUIRED`，照常转发）/ `enforce`（本地拒绝）；
+- 拦截点在访问上游之前：扫描请求消息里的 `ToolUse`，按工具名分级（未知工具按 `high`）；只有 `risk >= min_risk` 才进入审批；
+- 结论查询只读本地 `approvals` 表，按 `(session_key, tool_name)` 取最近一条；`ttl_secs` 内 `approve` 放行，`deny` 拒绝，`pending`/无记录/过期都视为未批准；
+- `enforce + fail_closed`：返回 `428 approval_required` 或 `403 approval_denied`（带 `x-token-router-approval` / `x-token-router-tool` 与 `request_id`），写账本 `outcome = rejected`，不访问上游；首次拦截记一条 `pending` 审批，便于控制面接力；
+- 审批判定无网络调用、无等待，**不进入判官 deadline**；审批成本不写入 `routing_cost`；
+- `fail_closed = false` 只用于灰度排查：仍记 reason code，但放行。
 
 ---
 
@@ -2215,6 +2237,21 @@ max_output_tokens = 256
 retry = 0
 include_reason = true
 require_calibrated_confidence = false
+
+[cost_gate]
+mode = "shadow"                     # off | shadow | active；校准未达标不得 active
+
+[approvals]
+mode = "off"                        # off | observe | enforce
+ttl_secs = 900                      # 审批结论有效期；过期重新审批
+min_risk = "high"                   # low | medium | high；低风险工具默认不阻塞
+fail_closed = true                  # enforce 下判定缺失/过期 → 拒绝（与路由 fail-open 相反）
+
+# 信任档位：只把别名映射到已有 profile，不改虚拟模型、不改内核（P3-14）。
+[trust_tiers]
+trial = "default"
+familiar = "default"
+trusted = "default"
 ```
 
 ### 18.3 决策检查清单
@@ -2252,6 +2289,10 @@ require_calibrated_confidence = false
 31. 迁移是否幂等（空库 + 上一版库各跑一次）？`schema_version` 超前时是否拒绝启动而不是降级写库？
 32. `config_digest` / `profile_revision` 是否写入账本？回放时是否比较，避免“配置变了还以为决策漂移”？
 33. `core` 是否零 IO（CI 的 `xtask check-deps` 通过、测试里无 `#[tokio::test]`）？
+34. 每条策略贡献是否带 `strategy_id` 入账（`contributions_json`）？`decision` span 是否能追到单请求的每个策略？
+35. 审批是否只在高风险工具上拦截、默认不阻塞低风险？`pending` 是否从未被当成放行结论？审批等待是否不进入判官 deadline？
+36. 信任档位是否只映射到已有 profile？未知档位是否回退虚拟模型 profile 并记 `TRUST_TIER_UNKNOWN`？
+37. 新增候选/虚拟模型是否只改 TOML，`cargo xtask config-only-check` 是否通过（core diff = 0）？
 
 ### 18.4 实施前置落地件
 
@@ -2332,7 +2373,7 @@ CREATE TABLE ledger (
   attempts_json       TEXT    NOT NULL,   -- 逐 attempt：候选/ErrorClass/耗时/是否提交
   switches            INTEGER NOT NULL DEFAULT 0,
   reason_codes_json   TEXT    NOT NULL,   -- 稳定排序
-  outcome             TEXT    NOT NULL,   -- Success|UpstreamError|QualityFail|Cancelled
+  outcome             TEXT    NOT NULL,   -- Success|UpstreamError|QualityFail|Cancelled|Rejected
   http_status         INTEGER,
   input_tokens        INTEGER,
   cache_read_tokens   INTEGER,
@@ -2417,7 +2458,7 @@ CREATE TABLE approvals (
   session_key TEXT,
   tool_name   TEXT    NOT NULL,
   risk_class  TEXT    NOT NULL,
-  decision    TEXT    NOT NULL,           -- approve|deny|timeout
+  decision    TEXT    NOT NULL,           -- approve|deny|pending|timeout
   operator    TEXT,
   wait_ms     INTEGER,
   created_at  INTEGER NOT NULL
@@ -2436,6 +2477,7 @@ CREATE TABLE approvals (
 
 ```rust
 const MIGRATIONS: &[&str] = &[M1_BASELINE];   // index + 1 == version
+// 已落地：M2 = ledger.judge_json（判官 trace）；M3 = ledger.contributions_json（策略贡献，P2-11）。
 ```
 
 1. 启动时读 `schema_migrations`，逐版本在单事务内应用，应用前校验 `checksum`（sha256）；不一致拒绝启动。
