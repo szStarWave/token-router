@@ -375,6 +375,36 @@
           "markdownDescription": "Enables the host_ui_state_save command without any pre-configured scope."
         },
         {
+          "description": "Enables the onboard_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-onboard-apply",
+          "markdownDescription": "Enables the onboard_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the onboard_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-onboard-detect",
+          "markdownDescription": "Enables the onboard_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the onboard_plan command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-onboard-plan",
+          "markdownDescription": "Enables the onboard_plan command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the onboard_verify command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-onboard-verify",
+          "markdownDescription": "Enables the onboard_verify command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the onboard_wsl_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-onboard-wsl-detect",
+          "markdownDescription": "Enables the onboard_wsl_detect command without any pre-configured scope."
+        },
+        {
           "description": "Enables the supervisor_restart command without any pre-configured scope.",
           "type": "string",
           "const": "allow-supervisor-restart",
@@ -427,6 +457,36 @@
           "type": "string",
           "const": "deny-host-ui-state-save",
           "markdownDescription": "Denies the host_ui_state_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the onboard_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-onboard-apply",
+          "markdownDescription": "Denies the onboard_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the onboard_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-onboard-detect",
+          "markdownDescription": "Denies the onboard_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the onboard_plan command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-onboard-plan",
+          "markdownDescription": "Denies the onboard_plan command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the onboard_verify command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-onboard-verify",
+          "markdownDescription": "Denies the onboard_verify command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the onboard_wsl_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-onboard-wsl-detect",
+          "markdownDescription": "Denies the onboard_wsl_detect command without any pre-configured scope."
         },
         {
           "description": "Denies the supervisor_restart command without any pre-configured scope.",

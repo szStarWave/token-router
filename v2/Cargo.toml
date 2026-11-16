@@ -19,6 +19,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 thiserror = "2"
 toml = "1"
+toml_edit = "0.25"
+serde_yaml = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "query"] }
 futures-util = "0.3"
 async-stream = "0.3"

@@ -1,0 +1,14 @@
+# Codex 配置（注释必须保留）
+# 用户自定义注释行
+
+model = "gpt-5-codex"
+model_reasoning_effort = "high"
+
+[model_providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+
+[mcp_servers.docs]
+command = "docs-server"
+args = ["--port", "8080"]

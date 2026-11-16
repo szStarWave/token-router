@@ -22,6 +22,11 @@
     "allow-host-app-info",
     "allow-host-open-path",
     "allow-host-ui-state-load",
-    "allow-host-ui-state-save"
+    "allow-host-ui-state-save",
+    "allow-onboard-detect",
+    "allow-onboard-plan",
+    "allow-onboard-apply",
+    "allow-onboard-verify",
+    "allow-onboard-wsl-detect"
   ]
 }

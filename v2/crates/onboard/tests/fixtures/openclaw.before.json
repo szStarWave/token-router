@@ -1,0 +1,16 @@
+{
+  "agents": {
+    "defaults": {
+      "theme": "dark",
+      "model": {
+        "primary": "my-favorite-model"
+      }
+    },
+    "extra": true
+  },
+  "mcpServers": {
+    "existing": {
+      "command": "uvx"
+    }
+  }
+}

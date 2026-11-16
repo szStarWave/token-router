@@ -14,6 +14,12 @@ fn main() {
                 "host_open_path",
                 "host_ui_state_load",
                 "host_ui_state_save",
+                // Agent onboarding（§8）
+                "onboard_detect",
+                "onboard_plan",
+                "onboard_apply",
+                "onboard_verify",
+                "onboard_wsl_detect",
             ]),
         ),
     )

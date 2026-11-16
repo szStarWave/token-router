@@ -10,6 +10,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod merge;
+pub mod wsl;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -166,6 +169,8 @@ pub enum SetupError {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("parse: {0}")]
+    Parse(String),
     #[error("unsupported format for {0}")]
     UnsupportedFormat(&'static str),
     #[error("refusing to write outside home: {0}")]
@@ -229,9 +234,8 @@ pub fn detect(target: &Target, agent: AgentKind) -> Result<DetectReport, SetupEr
 
 /// 生成计划（不写盘）。
 ///
-/// 当前实现：文件不存在 → `create`（最小 JSON 骨架）；存在 → `merge`
-/// 预览为"新增 provider 块"的说明性 JSON（各 Agent 的精确合并器在 P4-072
-/// golden fixture 驱动下逐个落地）。
+/// 每个文件用精确合并器（[`merge::merge_document`]）产出合并后全文预览；
+/// 文件不存在 → `create`（合并器以空文档为输入）；存在 → `merge`。
 pub fn plan(
     target: &Target,
     agent: AgentKind,
@@ -266,7 +270,7 @@ pub fn plan(
             _ => return Err(SetupError::UnsupportedFormat(agent.id())),
         };
         let action = if before.is_empty() { "create" } else { "merge" };
-        let after_preview = preview_document(agent, request, format);
+        let after_preview = merge::merge_document(agent, format, &before, request)?;
         entries.push(PlanEntry {
             path: relative.to_string(),
             format: format.to_string(),
@@ -382,37 +386,6 @@ fn probe_provider_marker(home: &Path, agent: AgentKind) -> bool {
             .map(|text| text.contains("token-router") || text.contains("127.0.0.1"))
             .unwrap_or(false)
     })
-}
-
-/// 计划预览：最小文档骨架；token 用引用占位，不落明文。
-fn preview_document(agent: AgentKind, request: &SetupRequest, format: &str) -> String {
-    let _ = format;
-    match agent {
-        AgentKind::Openclaw | AgentKind::Opencode | AgentKind::Codebuddy | AgentKind::Workbuddy => {
-            serde_json::to_string_pretty(&serde_json::json!({
-                "provider": "token-router",
-                "baseUrl": request.gateway_url,
-                "apiKeyRef": request.credential_ref,
-                "models": { request.model.clone(): {} },
-            }))
-            .unwrap_or_else(|_| "{}".to_string())
-        }
-        AgentKind::Hermes | AgentKind::HermesFlash => format!(
-            "providers:\n  token-router:\n    api: {}\n    api_key_ref: {}\n    default_model: {}\n",
-            request.gateway_url, request.credential_ref, request.model
-        ),
-        AgentKind::ClaudeCode => serde_json::to_string_pretty(&serde_json::json!({
-            "env": {
-                "ANTHROPIC_BASE_URL": request.gateway_url,
-                "ANTHROPIC_AUTH_TOKEN_REF": request.credential_ref,
-            },
-        }))
-        .unwrap_or_else(|_| "{}".to_string()),
-        AgentKind::Codex => format!(
-            "[model_providers.token-router]\nbase_url = \"{}\"\napi_key_ref = \"{}\"\nwire_api = \"responses\"\nmodel = \"{}\"\n",
-            request.gateway_url, request.credential_ref, request.model
-        ),
-    }
 }
 
 fn now_stamp() -> u64 {

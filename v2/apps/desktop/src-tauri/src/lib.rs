@@ -11,6 +11,7 @@
 pub mod admin_proxy;
 pub mod commands;
 pub mod host;
+pub mod onboard;
 pub mod supervisor;
 
 use std::path::PathBuf;
@@ -106,6 +107,11 @@ pub fn run() {
             commands::host_open_path,
             commands::host_ui_state_load,
             commands::host_ui_state_save,
+            onboard::onboard_detect,
+            onboard::onboard_plan,
+            onboard::onboard_apply,
+            onboard::onboard_verify,
+            onboard::onboard_wsl_detect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

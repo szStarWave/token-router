@@ -1,0 +1,9 @@
+theme: dark
+model: my-favorite-model
+providers:
+  existing-provider:
+    api: https://api.example.com/v1
+    api_key: env:EXISTING_KEY
+    default_model: legacy-model
+plugins:
+  - lint

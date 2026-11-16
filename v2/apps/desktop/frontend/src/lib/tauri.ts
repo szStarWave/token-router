@@ -69,3 +69,71 @@ export const hostUiStateLoad = () => tauriInvoke<HostUiState>('host_ui_state_loa
 
 export const hostUiStateSave = (uiState: HostUiState) =>
   tauriInvoke<void>('host_ui_state_save', { uiState })
+
+// ---------------------------------------------------------------------------
+// Agent onboarding（§8）：detect → plan → apply → verify
+// ---------------------------------------------------------------------------
+
+export interface DetectReport {
+  agent: string
+  target: string
+  installed: boolean
+  config_files: Array<{ path: string; exists: boolean; readable: boolean }>
+  already_configured: boolean
+}
+
+export interface PlanEntry {
+  path: string
+  format: string
+  action: string
+  before_digest: string
+  after_preview: string
+}
+
+export interface SetupPlan {
+  agent: string
+  entries: PlanEntry[]
+}
+
+export interface ApplyReport {
+  agent: string
+  written: Array<{ path: string; bytes: number; backup_path: string | null }>
+  backups: string[]
+}
+
+export interface VerifyReport {
+  agent: string
+  ok: boolean
+  messages: string[]
+}
+
+export interface WslReport {
+  wsl_available: boolean
+  distros: string[]
+  default_distro: string | null
+  error: string | null
+}
+
+export interface OnboardSetupArgs {
+  agent: string
+  wsl_distro?: string | null
+  gateway_url?: string | null
+  /** 凭据引用：env:NAME / file:path（明文不进 UI）。 */
+  credential_ref: string
+  model: string
+}
+
+export const onboardDetect = (args: { agent: string; wsl_distro?: string | null }) =>
+  tauriInvoke<DetectReport>('onboard_detect', { args })
+
+export const onboardPlan = (args: OnboardSetupArgs) =>
+  tauriInvoke<SetupPlan>('onboard_plan', { args })
+
+export const onboardApply = (args: OnboardSetupArgs) =>
+  tauriInvoke<ApplyReport>('onboard_apply', { args })
+
+export const onboardVerify = (args: { agent: string; wsl_distro?: string | null }) =>
+  tauriInvoke<VerifyReport>('onboard_verify', { args })
+
+export const onboardWslDetect = () =>
+  tauriInvoke<WslReport>('onboard_wsl_detect')

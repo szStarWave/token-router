@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "id": "legacy",
+      "url": "https://old.example.com/v1/chat/completions",
+      "provider": "old"
+    }
+  ],
+  "settings": {
+    "language": "zh"
+  }
+}

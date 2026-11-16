@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": ["Bash(git *)"]
+  },
+  "env": {
+    "CUSTOM_FLAG": "1"
+  }
+}

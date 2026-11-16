@@ -19,6 +19,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+tr-onboard = { path = "../../../crates/onboard" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process"] }
 

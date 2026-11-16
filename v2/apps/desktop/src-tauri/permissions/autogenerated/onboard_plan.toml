@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-onboard-plan"
+description = "Enables the onboard_plan command without any pre-configured scope."
+commands.allow = ["onboard_plan"]
+
+[[permission]]
+identifier = "deny-onboard-plan"
+description = "Denies the onboard_plan command without any pre-configured scope."
+commands.deny = ["onboard_plan"]
