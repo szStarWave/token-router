@@ -455,3 +455,28 @@ export function useUpdateTokenLimitsMutation() {
     },
   })
 }
+
+
+// ---------------------------------------------------------------------------
+// usage / heatmap（v3 P5-C）
+// ---------------------------------------------------------------------------
+
+export function useUsageQuery(by: string, from: number, to: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.usage(by, from, to),
+    queryFn: () => api.usageBy(by, from, to),
+    enabled,
+    refetchInterval: 30_000,
+    retry: 1,
+  })
+}
+
+export function useHeatmapQuery(from: number, to: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.heatmap(from, to),
+    queryFn: () => api.usageHeatmap(from, to),
+    enabled,
+    refetchInterval: 60_000,
+    retry: 1,
+  })
+}

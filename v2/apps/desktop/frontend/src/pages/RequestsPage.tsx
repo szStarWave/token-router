@@ -238,6 +238,9 @@ export function RequestsPage() {
                   </div>
                 </dl>
 
+                <h3 className="text-ui-label font-medium text-muted-foreground">路由时间线</h3>
+                <RoutingTimeline detail={detailQuery.data} />
+
                 <h3 className="text-ui-label font-medium text-muted-foreground">尝试</h3>
                 {detailQuery.data.attempts.length === 0 ? (
                   <p className="app-card-sub">无尝试记录。</p>
@@ -274,5 +277,153 @@ export function RequestsPage() {
         )}
       </section>
     </div>
+  )
+}
+
+/**
+ * 路由时间线（v3 P5-C）：Selection → Strategies → Plan → Dispatch → (Failover/Judge) → Outcome。
+ * 数据全部来自决策快照（contributions/preference/failover/judge），不重算。
+ */
+function RoutingTimeline({
+  detail,
+}: {
+  detail: {
+    selection_model: string
+    selection_level: string
+    dispatch_model: string | null
+    dispatch_provider: string | null
+    dispatch_source: string | null
+    dispatch_level: string | null
+    plan_mode: string
+    preference: unknown
+    failover: unknown
+    switches: number
+    contributions: unknown
+    judge: unknown
+    outcome: string
+    reason_codes: string[]
+    ttft_ms: number | null
+    duration_ms: number
+  }
+}) {
+  const contributions = Array.isArray(detail.contributions)
+    ? (detail.contributions as Array<Record<string, unknown>>)
+    : []
+  const preference = Array.isArray(detail.preference)
+    ? (detail.preference as Array<Record<string, unknown>>)
+    : []
+  const failover = Array.isArray(detail.failover)
+    ? (detail.failover as Array<Record<string, unknown>>)
+    : []
+  const judge = detail.judge as Record<string, unknown> | null
+
+  const steps: Array<{ label: string; body: React.ReactNode; tone?: string }> = [
+    {
+      label: '选择（Selection）',
+      body: (
+        <span className="font-mono">
+          {detail.selection_model} @ {detail.selection_level}
+        </span>
+      ),
+    },
+    {
+      label: `策略（${contributions.length} 条贡献）`,
+      body:
+        contributions.length === 0 ? (
+          <span className="text-muted-foreground">无贡献记录</span>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {contributions.map((entry, index) => {
+              const strategy = String(entry.strategy_id ?? '?')
+              const contribution = (entry.contribution ?? {}) as Record<string, unknown>
+              const kind = Object.keys(contribution)[0] ?? 'note'
+              const payload = contribution[kind] as Record<string, unknown> | undefined
+              const reason =
+                payload && 'reason' in payload
+                  ? String((payload.reason as Record<string, unknown> | undefined)?.code ?? '')
+                  : ''
+              return (
+                <li key={index} className="text-meta flex items-center gap-2 flex-wrap">
+                  <span className="app-pill">{strategy}</span>
+                  <span className="text-muted-foreground">{kind}</span>
+                  {reason && <span className="font-mono">{reason}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        ),
+    },
+    {
+      label: '计划（Plan）',
+      body:
+        preference.length === 0 ? (
+          <span className="text-muted-foreground">无偏好记录</span>
+        ) : (
+          <span className="font-mono">
+            {preference
+              .map((slot) => String(slot.candidate_id ?? slot.id ?? '?'))
+              .join(' → ')}
+          </span>
+        ),
+    },
+    {
+      label: '派发（Dispatch）',
+      body: (
+        <span className="font-mono">
+          {detail.dispatch_model ?? '—'}
+          {detail.dispatch_provider ? ` @ ${detail.dispatch_provider}` : ''}
+          {detail.dispatch_source ? ` · ${detail.dispatch_source}` : ''}
+        </span>
+      ),
+    },
+  ]
+
+  if (failover.length > 0) {
+    steps.push({
+      label: '接力（Failover）',
+      body: (
+        <span className="font-mono">
+          {failover
+            .map((slot) => String(slot.candidate_id ?? slot.id ?? '?'))
+            .join(' → ')}
+        </span>
+      ),
+    })
+  }
+  if (judge) {
+    const verdicts = judge.verdicts ?? judge.answers ?? null
+    steps.push({
+      label: '判官（Judge）',
+      body: (
+        <pre className="app-code-block max-h-40 overflow-auto">
+          {JSON.stringify(verdicts ?? judge, null, 2)}
+        </pre>
+      ),
+    })
+  }
+  steps.push({
+    label: '结果（Outcome）',
+    tone:
+      detail.outcome === 'success'
+        ? 'app-pill app-pill-ok'
+        : 'app-pill app-pill-error',
+    body: (
+      <span className="text-meta">
+        {detail.outcome} · {detail.plan_mode} · 切换 {detail.switches} 次 · TTFT{' '}
+        {detail.ttft_ms ?? '—'}ms · 耗时 {detail.duration_ms}ms
+        {detail.reason_codes.length > 0 ? ` · ${detail.reason_codes.join(', ')}` : ''}
+      </span>
+    ),
+  })
+
+  return (
+    <ol className="app-plan-entry">
+      {steps.map((step, index) => (
+        <li key={index} className="flex gap-3 py-1.5">
+          <span className="text-meta text-muted-foreground w-40 shrink-0">{step.label}</span>
+          <span className="min-w-0 flex-1">{step.body}</span>
+        </li>
+      ))}
+    </ol>
   )
 }

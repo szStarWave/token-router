@@ -99,6 +99,8 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/providers/compile", post(providers_compile))
         .route("/v2/admin/providers/import", post(providers_import))
         .route("/v2/admin/quotas", get(quotas_list))
+        .route("/v2/admin/usage", get(usage_endpoint))
+        .route("/v2/admin/usage/heatmap", get(usage_heatmap_endpoint))
         .route("/v2/admin/quotas/{id}", delete(quotas_reset))
         .with_state(state)
 }
@@ -1111,4 +1113,46 @@ async fn tokens_update_limits(
         .find(|token| token.id == id)
         .ok_or_else(|| AdminApiError::internal("token vanished after update"))?;
     Ok(Json(info).into_response())
+}
+
+/// `GET /v2/admin/usage?by=agent|model|candidate|account|session&from=&to=`。
+#[derive(Deserialize)]
+struct UsageParams {
+    #[serde(default)]
+    by: Option<String>,
+    #[serde(default)]
+    from: Option<i64>,
+    #[serde(default)]
+    to: Option<i64>,
+}
+
+async fn usage_endpoint(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(params): Query<UsageParams>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let now = now_millis();
+    let to = params.to.unwrap_or(now);
+    let from = params.from.unwrap_or(to - 7 * 24 * 3_600_000);
+    let dimension = params
+        .by
+        .as_deref()
+        .map(tr_contracts::UsageDimension::parse)
+        .unwrap_or(tr_contracts::UsageDimension::Agent);
+    let response = tr_agent::store::usage::usage_by(state.pipeline.db(), dimension, from, to)?;
+    Ok(Json(response).into_response())
+}
+
+async fn usage_heatmap_endpoint(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(params): Query<UsageParams>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let now = now_millis();
+    let to = params.to.unwrap_or(now);
+    let from = params.from.unwrap_or(to - 7 * 24 * 3_600_000);
+    let response = tr_agent::store::usage::usage_heatmap(state.pipeline.db(), from, to)?;
+    Ok(Json(response).into_response())
 }

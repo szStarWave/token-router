@@ -3,7 +3,13 @@
  * 窗口过大（413）→ 缩窗提示。
  */
 import { useState } from 'react'
-import { useStatsSummaryQuery, useStatsSeriesQuery, useStatsModelsQuery } from '../queries/admin'
+import {
+  useHeatmapQuery,
+  useStatsModelsQuery,
+  useStatsSeriesQuery,
+  useStatsSummaryQuery,
+  useUsageQuery,
+} from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
 
 type Bucket = 'hour' | 'day'
@@ -269,6 +275,147 @@ export function StatsPage() {
           </table>
         </QueryState>
       </section>
+
+      <UsageBreakdown window={window} />
+      <UsageHeatmap window={window} />
     </div>
+  )
+}
+
+/** 成本分解（v3 P5-C）：按 agent/model/candidate/account/session 五维出账。 */
+function UsageBreakdown({ window }: { window: { from: number; to: number } }) {
+  const [by, setBy] = useState('agent')
+  const usageQuery = useUsageQuery(by, window.from, window.to)
+  const totals = usageQuery.data?.totals
+
+  return (
+    <section className="app-card" aria-label="成本分解">
+      <div className="flex items-center gap-2 flex-wrap">
+        <h2 className="app-card-title flex-1">成本分解</h2>
+        <label className="app-filter-label">
+          维度
+          <select className="app-select-sm" value={by} onChange={(e) => setBy(e.target.value)}>
+            <option value="agent">agent</option>
+            <option value="model">虚拟模型</option>
+            <option value="candidate">物理候选</option>
+            <option value="account">账号</option>
+            <option value="session">会话</option>
+          </select>
+        </label>
+      </div>
+      <QueryState
+        loading={usageQuery.isLoading}
+        error={usageQuery.error}
+        empty={usageQuery.data?.rows.length === 0}
+        onRetry={() => void usageQuery.refetch()}
+      >
+        <table className="app-table">
+          <thead>
+            <tr>
+              <th>{by}</th>
+              <th>请求</th>
+              <th>输入 / 输出</th>
+              <th>cache 读 / 写</th>
+              <th>命中率</th>
+              <th>TTFT 均值</th>
+              <th>成本（answer / routing）</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usageQuery.data?.rows.map((row) => (
+              <tr key={row.key}>
+                <td className="font-mono">{row.key}</td>
+                <td>{row.requests}</td>
+                <td>
+                  {row.input_tokens} / {row.output_tokens}
+                </td>
+                <td>
+                  {row.cache_read_tokens} / {row.cache_write_tokens}
+                </td>
+                <td>
+                  {row.cache_hit_ratio === null
+                    ? '—'
+                    : `${(row.cache_hit_ratio * 100).toFixed(0)}%`}
+                </td>
+                <td>{row.avg_ttft_ms === null ? '—' : `${row.avg_ttft_ms.toFixed(0)}ms`}</td>
+                <td>
+                  {row.answer_cost_micros} / {row.routing_cost_micros}
+                </td>
+              </tr>
+            ))}
+            {totals && (
+              <tr className="font-semibold">
+                <td>合计</td>
+                <td>{totals.requests}</td>
+                <td>
+                  {totals.input_tokens} / {totals.output_tokens}
+                </td>
+                <td>
+                  {totals.cache_read_tokens} / {totals.cache_write_tokens}
+                </td>
+                <td>
+                  {totals.cache_hit_ratio === null
+                    ? '—'
+                    : `${(totals.cache_hit_ratio * 100).toFixed(0)}%`}
+                </td>
+                <td>{totals.avg_ttft_ms === null ? '—' : `${totals.avg_ttft_ms.toFixed(0)}ms`}</td>
+                <td>
+                  {totals.answer_cost_micros} / {totals.routing_cost_micros}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </QueryState>
+    </section>
+  )
+}
+
+/** 活动热力图（UTC 天 × 小时）。 */
+function UsageHeatmap({ window }: { window: { from: number; to: number } }) {
+  const heatmapQuery = useHeatmapQuery(window.from, window.to)
+  const data = heatmapQuery.data
+
+  // day → [24] 单元格。
+  const days = new Map<string, number[]>()
+  for (const cell of data?.cells ?? []) {
+    if (!days.has(cell.day)) days.set(cell.day, Array.from({ length: 24 }, () => 0))
+    const row = days.get(cell.day)
+    if (row) row[cell.hour] = cell.requests
+  }
+  const sortedDays = Array.from(days.keys()).sort()
+  const max = Math.max(1, data?.max_requests ?? 1)
+
+  return (
+    <section className="app-card" aria-label="活动热力图">
+      <h2 className="app-card-title">活动热力图（UTC 小时）</h2>
+      <QueryState
+        loading={heatmapQuery.isLoading}
+        error={heatmapQuery.error}
+        empty={sortedDays.length === 0}
+        onRetry={() => void heatmapQuery.refetch()}
+      >
+        <div className="flex flex-col gap-1 overflow-x-auto">
+          {sortedDays.map((day) => (
+            <div key={day} className="flex items-center gap-2">
+              <span className="text-meta text-muted-foreground font-mono w-21 shrink-0">{day}</span>
+              <div className="flex gap-0.5">
+                {(days.get(day) ?? []).map((requests, hour) => {
+                  const intensity = requests === 0 ? 0 : 0.15 + 0.85 * (requests / max)
+                  return (
+                    <div
+                      key={hour}
+                      className="size-2.5 rounded-sm bg-primary"
+                      style={{ opacity: intensity }}
+                      title={`${day} ${String(hour).padStart(2, '0')}:00 · ${requests} 请求`}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </QueryState>
+    </section>
   )
 }

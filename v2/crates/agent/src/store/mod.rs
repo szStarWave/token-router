@@ -20,6 +20,7 @@ pub mod sessions;
 pub mod stats;
 pub mod strategy;
 pub mod tokens;
+pub mod usage;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};

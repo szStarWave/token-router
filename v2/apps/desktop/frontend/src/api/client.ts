@@ -114,6 +114,8 @@ import type {
   Page,
   ProviderInfo,
   QuotaWindowInfo,
+  HeatmapResponse,
+  UsageResponse,
   ProviderTemplate,
   ProviderUpsertRequest,
   RequestDetail,
@@ -182,6 +184,11 @@ export const api = {
     admin.post<CompileResponse>("/v2/admin/providers/compile", request),
   // ── 配额与 key 限额（v3 P5-B）────────────────────────────────────────
   quotaList: () => admin.get<{ items: QuotaWindowInfo[] }>("/v2/admin/quotas"),
+  // ── 用量聚合（v3 P5-C）───────────────────────────────────────────────
+  usageBy: (by: string, from: number, to: number) =>
+    admin.get<UsageResponse>(`/v2/admin/usage?by=${by}&from=${from}&to=${to}`),
+  usageHeatmap: (from: number, to: number) =>
+    admin.get<HeatmapResponse>(`/v2/admin/usage/heatmap?from=${from}&to=${to}`),
   quotaReset: (candidateId: string) =>
     admin.del<{ ok: boolean }>(`/v2/admin/quotas/${candidateId}`),
   updateTokenLimits: (id: string, limits: KeyLimits | null) =>
@@ -201,6 +208,8 @@ export const queryKeys = {
   logs: (params: string) => ["admin", "logs", params] as const,
   providerTemplates: () => ["admin", "provider-templates"] as const,
   quotas: () => ["admin", "quotas"] as const,
+  usage: (by: string, from: number, to: number) => ["admin", "usage", by, from, to] as const,
+  heatmap: (from: number, to: number) => ["admin", "heatmap", from, to] as const,
   providers: () => ["admin", "providers"] as const,
   provider: (id: string) => ["admin", "providers", id] as const,
   accounts: (providerId: string) => ["admin", "accounts", providerId] as const,

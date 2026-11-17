@@ -306,6 +306,28 @@ export type HeaderPair = { name: string, value: string, };
 export type HealthResponse = { items: Array<CandidateHealthItem>, counts: BreakerCounts, };
 
 /**
+ * 热力图单元格（按小时墙上时钟）。
+ */
+export type HeatmapCell = { 
+/**
+ * `YYYY-MM-DD`（UTC）。
+ */
+day: string, 
+/**
+ * 0–23。
+ */
+hour: number, requests: number, answer_cost_micros: number, input_tokens: number, output_tokens: number, };
+
+/**
+ * `GET /v2/admin/usage/heatmap`。
+ */
+export type HeatmapResponse = { from: number, to: number, cells: Array<HeatmapCell>, 
+/**
+ * 单元格最大值（前端着色用；0 = 无数据）。
+ */
+max_requests: number, };
+
+/**
  * `POST /v2/admin/providers/import`：从本机 agent 配置扫描上游端点草稿。
  */
 export type ImportScanRequest = { 
@@ -622,6 +644,45 @@ export type UpdateTokenLimitsRequest = {
  * 传 `null` 清除限额。
  */
 limits?: KeyLimits, };
+
+/**
+ * 用量维度。
+ */
+export type UsageDimension = "agent" | "model" | "candidate" | "account" | "session";
+
+/**
+ * `GET /v2/admin/usage`。
+ */
+export type UsageResponse = { by: string, from: number, to: number, rows: Array<UsageRow>, 
+/**
+ * 全窗口合计（不按维度分）。
+ */
+totals: UsageRow, };
+
+/**
+ * 一个分组的用量。
+ */
+export type UsageRow = { 
+/**
+ * 分组键（agent id / 模型名 / 候选名 / 账号 id / 会话 id）。
+ */
+key: string, requests: number, successes: number, input_tokens: number, output_tokens: number, cache_read_tokens: number, cache_write_tokens: number, 
+/**
+ * 用户流量成本。
+ */
+answer_cost_micros: number, 
+/**
+ * 判官/路由成本。
+ */
+routing_cost_micros: number, 
+/**
+ * 平均 TTFT（毫秒；无样本为 null）。
+ */
+avg_ttft_ms: number | null, 
+/**
+ * 缓存命中率 = cache_read / (input + cache_read)；无输入为 null。
+ */
+cache_hit_ratio: number | null, };
 
 /**
  * `POST /v2/admin/config/validate` 响应。

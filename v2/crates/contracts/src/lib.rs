@@ -26,6 +26,7 @@ pub mod routing;
 pub mod signals;
 pub mod snapshot;
 pub mod state;
+pub mod usage;
 pub mod verdict;
 
 pub use admin::*;
@@ -41,4 +42,5 @@ pub use routing::*;
 pub use signals::*;
 pub use snapshot::*;
 pub use state::*;
+pub use usage::*;
 pub use verdict::*;
