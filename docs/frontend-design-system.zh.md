@@ -101,6 +101,26 @@ v2/apps/desktop/frontend/
 
 ## 5. 预设与组合件
 
+### 5.0 图标
+
+图标库用 **lucide-react**（npm 包名是 `lucide-react`；`@lucide/react` 这个包不存在）。
+
+按 `DESIGN.md §Components` 的规矩收口：**业务代码不直接从图标库 import**，统一走
+`src/components/common/Icon.tsx`：
+
+```tsx
+<Icon name="refresh" className="size-4" />
+```
+
+- 组件内部维护名字 → 图形的注册表（`nav-*` / `window-*` / 动作 / 状态 / 主题），新增图标先在注册表里登记；
+- **没有 `size` prop**，尺寸与配色都走 `className`；同一行并排的图标共用一个尺寸（侧栏 16px、窗口按钮 14px、
+  按钮内 16px、状态块 24px）；
+- 线条统一 `strokeWidth={1.75}`，颜色继承 `currentColor`（默认 muted，状态图标才上状态色）。
+
+当前用到：侧栏 11 项导航图标、窗口最小化/最大化/还原/关闭、启动/停止/刷新/新增/删除/复制/应用/校验/
+回滚/展开收起/打开目录/批准/拒绝、空态与错误态图标、主题分段控件的三个图标。
+加载态仍用规范里的 8 根条 spinner（不是图标）。
+
 **上游预设（`oc-*`）**：按钮（`oc-btn-default|primary|outline|ghost|destructive` + `oc-btn-sm|xs|lg|icon`）、
 下拉触发器 `oc-trigger`、输入框 `oc-field`、分段选择 `oc-seg` / `oc-seg-item[-active]`、步进器 `oc-stepper`、
 抬升面 `oc-raised` / `oc-tile` / `oc-tile-inset` / `oc-recessed`、玻璃浮层 `oc-glass-popover`、

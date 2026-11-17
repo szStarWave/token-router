@@ -10,6 +10,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 import { checkPillClass, statusPillClass } from '../lib/status'
 import { hostOpenPath, isTauri } from '../lib/tauri'
@@ -150,6 +151,7 @@ export function DiagnosticsPage() {
         </QueryState>
         {isTauri() && (
           <button type="button" className="oc-btn-default self-start" onClick={() => void hostOpenPath()}>
+            <Icon name="open-dir" />
             打开数据目录
           </button>
         )}
@@ -171,6 +173,7 @@ export function DiagnosticsPage() {
               disabled={rollbackMutation.isPending}
               onClick={() => void rollback()}
             >
+              <Icon name="rollback" />
               {rollbackMutation.isPending ? '回滚中…' : '确认回滚'}
             </button>
             <button type="button" className="oc-btn-default" onClick={() => setConfirming(false)}>
@@ -179,6 +182,7 @@ export function DiagnosticsPage() {
           </div>
         ) : (
           <button type="button" className="oc-btn-default self-start" onClick={() => setConfirming(true)}>
+            <Icon name="rollback" />
             回滚到上一份备份
           </button>
         )}

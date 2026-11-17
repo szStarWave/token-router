@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { useLogsQuery } from '../queries/admin'
 import { QueryState } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { logLineClass } from '../lib/status'
 import { hostOpenPath, isTauri } from '../lib/tauri'
 
@@ -64,6 +65,7 @@ export function LogsPage() {
           </label>
           {isTauri() && (
             <button type="button" className="oc-btn-default" onClick={() => void hostOpenPath('logs')}>
+              <Icon name="open-dir" />
               打开日志目录
             </button>
           )}

@@ -9,6 +9,7 @@ import {
   useConfigApplyMutation,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon, type IconName } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 import { statusPillClass } from '../lib/status'
 import {
@@ -25,10 +26,10 @@ import {
 import { draftFromDocument, draftToToml } from '../lib/config-edit'
 
 const THEME_OPTIONS = [
-  { id: 'light', label: '浅色' },
-  { id: 'dark', label: '深色' },
-  { id: 'system', label: '跟随系统' },
-] as const
+  { id: 'light', label: '浅色', icon: 'theme-light' },
+  { id: 'dark', label: '深色', icon: 'theme-dark' },
+  { id: 'system', label: '跟随系统', icon: 'theme-system' },
+] as const satisfies ReadonlyArray<{ id: 'light' | 'dark' | 'system'; label: string; icon: IconName }>
 
 export function SettingsPage() {
   const statusQuery = useStatusQuery()
@@ -159,6 +160,7 @@ export function SettingsPage() {
                       className="oc-btn-default"
                       onClick={() => setConfirmingRestart(true)}
                     >
+                      <Icon name="refresh" />
                       重启
                     </button>
                   )}
@@ -168,6 +170,7 @@ export function SettingsPage() {
                     disabled={busy}
                     onClick={() => void stop()}
                   >
+                    <Icon name="stop" />
                     停止
                   </button>
                 </>
@@ -178,6 +181,7 @@ export function SettingsPage() {
                   disabled={busy}
                   onClick={() => void start()}
                 >
+                  <Icon name="start" />
                   {busy ? '启动中…' : '启动'}
                 </button>
               )}
@@ -231,6 +235,7 @@ export function SettingsPage() {
               disabled={effectiveListen === draft?.server.listen || validateMutation.isPending}
               onClick={() => void applyServer()}
             >
+              <Icon name="apply" />
               {validateMutation.isPending ? '校验中…' : '校验并应用'}
             </button>
             <p className="app-card-sub">
@@ -277,6 +282,7 @@ export function SettingsPage() {
               aria-pressed={themePref === option.id}
               onClick={() => setThemePref(option.id)}
             >
+              <Icon name={option.icon} className="size-3.5" />
               {option.label}
             </button>
           ))}

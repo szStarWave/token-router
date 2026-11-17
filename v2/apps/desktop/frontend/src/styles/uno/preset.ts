@@ -175,11 +175,11 @@ export function presetOpenChamber(options: PresetOpenChamberOptions = {}): Prese
       ['oc-seg', 'oc-recessed inline-flex flex-wrap items-center gap-0.5 rounded-lg p-0.5'],
       [
         'oc-seg-item',
-        'inline-flex items-center justify-center h-7 px-2.5 rounded-md text-ui-label font-normal text-muted-foreground hover:text-foreground cursor-pointer',
+        'inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-md text-ui-label font-normal text-muted-foreground hover:text-foreground cursor-pointer',
       ],
       [
         'oc-seg-item-active',
-        'inline-flex items-center justify-center h-7 px-2.5 rounded-md text-ui-label text-foreground bg-[var(--oc-control-surface)] shadow-button',
+        'inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-md text-ui-label text-foreground bg-[var(--oc-control-surface)] shadow-button',
       ],
 
       // ---- 步进器：32 / r9 / ± 各 36 / 数值区 min-width ----

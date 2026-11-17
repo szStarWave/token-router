@@ -9,6 +9,7 @@ import {
   useConfigApplyMutation,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 import {
   draftFromDocument,
@@ -297,6 +298,7 @@ export function ModelsPage() {
                             className="oc-btn-destructive oc-btn-sm"
                             onClick={() => removeCandidate(index)}
                           >
+                            <Icon name="approve" />
                             确认
                           </button>
                           <button
@@ -313,6 +315,7 @@ export function ModelsPage() {
                           className="oc-btn-default oc-btn-sm"
                           onClick={() => setConfirmDelete(candidate.id)}
                         >
+                          <Icon name="remove" />
                           删除
                         </button>
                       )}
@@ -323,6 +326,7 @@ export function ModelsPage() {
             </tbody>
           </table>
           <button type="button" className="oc-btn-default self-start" onClick={addCandidate}>
+            <Icon name="add" />
             + 新增候选
           </button>
         </QueryState>
@@ -337,6 +341,7 @@ export function ModelsPage() {
             disabled={local.length > 0 || validateMutation.isPending || !draft}
             onClick={() => void runValidate()}
           >
+            <Icon name="approve" />
             {validateMutation.isPending ? '校验中…' : '校验'}
           </button>
           <button
@@ -345,6 +350,7 @@ export function ModelsPage() {
             disabled={!validRevision || applyMutation.isPending}
             onClick={() => void runApply()}
           >
+            <Icon name="apply" />
             {applyMutation.isPending ? '应用中…' : validRevision ? '应用（CAS）' : '先校验'}
           </button>
         </div>

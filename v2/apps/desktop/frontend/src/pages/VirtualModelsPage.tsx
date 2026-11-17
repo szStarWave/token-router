@@ -8,6 +8,7 @@ import {
   useConfigApplyMutation,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 import {
   draftFromDocument,
@@ -198,6 +199,7 @@ export function VirtualModelsPage() {
             setValidRevision(null)
           }}
         >
+          <Icon name="add" />
           + 新增虚拟模型
         </button>
       </section>
@@ -267,6 +269,7 @@ export function VirtualModelsPage() {
             disabled={local.length > 0 || validateMutation.isPending || !draft}
             onClick={() => void runValidate()}
           >
+            <Icon name="approve" />
             {validateMutation.isPending ? '校验中…' : '校验'}
           </button>
           <button
@@ -275,6 +278,7 @@ export function VirtualModelsPage() {
             disabled={!validRevision || applyMutation.isPending}
             onClick={() => void runApply()}
           >
+            <Icon name="apply" />
             {applyMutation.isPending ? '应用中…' : validRevision ? '应用（CAS）' : '先校验'}
           </button>
         </div>

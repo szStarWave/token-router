@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAppStore } from '../stores/appStore'
+import { Icon } from '../components/common/Icon'
 import { isTauri, invokeErrorMessage as errorMessage } from '../lib/tauri'
 import { planActionPillClass } from '../lib/status'
 import {
@@ -272,6 +273,7 @@ export function OnboardingPage() {
             disabled={!credentialRef.trim() || busy}
             onClick={() => void runPlan()}
           >
+            <Icon name="apply" />
             {busy ? '生成计划…' : '生成计划（预览 diff）'}
           </button>
         </section>
@@ -290,6 +292,7 @@ export function OnboardingPage() {
               disabled={busy}
               onClick={() => void runApply()}
             >
+              <Icon name="apply" />
               {busy ? '应用中…' : '确认应用（备份 + 原子写）'}
             </button>
             <button type="button" className="oc-btn-default" onClick={() => setStep('select')}>
@@ -316,6 +319,7 @@ export function OnboardingPage() {
             ))}
           </ul>
           <button type="button" className="oc-btn-default self-start" onClick={reset}>
+            <Icon name="refresh" />
             接入下一个
           </button>
         </section>
@@ -341,6 +345,7 @@ function PlanEntryView({ entry }: { entry: PlanEntry }) {
           className="oc-btn-default oc-btn-sm app-plan-toggle"
           onClick={() => setExpanded(!expanded)}
         >
+          <Icon name={expanded ? 'collapse' : 'expand'} />
           {expanded ? '收起' : '展开 diff'}
         </button>
       </div>

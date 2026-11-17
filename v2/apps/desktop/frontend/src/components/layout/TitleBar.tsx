@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isTauri } from '../../lib/tauri'
+import { Icon } from '../common/Icon'
 
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false)
@@ -31,7 +32,7 @@ export function TitleBar() {
         aria-label="最小化"
         onClick={() => void win.minimize()}
       >
-        –
+        <Icon name="window-minimize" className="size-3.5" />
       </button>
       <button
         type="button"
@@ -41,7 +42,10 @@ export function TitleBar() {
           void win.toggleMaximize().then(refreshMax)
         }}
       >
-        {maximized ? '❐' : '□'}
+        <Icon
+          name={maximized ? 'window-restore' : 'window-maximize'}
+          className="size-3.5"
+        />
       </button>
       <button
         type="button"
@@ -49,7 +53,7 @@ export function TitleBar() {
         aria-label="关闭"
         onClick={() => void win.close()}
       >
-        ✕
+        <Icon name="window-close" className="size-3.5" />
       </button>
     </div>
   )

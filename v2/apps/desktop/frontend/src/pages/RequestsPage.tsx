@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { useRequestsQuery, useRequestDetailQuery } from '../queries/admin'
 import { QueryState } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { outcomePillClass } from '../lib/status'
 
 const OUTCOMES = ['', 'success', 'upstream_error', 'quality_fail', 'cancelled', 'rejected']
@@ -152,6 +153,7 @@ export function RequestsPage() {
                     className="oc-btn-default oc-btn-sm"
                     onClick={() => void navigator.clipboard.writeText(detailQuery.data.request_id)}
                   >
+                    <Icon name="copy" />
                     复制 ID
                   </button>
                 </div>

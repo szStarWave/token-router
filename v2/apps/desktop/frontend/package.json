@@ -13,7 +13,6 @@
     "check:uno": "node --import tsx scripts/check-uno-tokens.ts && node scripts/check-class-literals.mjs"
   },
   "dependencies": {
-    "@lobehub/icons-static-svg": "^1.102.0",
     "@tanstack/react-form": "^1.33.5",
     "@tanstack/react-query": "^5.107.1",
     "@tanstack/react-router": "^1.170.46",
@@ -22,6 +21,7 @@
     "@tauri-apps/api": "^2.12.4",
     "driver.js": "^1.14.0",
     "echarts": "^6.1.0",
+    "lucide-react": "^1.74.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "zustand": "^5.1.0"

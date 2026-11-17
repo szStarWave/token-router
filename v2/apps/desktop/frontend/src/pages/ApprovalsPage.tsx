@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { useApprovalsQuery, useRecordApprovalMutation } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 import { riskPillClass } from '../lib/status'
 
@@ -75,6 +76,7 @@ export function ApprovalsPage() {
                           .catch((error) => showToast(errorMessage(error), false))
                       }
                     >
+                      <Icon name="approve" />
                       批准
                     </button>{' '}
                     <button
@@ -92,6 +94,7 @@ export function ApprovalsPage() {
                           .catch((error) => showToast(errorMessage(error), false))
                       }
                     >
+                      <Icon name="reject" />
                       拒绝
                     </button>
                   </td>
@@ -193,6 +196,7 @@ export function ApprovalsPage() {
             disabled={!requestId.trim() || !toolName.trim() || recordMutation.isPending}
             onClick={() => void record()}
           >
+            <Icon name="approve" />
             记录
           </button>
         </div>

@@ -5,6 +5,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useStatusQuery, useHealthQuery, useRequestsQuery, useStatsSummaryQuery } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { outcomePillClass, statusPillClass } from '../lib/status'
 import {
   supervisorStart,
@@ -83,6 +84,7 @@ export function OverviewPage() {
               disabled={busy}
               onClick={() => void start()}
             >
+              <Icon name="start" />
               {busy ? '启动中…' : '启动服务'}
             </button>
           )}
@@ -154,10 +156,12 @@ export function OverviewPage() {
                     disabled={busy}
                     onClick={() => void stop()}
                   >
+                    <Icon name="stop" />
                     {busy ? '停止中…' : '停止服务'}
                   </button>
                 )}
                 <button type="button" className="oc-btn-default" onClick={refreshAll}>
+                  <Icon name="refresh" />
                   刷新
                 </button>
               </div>

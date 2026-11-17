@@ -8,6 +8,7 @@ import {
   useRevokeTokenMutation,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { Icon } from '../components/common/Icon'
 import { useAppStore } from '../stores/appStore'
 
 const SCOPES = [
@@ -96,6 +97,7 @@ export function TokensPage() {
           disabled={!name.trim() || scopes.length === 0 || createMutation.isPending}
           onClick={() => void create()}
         >
+          <Icon name="add" />
           {createMutation.isPending ? '创建中…' : '创建'}
         </button>
         {created && (
@@ -110,6 +112,7 @@ export function TokensPage() {
                 showToast('common.copied')
               }}
             >
+              <Icon name="copy" />
               复制
             </button>
             <button type="button" className="oc-btn-default oc-btn-sm" onClick={() => setCreated(null)}>
@@ -169,6 +172,7 @@ export function TokensPage() {
                             className="oc-btn-destructive oc-btn-sm"
                             onClick={() => void revoke(token.id)}
                           >
+                            <Icon name="remove" />
                             撤销
                           </button>
                           <button
@@ -185,6 +189,7 @@ export function TokensPage() {
                           className="oc-btn-default oc-btn-sm"
                           onClick={() => setConfirming(token.id)}
                         >
+                          <Icon name="remove" />
                           撤销
                         </button>
                       ))}

@@ -4,6 +4,7 @@
  * 状态行有预留槽：加载/空/错/完成都在同一块高度里，不让页面跳动。
  */
 import type { ReactNode } from 'react'
+import { Icon } from './Icon'
 
 export function Loading({ label = '加载中…' }: { label?: string }) {
   return (
@@ -29,6 +30,7 @@ export function EmptyState({
 }) {
   return (
     <div className="app-state">
+      <Icon name="empty" className="size-6 opacity-40" />
       <div className="app-state-title">{title}</div>
       {hint && <div className="app-state-hint">{hint}</div>}
       {action && <div className="app-state-action">{action}</div>}
@@ -45,10 +47,12 @@ export function ErrorState({
 }) {
   return (
     <div className="app-state" role="alert">
+      <Icon name="error" className="size-6 text-status-error" />
       <div className="app-state-title app-state-error-title">出错了</div>
       <div className="app-state-hint">{message}</div>
       {onRetry && (
         <button type="button" className="oc-btn-default" onClick={onRetry}>
+          <Icon name="refresh" />
           重试
         </button>
       )}

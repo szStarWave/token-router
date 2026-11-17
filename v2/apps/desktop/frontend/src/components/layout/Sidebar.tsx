@@ -6,20 +6,21 @@
  */
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useStatusQuery } from '../../queries/admin'
+import { Icon, type IconName } from '../common/Icon'
 
 const NAV_ITEMS = [
-  { to: '/overview', label: '总览', id: 'overview' },
-  { to: '/models', label: '候选模型', id: 'models' },
-  { to: '/virtual-models', label: '虚拟模型', id: 'virtual-models' },
-  { to: '/requests', label: '请求', id: 'requests' },
-  { to: '/stats', label: '统计', id: 'stats' },
-  { to: '/logs', label: '日志', id: 'logs' },
-  { to: '/onboarding', label: '接入', id: 'onboarding' },
-  { to: '/tokens', label: 'Token', id: 'tokens' },
-  { to: '/approvals', label: '审批', id: 'approvals' },
-  { to: '/diagnostics', label: '诊断', id: 'diagnostics' },
-  { to: '/settings', label: '设置', id: 'settings' },
-] as const
+  { to: '/overview', label: '总览', id: 'overview', icon: 'nav-overview' },
+  { to: '/models', label: '候选模型', id: 'models', icon: 'nav-models' },
+  { to: '/virtual-models', label: '虚拟模型', id: 'virtual-models', icon: 'nav-virtual-models' },
+  { to: '/requests', label: '请求', id: 'requests', icon: 'nav-requests' },
+  { to: '/stats', label: '统计', id: 'stats', icon: 'nav-stats' },
+  { to: '/logs', label: '日志', id: 'logs', icon: 'nav-logs' },
+  { to: '/onboarding', label: '接入', id: 'onboarding', icon: 'nav-onboarding' },
+  { to: '/tokens', label: 'Token', id: 'tokens', icon: 'nav-tokens' },
+  { to: '/approvals', label: '审批', id: 'approvals', icon: 'nav-approvals' },
+  { to: '/diagnostics', label: '诊断', id: 'diagnostics', icon: 'nav-diagnostics' },
+  { to: '/settings', label: '设置', id: 'settings', icon: 'nav-settings' },
+] as const satisfies ReadonlyArray<{ to: string; label: string; id: string; icon: IconName }>
 
 export function Sidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -50,6 +51,7 @@ export function Sidebar() {
                 className={active ? 'app-nav-item app-nav-item-active' : 'app-nav-item'}
                 activeOptions={{ exact: false }}
               >
+                <Icon name={item.icon} className="size-4 shrink-0" />
                 {item.label}
                 {item.id === 'diagnostics' && openBreakers > 0 && (
                   <span className="app-nav-badge" aria-label={`${openBreakers} 个熔断打开`}>
