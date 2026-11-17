@@ -101,7 +101,30 @@ v2/apps/desktop/frontend/
 
 ## 5. 预设与组合件
 
-### 5.0 图标
+### 5.0 字体
+
+字体族收敛成两个变量（`:root` 里定义），body / `font-sans` / `font-mono` / 行内 `code` 全部引用同一份：
+
+```css
+--oc-font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Microsoft YaHei UI", sans-serif;
+--oc-font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Microsoft YaHei UI", monospace;
+```
+
+不加载网络字体（`DESIGN.md §Typography`：没有自定义字体加载），靠系统栈兜底。实测本机渲染结果：
+
+| 用途 | 声明 | 实际渲染（Windows 11） |
+|---|---|---|
+| 正文 / UI | `--oc-font-sans` | **Segoe UI**（Inter 未安装 → 跳过）＋中文落到 **Microsoft YaHei UI** |
+| 代码 / ID / 日志 | `--oc-font-mono` | **Geist Mono**（用户字体目录已装） |
+
+注意：Inter 只在部分机器上装了（上游 demo 是把 woff2 内嵌进去的）；没装就会退到 Segoe UI ——
+视觉会有细微差别，但都是无衬线族，不影响版式。若要完全一致，把 Inter woff2 随包内置并加 `@font-face`。
+
+**曾经踩的坑**：行内 `code` 的规则引用了 `var(--oc-font-mono, ui-monospace, Menlo, Consolas, monospace)`，
+而 `--oc-font-mono` 从未定义 → 行内代码掉到 Consolas，代码块却是 Geist Mono，同屏两套等宽字体。
+现在两个变量在 `:root` 里定义，行内 `code` 直接引用 `var(--oc-font-mono)`。
+
+### 5.1 图标
 
 图标库用 **lucide-react**（npm 包名是 `lucide-react`；`@lucide/react` 这个包不存在）。
 
