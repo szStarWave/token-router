@@ -1,9 +1,11 @@
+> **已归档（2026-11-17）**：本文档为历史档案，不再维护。现行文档见 [docs/README.md](../README.md)。
+
 # P4 交付报告（M0–M7）
 
 > 状态：**M0–M6 已实施并提交；M7 完成可打包产物与验收自检；GA 剩签名/公证/24h soak（需发布 CI 与真实环境）**。
 > 配套：[`p4-client-refactor-plan.zh.md`](./p4-client-refactor-plan.zh.md)（技术方案）、
 > [`p4-client-development-plan.zh.md`](./p4-client-development-plan.zh.md)（开发计划）、
-> [`p4-admin-api-contract.zh.md`](./p4-admin-api-contract.zh.md)（契约冻结 v1）。
+> [`p4-admin-api-contract.zh.md`](../contracts/admin-api.zh.md)（契约冻结 v1）。
 
 ## 1. 里程碑落地
 
@@ -57,7 +59,7 @@
 3. **24h soak / 性能基线**：需要在真实环境长期运行；代码侧已具备指标路径（/stats/summary p95、账本索引）。
 4. **OTA**：手动更新优先（MVP 裁剪 §4.4 第 6 项）；manifest 签名校验流程已文档化。
 5. **macOS/Linux**：打包配置以 NSIS（Windows）为主；dmg/AppImage 待平台演练（开发计划 §8 支持矩阵）。
-6. **设计系统预设 vendored**：前端 UnoCSS 预设取自 OpenChamber 提取版（MIT），未发布到 npm 故随仓 vendored；上游升级需手工同步（见 [`frontend-design-system.zh.md`](./frontend-design-system.zh.md) §2/§9）。
+6. **设计系统预设 vendored**：前端 UnoCSS 预设取自 OpenChamber 提取版（MIT），未发布到 npm 故随仓 vendored；上游升级需手工同步（见 [`frontend-design-system.zh.md`](../dev/frontend-design-system.zh.md) §2/§9）。
 
 ## 4. 门禁与测试总量
 

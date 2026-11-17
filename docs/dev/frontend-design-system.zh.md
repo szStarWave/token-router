@@ -1,8 +1,8 @@
 # 前端设计系统落地（OpenChamber 规范 + Vercel 配色 + UnoCSS）
 
 > 状态：已落地（2026-11-17）。范围：`v2/apps/desktop/frontend/`（Tauri 壳的 WebView 前端）。
-> 相关文档：[P4 客户端重构技术方案](./p4-client-refactor-plan.zh.md) §7 前端、
-> [P4 交付报告](./p4-delivery-report.zh.md)。
+> 相关文档：[P4 客户端重构技术方案（已归档）](../archive/p4-client-refactor-plan.zh.md) §7 前端、
+> [P4 交付报告（已归档）](../archive/p4-delivery-report.zh.md)。
 
 ## 0. 结论
 

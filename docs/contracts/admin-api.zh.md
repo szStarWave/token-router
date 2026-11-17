@@ -1,6 +1,7 @@
-# P4 管理 API 契约 v1
+# 管理 API 契约 v1
 
-> 状态：**契约冻结 v1（2026-11-16）**。本文是 [`p4-client-refactor-plan.zh.md`](./p4-client-refactor-plan.zh.md) §4 的可执行契约。
+> 状态：**契约冻结 v1（2026-11-16）**。历史背景见 [P4 客户端技术方案（已归档）](../archive/p4-client-refactor-plan.zh.md) §4。
+> v3 将新增 providers/accounts/catalog/quotas/usage/playground 等资源（见 [路线图](../roadmap.zh.md)），遵循同样的只增不改规则。
 > 规则：契约冻结后端点/字段**只增不改**；删除/重命名需要 `api_version + 1` 与弃用期。
 > 类型生成：Rust DTO 用 `ts-rs` 导出 TS 类型到 `apps/desktop/frontend/src/api/types.ts`；
 > `cargo xtask contract-check` 校验生成物无 diff（P4-003）。
@@ -160,4 +161,4 @@
 ## 5. 兼容规则
 
 - `GET /v2/admin/status` 的 `api_version: 1`；新字段只增不改；客户端忽略未知字段。
-- 配置 schema 独立演进：DB `schema_version`（迁移 5 起）与配置文件 `schema_version`（P4 起 2）分开计数。
+- 配置 schema 独立演进：DB `schema_version`（迁移 5 起）与配置文件 `schema_version` 分开计数。配置文件当前为 `1`（代码严格校验，见 `tr-agent::config::SCHEMA_VERSION`；勘误 2026-11-17：原文误写"P4 起 2"）。

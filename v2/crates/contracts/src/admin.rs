@@ -1,6 +1,6 @@
 //! 管理 API 契约 DTO（P4-001，契约冻结 v1）。
 //!
-//! 规则（docs/p4-admin-api-contract.zh.md）：
+//! 规则（docs/contracts/admin-api.zh.md）：
 //! - 字段只增不改；删除/重命名需要 `api_version + 1`；
 //! - 客户端必须忽略未知字段（所有类型 `#[serde(default)]` 兼容读取）；
 //! - `ts-rs` 导出 TS 类型，`cargo xtask contract-check` 校验生成物无 diff。

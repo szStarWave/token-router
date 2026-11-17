@@ -1,3 +1,5 @@
+> **已归档（2026-11-17）**：本文档为历史档案，不再维护。现行文档见 [docs/README.md](../README.md)。
+
 # Token Router v2 实施计划
 
 > 配套文档：[`rewrite-v2-design.zh.md`](./rewrite-v2-design.zh.md)（下称"设计文档"）。

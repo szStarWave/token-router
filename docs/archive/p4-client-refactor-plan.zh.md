@@ -1,3 +1,5 @@
+> **已归档（2026-11-17）**：本文档为历史档案，不再维护。现行文档见 [docs/README.md](../README.md)。
+
 # P4 客户端技术方案（v2 原生）
 
 > 状态：**技术方案 v2（2026-11-16），待评审，未开工**。
@@ -813,7 +815,7 @@ async fn admin_events_subscribe(app: AppHandle) -> Result<(), String>;
 ## 7. 前端
 
 > 样式层已定为 **UnoCSS + OpenChamber 设计规范**（深浅双主题、语义色板、三级深度），
-> 不再使用手写 CSS；落地细节与写法约定见 [`frontend-design-system.zh.md`](./frontend-design-system.zh.md)。
+> 不再使用手写 CSS；落地细节与写法约定见 [`frontend-design-system.zh.md`](../dev/frontend-design-system.zh.md)。
 
 ### 7.1 目录
 
