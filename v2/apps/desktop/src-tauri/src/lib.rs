@@ -16,7 +16,6 @@ pub mod onboard;
 pub mod supervisor;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -102,7 +101,9 @@ pub fn default_data_dir() -> PathBuf {
 pub fn run() {
     let data_dir = default_data_dir();
     let _ = std::fs::create_dir_all(&data_dir);
-    let state = Arc::new(AppState::new(data_dir));
+    // 注意：manage() 按类型登记状态，命令侧取的是 State<'_, AppState>，
+    // 所以这里必须登记 AppState 本身，包一层 Arc 会取不到（state not managed）。
+    let state = AppState::new(data_dir);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
