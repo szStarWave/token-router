@@ -266,7 +266,7 @@ html,body{height:100%;overflow:hidden}
 body{font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
 h1,h2,h3{font-weight:600;line-height:1.2}
 a{color:var(--markdown-link);text-decoration:none}
-code{font-family:var(--oc-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:12px}
+code{font-family:var(--oc-font-mono);font-size:12px}
 :focus,:focus-visible{outline:none}
 ::selection{background:var(--interactive-selection)}
 *::-webkit-scrollbar{width:6px;height:6px}

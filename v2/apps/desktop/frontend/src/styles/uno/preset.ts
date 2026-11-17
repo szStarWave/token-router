@@ -4,7 +4,7 @@
  * 上游：https://github.com/me9rez/openchamber-design-system
  *   packages/unocss-preset/src/index.ts —— MIT，未发布到 npm，故随仓 vendored。
  *   主题 JSON 源：openchamber/openchamber（MIT）。
- * 归属与许可见 docs/frontend-design-system.zh.md §2。
+ * 归属与许可见 docs/dev/frontend-design-system.zh.md §2。
  *
  * 颜色、圆角、字号、三级阴影全部走 CSS 变量，所以 `data-theme` 一换整套跟着变；
  * 组件尺寸来自上游 cva 变体（按钮 32/28/24/36、触发器 28、分段项 28、步进器 32）。
@@ -66,7 +66,13 @@ export function presetOpenChamber(options: PresetOpenChamberOptions = {}): Prese
   ].join('\n')
 
   // 预设不带 reset；边界盒是这类控件尺寸能成立的前提（否则 h-8 会变成 32+padding）
-  const baseCss = `*,::before,::after{box-sizing:border-box}body{background:var(--surface-background);color:var(--surface-foreground);font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif;font-weight:400;line-height:1.45}`
+  // 字体族也在这里定一份：正文与等宽各一个变量，body / 工具类 / 行内 code 共用，
+  // 免得行内 code 与代码块落到两套字体上（前者会掉到 Consolas）。
+  const baseCss = `
+*,::before,::after{box-sizing:border-box}
+:root{--oc-font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif;--oc-font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono","Microsoft YaHei UI",monospace}
+body{background:var(--surface-background);color:var(--surface-foreground);font-family:var(--oc-font-sans);font-weight:400;line-height:1.45}
+`
 
   return {
     name: 'preset-openchamber',
@@ -105,8 +111,8 @@ export function presetOpenChamber(options: PresetOpenChamberOptions = {}): Prese
             floating: 'var(--oc-elevation-floating)',
           },
           font: {
-            sans: '"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif',
-            mono: '"Geist Mono",ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono","Microsoft YaHei UI",monospace',
+            sans: 'var(--oc-font-sans)',
+            mono: 'var(--oc-font-mono)',
           },
         },
       },
