@@ -97,6 +97,20 @@ pub fn default_data_dir() -> PathBuf {
     PathBuf::from(home).join(".token-router-v2")
 }
 
+/// 监听地址 → base URL（reqwest 要绝对 URL）。
+///
+/// 外部模式（`TR_EXTERNAL_BASE_URL`）给的已经是完整 URL，直接用，
+/// 否则会拼成 `http://http://…`。
+pub(crate) fn base_url_of(listen: Option<&str>) -> Option<String> {
+    listen.map(|listen| {
+        if listen.starts_with("http://") || listen.starts_with("https://") {
+            listen.to_string()
+        } else {
+            format!("http://{listen}")
+        }
+    })
+}
+
 /// 运行 tauri 应用（main.rs / mobile entry 共用）。
 pub fn run() {
     let data_dir = default_data_dir();
@@ -116,6 +130,26 @@ pub fn run() {
         }))
         .manage(state)
         .manage(events_bridge::EventBridge::default())
+        .setup(|app| {
+            // 外部服务模式：启动即连上，省掉一次手动「启动服务」。
+            let handle = app.handle().clone();
+            tauri::async_runtime::block_on(async {
+                let state = handle.state::<AppState>();
+                if state.supervisor.external_base().is_none() {
+                    return;
+                }
+                let outcome = state.supervisor.start().await;
+                if outcome.state != supervisor::SupervisionState::Ready {
+                    return;
+                }
+                *state.base_url.lock().await = base_url_of(outcome.listen.as_deref());
+                let token_path = state.data_dir.join("admin.token");
+                if let Ok(token) = tokio::fs::read_to_string(&token_path).await {
+                    *state.admin_token.lock().await = Some(token.trim().to_string());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::supervisor_status,
             commands::supervisor_start,

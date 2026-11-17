@@ -66,8 +66,11 @@ pub async fn supervisor_stop(state: State<'_, AppState>) -> Result<serde_json::V
 }
 
 /// 监听地址 → base URL（reqwest 要绝对 URL，必须带协议前缀）。
+///
+/// 外部模式（`TR_EXTERNAL_BASE_URL`）给的已经是完整 URL，直接用，
+/// 否则会拼成 `http://http://…`。
 fn base_url(listen: Option<&str>) -> Option<String> {
-    listen.map(|listen| format!("http://{listen}"))
+    crate::base_url_of(listen)
 }
 
 async fn finish_ready(

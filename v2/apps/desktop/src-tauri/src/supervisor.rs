@@ -128,6 +128,11 @@ impl Supervisor {
         None
     }
 
+    /// 外部服务地址（`TR_EXTERNAL_BASE_URL`）；None 表示由本壳拉起 sidecar。
+    pub fn external_base(&self) -> Option<&str> {
+        self.config.external.as_deref()
+    }
+
     /// 启动（或连接外部）服务端；就绪后写 `runtime.json`。
     pub async fn start(&self) -> SpawnOutcome {
         // 外部模式：只探测可达性。
