@@ -110,15 +110,22 @@ v2/apps/desktop/frontend/
 --oc-font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Microsoft YaHei UI", monospace;
 ```
 
-不加载网络字体（`DESIGN.md §Typography`：没有自定义字体加载），靠系统栈兜底。实测本机渲染结果：
+**两个字体随包内置**（`public/fonts/`，latin 子集可变字体，共 ~71KB）：
 
-| 用途 | 声明 | 实际渲染（Windows 11） |
-|---|---|---|
-| 正文 / UI | `--oc-font-sans` | **Segoe UI**（Inter 未安装 → 跳过）＋中文落到 **Microsoft YaHei UI** |
-| 代码 / ID / 日志 | `--oc-font-mono` | **Geist Mono**（用户字体目录已装） |
+| 文件 | 家族 | 字重 | 大小 | 许可 |
+|---|---|---|---|---|
+| `inter-latin-var.woff2` | Inter | 400–700（可变） | 48KB | SIL OFL 1.1（`LICENSE-Inter.txt`） |
+| `geist-mono-latin-var.woff2` | Geist Mono | 400–600（可变） | 23KB | SIL OFL 1.1（`LICENSE-Geist-Mono.txt`） |
 
-注意：Inter 只在部分机器上装了（上游 demo 是把 woff2 内嵌进去的）；没装就会退到 Segoe UI ——
-视觉会有细微差别，但都是无衬线族，不影响版式。若要完全一致，把 Inter woff2 随包内置并加 `@font-face`。
+- `@font-face` 在 `src/styles/fonts.css`，`main.tsx` 里先于 `virtual:uno.css` 引入；
+- 取源与上游 `openchamber-design-system/demo/assets/fonts.css` 同源（Google Fonts），但改为**指向二进制文件**
+  而不是内嵌 base64 —— 少 33% 体积，且能被浏览器缓存；
+- `font-display: swap`：字体没到位前先用系统栈渲染，不阻塞首帧；
+- **只有 latin 子集**：中文一律回落系统字体（Windows 微软雅黑 / macOS 苹方），这与设计规范一致
+  （`DESIGN.md §Typography`：没有自定义字体加载）—— 内置的是拉丁字形，中文仍走系统字体。
+
+实测（Windows 11 + Chromium）：Inter 与 Geist Mono 都 `loaded`，正文走 Inter、中文走微软雅黑、
+代码走 Geist Mono；未装这两个字体的机器也会走同一份内置文件，观感一致。
 
 **曾经踩的坑**：行内 `code` 的规则引用了 `var(--oc-font-mono, ui-monospace, Menlo, Consolas, monospace)`，
 而 `--oc-font-mono` 从未定义 → 行内代码掉到 Consolas，代码块却是 Geist Mono，同屏两套等宽字体。

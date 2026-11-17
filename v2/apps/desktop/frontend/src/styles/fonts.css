@@ -1,0 +1,33 @@
+/*
+ * 自托管字体：Inter（UI）+ Geist Mono（代码），latin 子集可变字体，随包内嵌。
+ *
+ * 来源：openchamber-design-system 的 demo/assets/fonts.css（同为 Google Fonts 取源），
+ * 改为指向 public/fonts/ 下的二进制文件，而不是内嵌 base64。
+ *
+ * 许可：SIL OFL 1.1
+ *   Inter      © The Inter Project Authors — public/fonts/LICENSE-Inter.txt
+ *   Geist Mono © Vercel — public/fonts/LICENSE-Geist-Mono.txt
+ *
+ * 只有 latin 子集：中文回落系统字体（Microsoft YaHei UI / PingFang），
+ * 这正是设计规范的做法（DESIGN.md §Typography：没有自定义字体加载）。
+ */
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/geist-mono-latin-var.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/inter-latin-var.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
