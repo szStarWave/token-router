@@ -1847,6 +1847,7 @@ dependencies = [
  "tr-agent",
  "tr-contracts",
  "tr-onboard",
+ "tr-upstream",
  "uuid",
 ]
 

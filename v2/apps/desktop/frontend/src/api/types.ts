@@ -423,6 +423,33 @@ export type Page<T> = { items: Array<T>,
 next_cursor: string | null, };
 
 /**
+ * `POST /v2/admin/playground/execute` 请求体。
+ */
+export type PlaygroundExecuteRequest = { 
+/**
+ * `candidate:<id>` 直达物理候选；`virtual:<id>` 走该虚拟模型的路由。
+ */
+target: string, messages?: Array<PlaygroundMessage>, system?: string, max_tokens?: number, temperature?: number, };
+
+/**
+ * Playground 执行结果。
+ */
+export type PlaygroundExecuteResponse = { ok: boolean, 
+/**
+ * 实际服务的模型（候选 id 或虚拟模型 id）。
+ */
+served_model: string, text: string, reasoning: string, ttft_ms: number | null, duration_ms: number, input_tokens: number, output_tokens: number, finish_reason: string | null, error: string | null, };
+
+/**
+ * 一条测试消息。
+ */
+export type PlaygroundMessage = { 
+/**
+ * `user` / `assistant` / `system`。
+ */
+role: string, content: string, };
+
+/**
  * 创建/修改 provider 的请求体。
  */
 export type PriceDto = { currency: string, input_micros_per_mtok: number, output_micros_per_mtok: number, cache_read_micros_per_mtok: number | null, cache_write_micros_per_mtok: number | null, request_micros: number, };

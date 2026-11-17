@@ -72,6 +72,7 @@ reason_kinds! {
     CompetenceProtected => "COMPETENCE_PROTECTED",
     // 配额（v3 P5-B）
     QuotaDepleted => "QUOTA_DEPLETED",
+    FastPrefer => "FAST_PREFER",
     QuotaResetPreferred => "QUOTA_RESET_PREFERRED",
     CompetenceTaskChanged => "COMPETENCE_TASK_CHANGED",
     // 状态/协议

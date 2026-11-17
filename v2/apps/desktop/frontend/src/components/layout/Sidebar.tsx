@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: '/requests', label: '请求', id: 'requests', icon: 'nav-requests' },
   { to: '/stats', label: '统计', id: 'stats', icon: 'nav-stats' },
   { to: '/logs', label: '日志', id: 'logs', icon: 'nav-logs' },
+  { to: '/playground', label: 'Playground', id: 'playground', icon: 'nav-playground' },
   { to: '/onboarding', label: '接入', id: 'onboarding', icon: 'nav-onboarding' },
   { to: '/tokens', label: 'Token', id: 'tokens', icon: 'nav-tokens' },
   { to: '/approvals', label: '审批', id: 'approvals', icon: 'nav-approvals' },

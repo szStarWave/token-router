@@ -13,6 +13,7 @@ pub mod judge;
 pub mod ledger;
 pub mod limits;
 mod migrate;
+pub mod perf;
 pub mod protocol;
 pub mod providers;
 pub mod quota;

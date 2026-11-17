@@ -3,7 +3,13 @@
  * 空/错状态：服务未启动 → 启动按钮；未配置 → 引导。
  */
 import { useQueryClient } from '@tanstack/react-query'
-import { useStatusQuery, useHealthQuery, useRequestsQuery, useStatsSummaryQuery } from '../queries/admin'
+import {
+  useHealthQuery,
+  useQuotasQuery,
+  useRequestsQuery,
+  useStatsSummaryQuery,
+  useStatusQuery,
+} from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
 import { Icon } from '../components/common/Icon'
 import { outcomePillClass, statusPillClass } from '../lib/status'
@@ -71,9 +77,29 @@ export function OverviewPage() {
 
   const status = statusQuery.data
   const stats = statsQuery.data
+  const quotasQuery = useQuotasQuery(!serviceDown)
+  const exhaustedQuotas = (quotasQuery.data?.items ?? []).filter(
+    (item) => item.remaining === 0 || item.consecutive_429 > 0,
+  )
 
   return (
     <div className="app-page">
+      {exhaustedQuotas.length > 0 && (
+        <div className="app-banner app-banner-warn">
+          <span>
+            {exhaustedQuotas.length} 个候选配额耗尽或被上游限流（
+            {exhaustedQuotas
+              .slice(0, 3)
+              .map((item) => item.candidate_id)
+              .join(', ')}
+            {exhaustedQuotas.length > 3 ? ' …' : ''}
+            ），路由已自动改用其他候选。
+          </span>
+          <a href="#/quotas" className="underline">
+            查看配额
+          </a>
+        </div>
+      )}
       {serviceDown && (
         <div className="app-banner app-banner-warn">
           <span>服务未启动。</span>

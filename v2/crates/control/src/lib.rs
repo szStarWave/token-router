@@ -15,6 +15,7 @@ pub mod config_service;
 pub mod error;
 pub mod events;
 pub mod logs;
+pub mod playground;
 pub mod provider_service;
 pub mod provider_templates;
 pub mod state;
@@ -100,6 +101,7 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/providers/import", post(providers_import))
         .route("/v2/admin/quotas", get(quotas_list))
         .route("/v2/admin/usage", get(usage_endpoint))
+        .route("/v2/admin/playground/execute", post(playground_execute))
         .route("/v2/admin/usage/heatmap", get(usage_heatmap_endpoint))
         .route("/v2/admin/quotas/{id}", delete(quotas_reset))
         .with_state(state)
@@ -1154,5 +1156,16 @@ async fn usage_heatmap_endpoint(
     let to = params.to.unwrap_or(now);
     let from = params.from.unwrap_or(to - 7 * 24 * 3_600_000);
     let response = tr_agent::store::usage::usage_heatmap(state.pipeline.db(), from, to)?;
+    Ok(Json(response).into_response())
+}
+
+/// ：管理面测试请求（v3 P5-D）。
+async fn playground_execute(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(body): Json<tr_contracts::PlaygroundExecuteRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let response = playground::execute(&state, body).await?;
     Ok(Json(response).into_response())
 }

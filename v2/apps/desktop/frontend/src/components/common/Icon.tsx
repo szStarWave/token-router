@@ -44,6 +44,7 @@ import {
   type LucideIcon,
   Server,
   Gauge,
+  FlaskConical,
 } from 'lucide-react'
 
 const ICONS = {
@@ -51,6 +52,7 @@ const ICONS = {
   'nav-overview': LayoutDashboard,
   'nav-providers': Server,
   'nav-quotas': Gauge,
+  'nav-playground': FlaskConical,
   'nav-models': Boxes,
   'nav-virtual-models': Layers,
   'nav-requests': Activity,

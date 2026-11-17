@@ -293,6 +293,8 @@ impl Pipeline {
         let mut signals = tr_core::build_signals(&request, Some(&facts), window_hint);
         // v3 P5-B：配额信号（SignalBag 扩展位，内核不解析）。
         inject_quota_signals(&self.db, &mut signals, &candidates, now_unix);
+        // v3 P5-D：近期 TTFT（`fast` 策略的信号源；只读账本）。
+        inject_perf_signals(&self.db, &mut signals, now_unix);
         let request_reason = context
             .request_reason
             .unwrap_or_else(|| reason::infer(&request));
@@ -1895,6 +1897,27 @@ fn inject_quota_signals(
     }
 }
 
+/// 注入近期 TTFT 信号（v3 P5-D，`fast` 策略消费）。
+///
+/// 键约定：`perf.ttft_ms.<candidate>`（Float）、`perf.samples.<candidate>`（Int）。
+/// 窗口为最近 1 小时；没有样本的候选不写键（策略不会误判）。
+fn inject_perf_signals(db: &store::Db, signals: &mut tr_contracts::Signals, now_unix: u64) {
+    let since = now_unix.saturating_sub(3600) as i64;
+    let Ok(stats) = store::perf::recent_ttft(db, since, 1) else {
+        return;
+    };
+    for (candidate_id, (avg_ttft, samples)) in stats {
+        signals.extras.insert(
+            format!("perf.ttft_ms.{candidate_id}"),
+            tr_contracts::SignalValue::Float(avg_ttft as f32),
+        );
+        signals.extras.insert(
+            format!("perf.samples.{candidate_id}"),
+            tr_contracts::SignalValue::Int(samples as i64),
+        );
+    }
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1968,6 +1991,7 @@ fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::
             "classify" => strategies.push(Box::new(Classify)),
             "competence_guard" => strategies.push(Box::new(CompetenceGuard)),
             "quota-reset" => strategies.push(Box::new(crate::strategy_quota::QuotaReset)),
+            "fast" => strategies.push(Box::new(crate::strategy_fast::Fast)),
             // 未知策略由配置校验负责报错；运行时静默忽略并保持可用。
             _ => {}
         }

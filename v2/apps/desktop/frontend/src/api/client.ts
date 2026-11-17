@@ -113,6 +113,8 @@ import type {
   KeyLimits,
   Page,
   ProviderInfo,
+  PlaygroundExecuteRequest,
+  PlaygroundExecuteResponse,
   QuotaWindowInfo,
   HeatmapResponse,
   UsageResponse,
@@ -184,6 +186,9 @@ export const api = {
     admin.post<CompileResponse>("/v2/admin/providers/compile", request),
   // ── 配额与 key 限额（v3 P5-B）────────────────────────────────────────
   quotaList: () => admin.get<{ items: QuotaWindowInfo[] }>("/v2/admin/quotas"),
+  // ── Playground（v3 P5-D）─────────────────────────────────────────────
+  playgroundExecute: (request: PlaygroundExecuteRequest) =>
+    admin.post<PlaygroundExecuteResponse>("/v2/admin/playground/execute", request),
   // ── 用量聚合（v3 P5-C）───────────────────────────────────────────────
   usageBy: (by: string, from: number, to: number) =>
     admin.get<UsageResponse>(`/v2/admin/usage?by=${by}&from=${from}&to=${to}`),
