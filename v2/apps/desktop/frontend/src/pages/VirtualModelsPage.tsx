@@ -6,6 +6,7 @@ import {
   useConfigQuery,
   useConfigValidateMutation,
   useConfigApplyMutation,
+  useQuotasQuery,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
 import { Icon } from '../components/common/Icon'
@@ -23,6 +24,7 @@ export function VirtualModelsPage() {
   const validateMutation = useConfigValidateMutation()
   const applyMutation = useConfigApplyMutation()
   const showToast = useAppStore((s) => s.showToast)
+  const quotasQuery = useQuotasQuery()
 
   const [draft, setDraft] = useState<ReturnType<typeof draftFromDocument> | null>(null)
   const [serverIssues, setServerIssues] = useState<Awaited<ReturnType<typeof validateMutation.mutateAsync>>['issues']>([])
@@ -155,20 +157,58 @@ export function VirtualModelsPage() {
             </div>
             <fieldset className="app-scope-fieldset">
               <legend className="app-scope-legend">候选池（至少一个）</legend>
-              {draft.candidates
-                .filter((candidate) => candidate.id.trim())
-                .map((candidate) => (
-                  <label key={candidate.id} className="app-scope-check">
-                    <input
-                      type="checkbox"
-                      className="accent-primary"
-                      checked={model.candidate_pool.includes(candidate.id)}
-                      onChange={() => togglePoolMember(index, candidate.id)}
-                    />
-                    <span className="font-mono">{candidate.id}</span>
-                    <span className="text-muted-foreground">({candidate.tier})</span>
-                  </label>
-                ))}
+              {(() => {
+                // 按 Provider → 账号分组的树形展示（v3 P5-A）。
+                const mapping = new Map<string, { provider: string; account: string }>()
+                for (const item of quotasQuery.data?.items ?? []) {
+                  if (item.account_id || item.provider_id) {
+                    mapping.set(item.candidate_id, {
+                      provider: item.provider_id ?? '(unknown)',
+                      account: item.account_id ?? '(unknown)',
+                    })
+                  }
+                }
+                const groups = new Map<string, Map<string, typeof draft.candidates>>()
+                for (const candidate of draft.candidates.filter((item) => item.id.trim())) {
+                  const info = mapping.get(candidate.id)
+                  const provider = info?.provider ?? '未编译 / 手写候选'
+                  const account = info?.account ?? ''
+                  if (!groups.has(provider)) groups.set(provider, new Map())
+                  const accountGroups = groups.get(provider)
+                  if (!accountGroups) continue
+                  if (!accountGroups.has(account)) accountGroups.set(account, [])
+                  accountGroups.get(account)?.push(candidate)
+                }
+                return Array.from(groups.entries()).map(([providerId, accountGroups]) => (
+                  <div key={providerId} className="flex flex-col gap-1 w-full">
+                    <div className="text-meta text-muted-foreground font-semibold">{providerId}</div>
+                    {Array.from(accountGroups.entries()).map(([accountId, candidates]) => (
+                      <div
+                        key={`${providerId}-${accountId}`}
+                        className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-3"
+                      >
+                        {accountId && (
+                          <span className="text-meta text-muted-foreground font-mono">
+                            账号 {accountId}
+                          </span>
+                        )}
+                        {candidates.map((candidate) => (
+                          <label key={candidate.id} className="app-scope-check">
+                            <input
+                              type="checkbox"
+                              className="accent-primary"
+                              checked={model.candidate_pool.includes(candidate.id)}
+                              onChange={() => togglePoolMember(index, candidate.id)}
+                            />
+                            <span className="font-mono">{candidate.id}</span>
+                            <span className="text-muted-foreground">({candidate.tier})</span>
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ))
+              })()}
             </fieldset>
             <div className="app-form-row">
               <label className="app-field">

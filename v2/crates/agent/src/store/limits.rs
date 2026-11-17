@@ -187,3 +187,45 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod five_hour_window_tests {
+    use super::*;
+    use tr_contracts::KeyLimits;
+
+    /// 计划 key 的 5h 窗口：窗口内累计超限即拒绝，且 Retry-After 不超过 5h。
+    #[test]
+    fn five_hour_window_enforced() {
+        let db = Db::open_in_memory().unwrap();
+        let connection = db.write();
+        connection
+            .execute(
+                "INSERT INTO ledger (
+                    request_id, plan_id, session_key, branch_id, session_key_source,
+                    ingress_protocol, selection_model, selection_level, plan_mode,
+                    preference_json, failover_json, attempts_json, switches,
+                    reason_codes_json, outcome, http_status,
+                    input_tokens, output_tokens, answer_cost_micros, routing_cost_micros,
+                    created_at, authority_json, facts_completeness
+                 ) VALUES ('r5', 'p', 's', 'b', 'client', 'chat_completions',
+                    'vm', 'off', 'single', '[]', '[]', '[]', 0, '[]', 'success', 200,
+                    100, 100, 0, 0, ?1, '{\"authority_id\":\"tok-5h\"}', 'complete')",
+                rusqlite::params![1_700_000_000i64],
+            )
+            .unwrap();
+        drop(connection);
+
+        let limits = KeyLimits {
+            window: "hours:5".to_string(),
+            tokens: 150,
+            cost_micros: 0,
+            models: Vec::new(),
+        };
+        let now = 1_700_000_000_000i64 + 60_000;
+        let hit = check_limits(&db, "tok-5h", &limits, "any", now)
+            .unwrap()
+            .expect("must hit within 5h window");
+        assert_eq!(hit.used_tokens, 200);
+        assert!(hit.retry_after_secs > 0 && hit.retry_after_secs <= 5 * 3600);
+    }
+}
