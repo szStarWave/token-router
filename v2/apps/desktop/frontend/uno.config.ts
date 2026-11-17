@@ -92,7 +92,12 @@ export default defineConfig({
     ['app-divider', 'w-px flex-none bg-interactive-border'],
 
     // ── 页头 / 页面容器 ─────────────────────────────────────────
-    ['app-page-header', 'h-11 min-h-11 flex items-center gap-3 pl-5 pr-3 border-b border-border'],
+    // 窗口无系统装饰（decorations:false），页头即标题栏：整条可拖动，
+    // 里面的按钮用 no-drag 退出拖动区。
+    [
+      'app-page-header',
+      'drag-region h-11 min-h-11 flex items-center gap-3 pl-5 pr-3 border-b border-border',
+    ],
     ['app-page-title', 'flex-1 min-w-0 truncate text-section font-semibold tracking-tight'],
     ['app-page-content', 'flex-1 min-h-0 overflow-y-auto px-6 pt-5 pb-8'],
     ['app-page', 'flex flex-col gap-4 max-w-[1180px]'],
@@ -102,7 +107,7 @@ export default defineConfig({
     ],
     [
       'app-win-btn',
-      'size-8 grid place-items-center rounded-md border-0 bg-transparent text-muted-foreground cursor-pointer hover:bg-interactive-hover hover:text-foreground',
+      'no-drag size-8 grid place-items-center rounded-md border-0 bg-transparent text-muted-foreground cursor-pointer hover:bg-interactive-hover hover:text-foreground',
     ],
     [
       'app-win-close',
