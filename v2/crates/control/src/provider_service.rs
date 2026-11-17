@@ -18,6 +18,7 @@ use tr_contracts::{
     CatalogResponse, CatalogSelectRequest, CompileRequest, CompileResponse, ProviderInfo,
     ProviderKindDto, ProviderStatus, ProviderTemplateInfo, ProviderUpsertRequest,
 };
+use tr_onboard::import;
 
 use crate::error::{AdminApiError, ApiErrorType};
 use crate::provider_templates;
@@ -235,6 +236,7 @@ pub fn create_account(
         fingerprint,
         proxy_url: request.proxy_url,
         base_url_override: request.base_url_override,
+        extra_headers: request.extra_headers,
         enabled: request.enabled.unwrap_or(true),
         verified_at: None,
         verify_status: None,
@@ -268,6 +270,13 @@ pub fn update_account(
             None
         } else {
             Some(base_url_override)
+        };
+    }
+    if let Some(extra_headers) = request.extra_headers {
+        account.extra_headers = if extra_headers.is_empty() {
+            None
+        } else {
+            Some(extra_headers)
         };
     }
     if let Some(enabled) = request.enabled {
@@ -390,6 +399,7 @@ pub async fn refresh_catalog(
         )
     })?;
 
+    let fresh_ids: Vec<String> = models.iter().map(|(id, _)| id.clone()).collect();
     // 先取出已勾选集合与既有覆盖，再覆盖写目录。
     let existing = store::providers::list_catalog_models(db(state)?, provider_id)?;
     let mut selected: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
@@ -411,8 +421,71 @@ pub async fn refresh_catalog(
         .collect();
     store::providers::upsert_catalog_models(db(state)?, provider_id, &rows)?;
 
+    // v3 P5-A 吸收项（roadmap §0.3）：auto-include 通配符自动勾选新模型；
+    // 上游目录里消失的模型标记 deprecated（自动下架，不再编译出候选）。
+    apply_auto_include(db(state)?, provider_id)?;
+    mark_deprecated_models(db(state)?, provider_id, &fresh_ids);
+
     let _ = store::providers::set_catalog_status(db(state)?, provider_id, true, None);
     catalog(state, provider_id)
+}
+
+/// 按 provider 目录里配置的 auto-include 通配符（`gpt-*`）勾选新模型。
+/// 通配符存在 `catalog_models.auto_include_pattern`（挂在 manual 条目上，
+/// `POST catalog/select` 传 pattern 时写入）。
+fn apply_auto_include(db: &tr_agent::store::Db, provider_id: &str) -> Result<(), AdminApiError> {
+    let patterns = store::providers::auto_include_patterns(db, provider_id)?;
+    if patterns.is_empty() {
+        return Ok(());
+    }
+    for model in store::providers::list_catalog_models(db, provider_id)? {
+        if model.selected {
+            continue;
+        }
+        let hit = patterns
+            .iter()
+            .any(|pattern| wildcard_match(pattern, &model.model_id));
+        if hit {
+            let _ = store::providers::set_model_selected(
+                db,
+                provider_id,
+                &model.model_id,
+                true,
+                None,
+                None,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 目录刷新后：不在最新目录里的勾选模型标记 deprecated（下架不再编译）。
+/// 模型仍留在目录里可手动恢复；模型重新出现时 deprecated 标记清除。
+fn mark_deprecated_models(db: &tr_agent::store::Db, provider_id: &str, fresh_ids: &[String]) {
+    let now = now_millis();
+    let _ = store::providers::mark_deprecated(db, provider_id, fresh_ids, now);
+}
+
+/// magpie 口径的通配符匹配：只支持 `*`（任意段），避免引入正则依赖。
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    fn inner(p: &[u8], t: &[u8]) -> bool {
+        if p.is_empty() {
+            return t.is_empty();
+        }
+        match p[0] {
+            b'*' => {
+                // 尝试 * 匹配 0..n 字符。
+                for skip in 0..=t.len() {
+                    if inner(&p[1..], &t[skip..]) {
+                        return true;
+                    }
+                }
+                false
+            }
+            byte => !t.is_empty() && t[0] == byte && inner(&p[1..], &t[1..]),
+        }
+    }
+    inner(pattern.as_bytes(), text.as_bytes())
 }
 
 /// 手工目录：无在线目录的厂商用 POST select 隐式创建条目。
@@ -464,6 +537,25 @@ pub fn select_model(
         request.tier.as_deref(),
         request.strength,
     )?;
+    // auto-include 通配符挂在该条目上（空串 = 清除）。
+    if let Some(pattern) = &request.auto_include_pattern {
+        let pattern = pattern.trim();
+        let _ = store::providers::set_auto_include_pattern(
+            db(state)?,
+            provider_id,
+            &request.model_id,
+            if pattern.is_empty() {
+                None
+            } else {
+                Some(pattern)
+            },
+        );
+        // 有通配符时立即匹配一轮。
+        apply_auto_include(db(state)?, provider_id)?;
+    }
+    if request.clear_deprecated.unwrap_or(false) {
+        let _ = store::providers::clear_deprecated(db(state)?, provider_id, &request.model_id);
+    }
     catalog(state, provider_id)
 }
 
@@ -564,6 +656,33 @@ fn read_credential(
     }
 }
 
+// ── 反向导入（v3 P5-A）────────────────────────────────────────────────────
+
+/// 扫描本机 agent 配置生成 provider 草稿。
+/// 明文 key 永不导入；`env:`/`file:` 引用原样保留。
+pub fn import_scan(
+    _state: &ControlState,
+    request: tr_contracts::ImportScanRequest,
+) -> Result<tr_contracts::ImportScanResponse, AdminApiError> {
+    let home = match request.home {
+        Some(home) if !home.is_empty() => std::path::PathBuf::from(home),
+        // 默认宿主 home：走 onboard 的 Host 语义。
+        _ => tr_onboard::Target::Host
+            .home()
+            .map_err(|error| AdminApiError::internal(error.to_string()))?,
+    };
+    let drafts = import::scan_home(&home)
+        .into_iter()
+        .map(|provider| tr_contracts::ImportedProviderDraft {
+            display_name: provider.display_name,
+            base_url: provider.base_url,
+            credential_ref: provider.credential_ref,
+            source: provider.source,
+        })
+        .collect();
+    Ok(tr_contracts::ImportScanResponse { drafts })
+}
+
 // ── 候选编译投影 ─────────────────────────────────────────────────────────
 
 /// 候选 id：`{provider}~{model}@{account}`（`~`/`@` 不在 id 白名单里但 TOML 无碍；
@@ -628,6 +747,10 @@ pub fn compile_candidates(
             if !model.selected {
                 continue;
             }
+            // deprecated（上游已下架）不编译出新候选。
+            if store::providers::is_deprecated(db_handle, &provider.id, &model.model_id)? {
+                continue;
+            }
             let (tier, strength) = overrides
                 .get(&model.model_id)
                 .cloned()
@@ -648,6 +771,14 @@ pub fn compile_candidates(
                     model: model.model_id.clone(),
                     credential: account.credential_ref.clone(),
                     window: default_window_for(&provider.id),
+                    proxy: account.proxy_url.clone(),
+                    extra_headers: account
+                        .extra_headers
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|header| (header.name, header.value))
+                        .collect(),
                 });
                 vm_pools
                     .entry(provider.id.clone())
@@ -689,6 +820,8 @@ pub fn compile_candidates(
             base_url: row.base_url.clone(),
             model: row.model.clone(),
             credential: Some(row.credential.clone()),
+            proxy: row.proxy.clone(),
+            extra_headers: row.extra_headers.clone(),
             window: row.window,
             input: Vec::new(),
             thinking_levels: Vec::new(),
@@ -759,6 +892,8 @@ struct CandidateRow {
     model: String,
     credential: String,
     window: u32,
+    proxy: Option<String>,
+    extra_headers: BTreeMap<String, String>,
 }
 
 fn provider_kind_text(kind: ProviderKindDto) -> String {
@@ -773,4 +908,18 @@ fn default_window_for(provider_id: &str) -> u32 {
     provider_templates::find_template(provider_id)
         .and_then(|t| t.default_window)
         .unwrap_or(128_000)
+}
+
+#[cfg(test)]
+mod wildcard_tests {
+    use super::wildcard_match;
+
+    #[test]
+    fn wildcard_semantics() {
+        assert!(wildcard_match("gpt-*", "gpt-4o"));
+        assert!(wildcard_match("*", "anything"));
+        assert!(wildcard_match("qwen*instruct", "qwen2.5-instruct"));
+        assert!(!wildcard_match("gpt-*", "claude-3"));
+        assert!(!wildcard_match("gpt-", "gpt"));
+    }
 }

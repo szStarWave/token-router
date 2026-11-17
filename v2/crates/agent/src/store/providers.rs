@@ -180,6 +180,9 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountInfo> {
         fingerprint: row.get("fingerprint")?,
         proxy_url: row.get("proxy_url")?,
         base_url_override: row.get("base_url_override")?,
+        extra_headers: row
+            .get::<_, Option<String>>("extra_headers_json")?
+            .and_then(|text| serde_json::from_str(&text).ok()),
         enabled: row.get::<_, i64>("enabled")? != 0,
         verified_at: row.get("verified_at")?,
         verify_status: row.get("verify_status")?,
@@ -189,13 +192,14 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountInfo> {
 
 const ACCOUNT_SELECT: &str =
     "SELECT id, provider_id, label, credential_ref, fingerprint, proxy_url,
-    base_url_override, enabled, verified_at, verify_status, created_at FROM accounts";
+    base_url_override, extra_headers_json, enabled, verified_at, verify_status, created_at
+    FROM accounts";
 
 pub fn insert_account(db: &Db, account: &AccountInfo) -> Result<(), StoreError> {
     db.write().execute(
         "INSERT INTO accounts (id, provider_id, label, credential_ref, fingerprint, proxy_url,
-            base_url_override, enabled, verified_at, verify_status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            base_url_override, extra_headers_json, enabled, verified_at, verify_status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             account.id,
             account.provider_id,
@@ -204,6 +208,11 @@ pub fn insert_account(db: &Db, account: &AccountInfo) -> Result<(), StoreError> 
             account.fingerprint,
             account.proxy_url,
             account.base_url_override,
+            account
+                .extra_headers
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
             account.enabled as i64,
             account.verified_at,
             account.verify_status,
@@ -217,7 +226,7 @@ pub fn insert_account(db: &Db, account: &AccountInfo) -> Result<(), StoreError> 
 pub fn update_account(db: &Db, account: &AccountInfo) -> Result<bool, StoreError> {
     let changed = db.write().execute(
         "UPDATE accounts SET label = ?2, credential_ref = ?3, fingerprint = ?4, proxy_url = ?5,
-            base_url_override = ?6, enabled = ?7 WHERE id = ?1",
+            base_url_override = ?6, extra_headers_json = ?7, enabled = ?8 WHERE id = ?1",
         params![
             account.id,
             account.label,
@@ -225,6 +234,11 @@ pub fn update_account(db: &Db, account: &AccountInfo) -> Result<bool, StoreError
             account.fingerprint,
             account.proxy_url,
             account.base_url_override,
+            account
+                .extra_headers
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
             account.enabled as i64,
         ],
     )?;
@@ -449,6 +463,82 @@ pub fn parse_price(text: &str) -> Option<PriceDto> {
     serde_json::from_str(text).ok()
 }
 
+/// 目录 auto-include 通配符列表（去重）。
+pub fn auto_include_patterns(db: &Db, provider_id: &str) -> Result<Vec<String>, StoreError> {
+    let connection = db.read();
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT auto_include_pattern FROM catalog_models
+          WHERE provider_id = ?1 AND auto_include_pattern IS NOT NULL",
+    )?;
+    let items = statement
+        .query_map(params![provider_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// 上游目录不再包含的模型标记 deprecated；重新出现的清除标记。
+pub fn mark_deprecated(
+    db: &Db,
+    provider_id: &str,
+    fresh_ids: &[String],
+    now_millis: i64,
+) -> Result<(), StoreError> {
+    let mut connection = db.write();
+    let tx = connection.transaction()?;
+    // 不在 fresh 集合里的 → 标记 deprecated（保留 selected 以便恢复）。
+    tx.execute(
+        "UPDATE catalog_models SET deprecated = 1, deprecated_detected_at = ?2
+          WHERE provider_id = ?1 AND deprecated = 0 AND model_id NOT IN (SELECT value FROM json_each(?3))",
+        params![provider_id, now_millis, serde_json::to_string(fresh_ids)?],
+    )?;
+    // 重新出现的 → 清除。
+    tx.execute(
+        "UPDATE catalog_models SET deprecated = 0, deprecated_detected_at = NULL
+          WHERE provider_id = ?1 AND deprecated = 1 AND model_id IN (SELECT value FROM json_each(?2))",
+        params![provider_id, serde_json::to_string(fresh_ids)?],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 设置某条目录条目的 auto-include 通配符（manual 条目上配置）。
+pub fn set_auto_include_pattern(
+    db: &Db,
+    provider_id: &str,
+    model_id: &str,
+    pattern: Option<&str>,
+) -> Result<bool, StoreError> {
+    let changed = db.write().execute(
+        "UPDATE catalog_models SET auto_include_pattern = ?3
+          WHERE provider_id = ?1 AND model_id = ?2",
+        params![provider_id, model_id, pattern],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 手动清除单条模型的 deprecated 标记。
+pub fn clear_deprecated(db: &Db, provider_id: &str, model_id: &str) -> Result<bool, StoreError> {
+    let changed = db.write().execute(
+        "UPDATE catalog_models SET deprecated = 0, deprecated_detected_at = NULL
+          WHERE provider_id = ?1 AND model_id = ?2",
+        params![provider_id, model_id],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 读取单条模型的 deprecated 标记。
+pub fn is_deprecated(db: &Db, provider_id: &str, model_id: &str) -> Result<bool, StoreError> {
+    let connection = db.read();
+    let flag: Option<i64> = connection
+        .query_row(
+            "SELECT deprecated FROM catalog_models WHERE provider_id = ?1 AND model_id = ?2",
+            params![provider_id, model_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(flag.unwrap_or(0) != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +608,7 @@ mod tests {
             fingerprint: "ab12".into(),
             proxy_url: None,
             base_url_override: None,
+            extra_headers: None,
             enabled: true,
             verified_at: None,
             verify_status: None,
@@ -648,6 +739,7 @@ mod tests {
     #[test]
     fn migration_6_applied() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(db.schema_version().unwrap(), 6);
+        // M6 providers/accounts/catalog + M7 extra_headers/auto-include/deprecated。
+        assert_eq!(db.schema_version().unwrap(), 7);
     }
 }

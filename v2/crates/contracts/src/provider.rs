@@ -124,6 +124,14 @@ pub struct ProviderUpsertRequest {
     pub catalog_url: Option<String>,
 }
 
+/// 静态自定义 header 键值对（值非敏感；敏感值走凭据引用）。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct HeaderPair {
+    pub name: String,
+    pub value: String,
+}
+
 /// 账号（provider 下的一把 key）。
 #[derive(Debug, Clone, TS, Serialize, Deserialize)]
 #[ts(export, export_to = "admin.ts")]
@@ -141,6 +149,11 @@ pub struct AccountInfo {
     /// 基础 URL 覆盖（多租户网关等场景）；空 = 用 provider 的。
     #[ts(as = "Option<String>")]
     pub base_url_override: Option<String>,
+    /// 自定义请求 header（如 OpenRouter 的 `HTTP-Referer`/`X-Title`）。
+    /// 值是**静态非敏感** header；敏感值请走凭据引用。
+    #[serde(default)]
+    #[ts(optional)]
+    pub extra_headers: Option<Vec<HeaderPair>>,
     pub enabled: bool,
     /// 最后一次连通性验证时间。
     #[ts(as = "Option<i64>")]
@@ -165,6 +178,10 @@ pub struct AccountCreateRequest {
     #[serde(default)]
     #[ts(optional)]
     pub base_url_override: Option<String>,
+    /// 静态自定义 header（非敏感值）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub extra_headers: Option<Vec<HeaderPair>>,
     #[serde(default = "default_some_true")]
     #[ts(optional)]
     pub enabled: Option<bool>,
@@ -191,6 +208,10 @@ pub struct AccountUpdateRequest {
     pub proxy_url: Option<String>,
     #[ts(as = "Option<String>")]
     pub base_url_override: Option<String>,
+    /// 静态自定义 header；传入 = 全量替换（空数组 = 清空）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub extra_headers: Option<Vec<HeaderPair>>,
     #[ts(as = "Option<bool>")]
     pub enabled: Option<bool>,
 }
@@ -251,6 +272,15 @@ pub struct CatalogSelectRequest {
     #[serde(default)]
     #[ts(optional)]
     pub strength: Option<u8>,
+    /// auto-include 通配符（如 `gpt-*`）：新出现在目录里的模型自动勾选。
+    /// 传入空串清除。
+    #[serde(default)]
+    #[ts(optional)]
+    pub auto_include_pattern: Option<String>,
+    /// 取消 deprecated 标记（上游恢复但刷新没清掉的场合手动恢复）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub clear_deprecated: Option<bool>,
 }
 
 /// 候选编译结果（`POST /v2/admin/providers/compile`）。
@@ -280,4 +310,37 @@ pub struct CompileRequest {
     #[serde(default)]
     #[ts(optional)]
     pub expected_revision: Option<String>,
+}
+
+// ── 反向导入（v3 P5-A，roadmap §0.3 吸收项）───────────────────────────────
+
+/// `POST /v2/admin/providers/import`：从本机 agent 配置扫描上游端点草稿。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct ImportScanRequest {
+    /// 显式 home 覆盖（测试用）；空 = 服务端宿主 home。
+    #[serde(default)]
+    #[ts(optional)]
+    pub home: Option<String>,
+}
+
+/// 扫描出的导入草稿。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct ImportedProviderDraft {
+    pub display_name: String,
+    pub base_url: String,
+    /// key 引用（env:/file:）；明文不导入，没有引用时用户手填。
+    #[serde(default)]
+    #[ts(optional)]
+    pub credential_ref: Option<String>,
+    /// 来源（agent + 配置文件路径）。
+    pub source: String,
+}
+
+/// `POST /v2/admin/providers/import` 响应：一键落库。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct ImportScanResponse {
+    pub drafts: Vec<ImportedProviderDraft>,
 }

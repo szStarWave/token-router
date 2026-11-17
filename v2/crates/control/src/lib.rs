@@ -29,7 +29,7 @@ use serde_json::json;
 use tr_contracts::{
     AccountCreateRequest, AccountUpdateRequest, AdminScope, CatalogRefreshRequest,
     CatalogSelectRequest, CompileRequest, ConfigAuditEntry, CreateTokenRequest, DoctorCheck,
-    DoctorResponse, Page, ProviderUpsertRequest, RequestSummary, TokenInfo,
+    DoctorResponse, ImportScanRequest, Page, ProviderUpsertRequest, RequestSummary, TokenInfo,
 };
 
 pub use crate::auth::AdminAuth;
@@ -94,6 +94,7 @@ pub fn router(state: ControlState) -> Router {
             post(catalog_select),
         )
         .route("/v2/admin/providers/compile", post(providers_compile))
+        .route("/v2/admin/providers/import", post(providers_import))
         .with_state(state)
 }
 
@@ -1052,4 +1053,14 @@ async fn account_delete(
     state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
     provider_service::delete_account(&state, &id)?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `POST /v2/admin/providers/import`：从本机 agent 配置反向导入草稿（只读扫描）。
+async fn providers_import(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(body): Json<ImportScanRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::import_scan(&state, body)?).into_response())
 }

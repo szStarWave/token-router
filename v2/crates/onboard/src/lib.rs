@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod import;
 pub mod merge;
 pub mod wsl;
 

@@ -21,6 +21,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M4_LEDGER_AUTHORITY,
     M5_TOKENS_AUDIT,
     M6_PROVIDERS,
+    M7_ACCOUNT_HEADERS,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -323,4 +324,14 @@ CREATE TABLE catalog_models (
   strength       INTEGER,
   PRIMARY KEY (provider_id, model_id)
 );
+"#;
+
+/// migration 7（v3 P5-A 吸收项）：账号自定义 header；目录 auto-include 通配符
+/// 与 deprecated 标记。
+const M7_ACCOUNT_HEADERS: &str = r#"
+ALTER TABLE accounts ADD COLUMN extra_headers_json TEXT;
+
+ALTER TABLE catalog_models ADD COLUMN auto_include_pattern TEXT;
+ALTER TABLE catalog_models ADD COLUMN deprecated INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE catalog_models ADD COLUMN deprecated_detected_at INTEGER;
 "#;

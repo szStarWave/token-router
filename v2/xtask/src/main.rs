@@ -42,10 +42,12 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "tr-proto",
             "tr-agent",
             "tr-control",
+            // v3 P5-A：file: 相对路径凭据按数据目录解析（sidecar cwd 不可假设）。
+            "tr-upstream",
             "mock-upstream",
         ],
     ),
-    ("tr-control", &["tr-contracts", "tr-agent"]),
+    ("tr-control", &["tr-contracts", "tr-agent", "tr-onboard"]),
     (
         "tr-cli",
         &[

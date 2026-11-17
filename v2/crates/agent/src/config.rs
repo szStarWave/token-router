@@ -217,6 +217,12 @@ pub struct CandidateFile {
     pub model: String,
     #[serde(default)]
     pub credential: Option<String>,
+    /// 每 key 代理（v3 P5-A，如 http://127.0.0.1:7890）。
+    #[serde(default)]
+    pub proxy: Option<String>,
+    /// 静态自定义 header（非敏感值；随请求附加）。
+    #[serde(default)]
+    pub extra_headers: BTreeMap<String, String>,
     #[serde(default)]
     pub window: u32,
     #[serde(default)]
@@ -644,6 +650,18 @@ pub fn load(path: impl AsRef<Path>) -> Result<Catalog, ConfigError> {
     ConfigFile::parse(&text)?.into_catalog()
 }
 
+/// proxy/header 进 capability.tags：内核只透传，upstream 消费。
+fn candidate_tags(file: &CandidateFile) -> BTreeMap<String, String> {
+    let mut tags = BTreeMap::new();
+    if let Some(proxy) = &file.proxy {
+        tags.insert("proxy_url".to_string(), proxy.clone());
+    }
+    for (name, value) in &file.extra_headers {
+        tags.insert(format!("header:{name}"), value.clone());
+    }
+    tags
+}
+
 fn to_candidate(file: &CandidateFile) -> Candidate {
     Candidate {
         id: file.id.clone(),
@@ -659,6 +677,8 @@ fn to_candidate(file: &CandidateFile) -> Candidate {
         capability: CapabilityProfile {
             input: file.input.clone(),
             thinking_levels: file.thinking_levels.clone(),
+            // proxy/自定义 header 经 tags 携带（契约既有扩展位，内核不解析）。
+            tags: candidate_tags(file),
             ..CapabilityProfile::default()
         },
         price: file.price.as_ref().map(|price| PriceModel {

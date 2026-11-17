@@ -9,5 +9,5 @@
 pub mod http;
 pub mod stream;
 
-pub use http::{AttemptFailure, AttemptOutcome, HttpUpstream};
+pub use http::{AttemptFailure, AttemptOutcome, HttpUpstream, set_data_dir};
 pub use stream::{StreamAttempt, StreamItem};

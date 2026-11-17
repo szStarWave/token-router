@@ -1846,6 +1846,7 @@ dependencies = [
  "toml",
  "tr-agent",
  "tr-contracts",
+ "tr-onboard",
  "uuid",
 ]
 
@@ -1879,6 +1880,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "thiserror",
+ "toml",
  "toml_edit",
 ]
 
@@ -1906,6 +1908,7 @@ dependencies = [
  "tr-contracts",
  "tr-control",
  "tr-proto",
+ "tr-upstream",
  "tracing",
  "tracing-subscriber",
 ]

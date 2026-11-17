@@ -8,7 +8,11 @@ export type AccountCreateRequest = { label: string,
 /**
  * **明文 key**：只在创建请求里出现一次，服务端写入凭据文件后即丢弃。
  */
-key: string, proxy_url?: string, base_url_override?: string, enabled?: boolean, };
+key: string, proxy_url?: string, base_url_override?: string, 
+/**
+ * 静态自定义 header（非敏感值）。
+ */
+extra_headers?: Array<HeaderPair>, enabled?: boolean, };
 
 /**
  * 账号（provider 下的一把 key）。
@@ -29,7 +33,12 @@ proxy_url: string | null,
 /**
  * 基础 URL 覆盖（多租户网关等场景）；空 = 用 provider 的。
  */
-base_url_override: string | null, enabled: boolean, 
+base_url_override: string | null, 
+/**
+ * 自定义请求 header（如 OpenRouter 的 `HTTP-Referer`/`X-Title`）。
+ * 值是**静态非敏感** header；敏感值请走凭据引用。
+ */
+extra_headers?: Array<HeaderPair>, enabled: boolean, 
 /**
  * 最后一次连通性验证时间。
  */
@@ -46,7 +55,11 @@ export type AccountUpdateRequest = { label: string | null,
 /**
  * 传入则轮换 key（旧凭据文件删除）。
  */
-key: string | null, proxy_url: string | null, base_url_override: string | null, enabled: boolean | null, };
+key: string | null, proxy_url: string | null, base_url_override: string | null, 
+/**
+ * 静态自定义 header；传入 = 全量替换（空数组 = 清空）。
+ */
+extra_headers?: Array<HeaderPair>, enabled: boolean | null, };
 
 /**
  * 管理端点作用域。
@@ -158,7 +171,16 @@ tier?: string,
 /**
  * 覆盖 strength（0-255，越大越强）。
  */
-strength?: number, };
+strength?: number, 
+/**
+ * auto-include 通配符（如 `gpt-*`）：新出现在目录里的模型自动勾选。
+ * 传入空串清除。
+ */
+auto_include_pattern?: string, 
+/**
+ * 取消 deprecated 标记（上游恢复但刷新没清掉的场合手动恢复）。
+ */
+clear_deprecated?: boolean, };
 
 /**
  * 编译选项。
@@ -270,9 +292,41 @@ status: string, detail: string | null, };
 export type DoctorResponse = { checks: Array<DoctorCheck>, };
 
 /**
+ * 静态自定义 header 键值对（值非敏感；敏感值走凭据引用）。
+ */
+export type HeaderPair = { name: string, value: string, };
+
+/**
  * `GET /v2/admin/health`。
  */
 export type HealthResponse = { items: Array<CandidateHealthItem>, counts: BreakerCounts, };
+
+/**
+ * `POST /v2/admin/providers/import`：从本机 agent 配置扫描上游端点草稿。
+ */
+export type ImportScanRequest = { 
+/**
+ * 显式 home 覆盖（测试用）；空 = 服务端宿主 home。
+ */
+home?: string, };
+
+/**
+ * `POST /v2/admin/providers/import` 响应：一键落库。
+ */
+export type ImportScanResponse = { drafts: Array<ImportedProviderDraft>, };
+
+/**
+ * 扫描出的导入草稿。
+ */
+export type ImportedProviderDraft = { display_name: string, base_url: string, 
+/**
+ * key 引用（env:/file:）；明文不导入，没有引用时用户手填。
+ */
+credential_ref?: string, 
+/**
+ * 来源（agent + 配置文件路径）。
+ */
+source: string, };
 
 /**
  * 判官维度汇总。

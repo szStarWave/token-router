@@ -65,6 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parent()
         .map(|parent| parent.to_path_buf())
         .unwrap_or_default();
+    // file: 相对路径凭据按数据目录解析（sidecar cwd 不可假设）。
+    tr_upstream::set_data_dir(&data_dir);
+
     let admin_auth = AdminAuth::new(db.clone(), Some(data_dir.join("admin.token")));
     if admin_auth.bootstrap_if_empty()?.is_some() {
         println!(

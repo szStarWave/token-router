@@ -60,6 +60,8 @@ impl AttemptOutcome {
 #[derive(Debug, Clone)]
 pub struct HttpUpstream {
     pub(crate) client: Client,
+    /// 单次请求超时（每 key 代理时按候选重建 client 需要）。
+    pub(crate) timeout: Duration,
 }
 
 /// 默认客户端：120s 单次请求超时（P0a 非流式）。
@@ -75,7 +77,7 @@ impl Default for HttpUpstream {
 impl HttpUpstream {
     pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
         let client = Client::builder().timeout(timeout).build()?;
-        Ok(Self { client })
+        Ok(Self { client, timeout })
     }
 
     /// 执行一次非流式请求。
@@ -130,7 +132,36 @@ impl HttpUpstream {
         let wire = physical_request(candidate, request);
         let body = chat::encode_request(&wire);
 
-        let mut builder = self.client.post(&url).json(&body);
+        // v3 P5-A：每 key 代理（candidate.capability.tags 的 `proxy_url`）；
+        // 有代理时换 per-request client（共享 client 无法按请求换代理）。
+        let mut builder = match candidate.capability.tags.get("proxy_url") {
+            Some(proxy_url) => {
+                let proxy = reqwest::Proxy::all(proxy_url).map_err(|error| {
+                    (credential_failure(format!("代理配置无效: {error}")), None)
+                })?;
+                let client = Client::builder()
+                    .timeout(self.timeout)
+                    .proxy(proxy)
+                    .build()
+                    .map_err(|error| {
+                        (
+                            credential_failure(format!("代理 client 构建失败: {error}")),
+                            None,
+                        )
+                    })?;
+                client.post(&url)
+            }
+            None => self.client.post(&url),
+        }
+        .json(&body);
+
+        // v3 P5-A：静态自定义 header（tags 的 `header:<name>`）。
+        for (key, value) in &candidate.capability.tags {
+            if let Some(name) = key.strip_prefix("header:") {
+                builder = builder.header(name, value);
+            }
+        }
+
         if let Some(reference) = &candidate.upstream.credential {
             let secret = resolve_credential(reference).map_err(|failure| (failure, None))?;
             builder = builder.bearer_auth(secret);
@@ -240,6 +271,35 @@ pub fn endpoint(base_url: &str) -> String {
     }
 }
 
+/// 数据目录基準（v3 P5-A）：`file:` **相对路径**凭据（`file:credentials/<id>.key`）
+/// 按数据目录解析，而不是进程 cwd——桌面端 supervisor spawn 的 sidecar cwd 不可假设。
+/// 由 server 启动时调用一次；测试可显式设置或用 `None` 清空。
+static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// 设置 `file:` 相对路径凭据的解析基准（数据目录）。进程内只生效第一次调用。
+pub fn set_data_dir(path: impl Into<std::path::PathBuf>) {
+    let _ = DATA_DIR.set(path.into());
+}
+
+/// 解析 `file:` 凭据路径：相对路径按数据目录基准，找不到再回退 cwd（兼容旧用法）。
+fn resolve_file_path(name: &str) -> std::path::PathBuf {
+    resolve_file_path_with_base(name, DATA_DIR.get().map(|path| path.as_path()))
+}
+
+fn resolve_file_path_with_base(name: &str, base: Option<&std::path::Path>) -> std::path::PathBuf {
+    let raw = std::path::Path::new(name);
+    if raw.is_absolute() {
+        return raw.to_path_buf();
+    }
+    if let Some(base) = base {
+        let candidate = base.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    raw.to_path_buf()
+}
+
 pub(crate) fn resolve_credential(reference: &CredentialRef) -> Result<String, AttemptFailure> {
     let (kind, name) = reference
         .0
@@ -250,7 +310,7 @@ pub(crate) fn resolve_credential(reference: &CredentialRef) -> Result<String, At
         "env" => {
             std::env::var(name).map_err(|_| credential_failure(format!("环境变量 {name} 未设置")))
         }
-        "file" => std::fs::read_to_string(name)
+        "file" => std::fs::read_to_string(resolve_file_path(name))
             .map(|content| content.trim().to_string())
             .map_err(|error| credential_failure(format!("读取凭据文件失败: {error}"))),
         "keyring" => Err(credential_failure(
@@ -338,5 +398,39 @@ mod tests {
         let failure = resolve_credential(&reference).expect_err("must fail");
         assert_eq!(failure.class, ErrorClass::Auth);
         assert_eq!(failure.cause, AttemptCause::Credential);
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    /// v3 P5-A 回归：`file:credentials/<id>.key` 相对路径按数据目录解析，
+    /// 不依赖进程 cwd（桌面端 supervisor spawn 的 sidecar 场景）。
+    #[test]
+    fn file_credential_resolves_relative_to_data_dir() {
+        // 独立临时目录 + 相对子路径；OnceLock 进程级只 set 一次，
+        // 因此用「绝对路径 + 数据目录内的文件」验证解析逻辑本身。
+        let base = std::env::temp_dir().join(format!("tr2-cred-test-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("credentials")).unwrap();
+        std::fs::write(base.join("credentials").join("acc.key"), "  sk-test-1234  ").unwrap();
+
+        // 绝对路径形式总是可用（既有行为不回归）。
+        let absolute = CredentialRef(format!(
+            "file:{}",
+            base.join("credentials").join("acc.key").display()
+        ));
+        let resolved = resolve_credential(&absolute).unwrap();
+        assert_eq!(resolved, "sk-test-1234", "绝对路径 + trim");
+
+        // 相对路径解析函数：有数据目录基准时命中。
+        let relative = resolve_file_path_with_base("credentials/acc.key", Some(&base));
+        assert!(relative.is_file(), "相对路径应按数据目录基准解析");
+
+        // 没有基准时保持 cwd 行为（原样返回）。
+        let fallback = resolve_file_path_with_base("credentials/acc.key", None);
+        assert_eq!(fallback, std::path::PathBuf::from("credentials/acc.key"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
