@@ -154,7 +154,7 @@ impl Supervisor {
         // 孤儿清理：runtime.json 里有 PID 且进程存活 → 先尝试关闭。
         self.cleanup_orphan().await;
 
-        let Some(port) = Self::pick_port(&self.config.listen).await else {
+        let Some(listen) = Self::pick_port(&self.config.listen).await else {
             *self.state.lock().await = SupervisionState::Failed;
             return SpawnOutcome {
                 state: SupervisionState::Failed,
@@ -162,7 +162,6 @@ impl Supervisor {
                 message: "no free port in 17621..17640".to_string(),
             };
         };
-        let listen = format!("127.0.0.1:{port}");
 
         let config_path = self.config.data_dir.join("config.toml");
         let db_path = self.config.data_dir.join("token-router-v2.db");
@@ -187,7 +186,10 @@ impl Supervisor {
                 return SpawnOutcome {
                     state: SupervisionState::Failed,
                     listen: None,
-                    message: format!("spawn sidecar: {error}"),
+                    message: format!(
+                        "spawn sidecar at {}: {error}",
+                        self.config.sidecar_path.display()
+                    ),
                 };
             }
         };
@@ -222,11 +224,15 @@ impl Supervisor {
             SpawnOutcome {
                 state: SupervisionState::Failed,
                 listen: None,
-                message: if stderr_tail.is_empty() {
-                    "sidecar not ready within 15s".to_string()
-                } else {
-                    format!("sidecar stderr: {stderr_tail}")
-                },
+                message: format!(
+                    "sidecar not ready on {listen} (path: {}){}",
+                    self.config.sidecar_path.display(),
+                    if stderr_tail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; stderr: {stderr_tail}")
+                    }
+                ),
             }
         }
     }

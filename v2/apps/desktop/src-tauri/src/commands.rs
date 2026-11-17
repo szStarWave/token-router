@@ -44,7 +44,8 @@ pub async fn supervisor_start(
 pub async fn supervisor_restart(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let outcome = state.supervisor.restart_with_backoff().await;
     if outcome.state == SupervisionState::Ready {
-        *state.base_url.lock().await = outcome.listen.clone();
+        *state.base_url.lock().await = base_url(outcome.listen.as_deref());
+
         let token_path = state.data_dir.join("admin.token");
         if let Ok(token) = tokio::fs::read_to_string(&token_path).await {
             *state.admin_token.lock().await = Some(token.trim().to_string());
@@ -64,12 +65,17 @@ pub async fn supervisor_stop(state: State<'_, AppState>) -> Result<serde_json::V
     Ok(serde_json::json!({"state": "stopped", "message": message}))
 }
 
+/// 监听地址 → base URL（reqwest 要绝对 URL，必须带协议前缀）。
+fn base_url(listen: Option<&str>) -> Option<String> {
+    listen.map(|listen| format!("http://{listen}"))
+}
+
 async fn finish_ready(
     app: &AppHandle,
     state: &State<'_, AppState>,
     outcome: &SpawnOutcome,
 ) {
-    *state.base_url.lock().await = outcome.listen.clone();
+    *state.base_url.lock().await = base_url(outcome.listen.as_deref());
     let token_path = state.data_dir.join("admin.token");
     if let Ok(token) = tokio::fs::read_to_string(&token_path).await {
         *state.admin_token.lock().await = Some(token.trim().to_string());

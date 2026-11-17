@@ -55,17 +55,33 @@ impl AppState {
 
 /// sidecar 路径：与可执行文件同目录的 `token-router-v2(.exe)`；开发期回退到 target/debug。
 fn sidecar_binary() -> PathBuf {
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // 当前进程所在目录及其祖先（cargo test 的进程在 target/debug/deps/ 下，多退一级）。
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
     {
         candidates.push(dir.join("token-router-v2.exe"));
         candidates.push(dir.join("token-router-v2"));
-        // cargo dev：workspace target/debug（src-tauri/target -> v2/target）
-        if let Some(v2) = dir.parent().and_then(|p| p.parent()) {
+        // 沿祖先链找 debug/token-router-v2（deps/、build/.../out/ 深度不定）。
+        let mut ancestors = dir.clone();
+        for _ in 0..8 {
+            if let Some(parent) = ancestors.parent() {
+                ancestors = parent.to_path_buf();
+                candidates.push(ancestors.join("debug").join("token-router-v2.exe"));
+                candidates.push(ancestors.join("debug").join("token-router-v2"));
+            }
+        }
+        // 显式 workspace 路径兜底（apps/desktop/src-tauri -> v2）。
+        if let Some(v2) = dir.ancestors().nth(4) {
             candidates.push(v2.join("target").join("debug").join("token-router-v2.exe"));
             candidates.push(v2.join("target").join("debug").join("token-router-v2"));
+        }
+    }
+    // 打包布局：sidecar 与主程序同目录（externalBin）。
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("sidecar").join("token-router-v2.exe"));
         }
     }
     candidates
@@ -119,4 +135,83 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use supervisor::{SupervisionState, SupervisorConfig};
+
+    /// 测试用最小配置：一个指向本地占位端口的候选 + 一个虚拟模型。
+    /// 上游不会在启动时被访问，因此无需真实上游或凭据。
+    const TEST_CONFIG: &str = r#"
+schema_version = 1
+default_virtual_model = "auto"
+
+[server]
+listen = "127.0.0.1:17621"
+
+[profiles.default]
+mode = "cascade"
+
+[[candidates]]
+id = "test-local"
+tier = "local"
+strength = 10
+provider = "openai"
+base_url = "http://127.0.0.1:9/v1"
+model = "test-model"
+window = 8192
+input = ["text"]
+
+[[virtual_models]]
+provider = "router"
+id = "auto"
+name = "Auto"
+profile = "default"
+candidate_pool = ["test-local"]
+"#;
+
+    /// 端到端拉起真实 sidecar。
+    ///
+    /// 需要先构建被测二进制，否则没有 sidecar 可拉：
+    ///   cd v2 && cargo build -p token-router-v2
+    /// 因此默认忽略，手动跑：`cargo test -- --ignored`。
+    #[tokio::test]
+    #[ignore = "需要先构建 v2 的 token-router-v2 二进制"]
+    async fn supervisor_starts_real_sidecar() {
+        let data_dir =
+            std::env::temp_dir().join(format!("tr-supervisor-it-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&data_dir);
+        std::fs::write(data_dir.join("config.toml"), TEST_CONFIG).expect("write config");
+
+        let supervisor = Supervisor::new(SupervisorConfig {
+            sidecar_path: sidecar_binary(),
+            data_dir: data_dir.clone(),
+            listen: "127.0.0.1:17621".to_string(),
+            external: None,
+        });
+        let outcome = supervisor.start().await;
+        if outcome.state == SupervisionState::Ready {
+            let _ = supervisor.stop().await;
+        }
+        let _ = std::fs::remove_dir_all(&data_dir);
+
+        assert_eq!(
+            outcome.state,
+            SupervisionState::Ready,
+            "message: {}",
+            outcome.message
+        );
+    }
+
+    /// sidecar 路径解析：dev 布局下应能找到 v2 workspace 的 debug 二进制。
+    ///
+    /// 依赖被测二进制已构建（同上），因此默认忽略。
+    #[test]
+    #[ignore = "需要先构建 v2 的 token-router-v2 二进制"]
+    fn sidecar_binary_resolves_in_dev() {
+        let path = sidecar_binary();
+        assert!(path.is_file(), "sidecar not found: {}", path.display());
+    }
 }
