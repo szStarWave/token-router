@@ -7,8 +7,13 @@ import type { JsonValue } from "./serde_json/JsonValue";
 export type AccountCreateRequest = { label: string, 
 /**
  * **明文 key**：只在创建请求里出现一次，服务端写入凭据文件后即丢弃。
+ * 与 `credential_ref` 二选一。
  */
-key: string, proxy_url?: string, base_url_override?: string, 
+key?: string, 
+/**
+ * 直接引用凭据（`env:NAME` / `file:path`），不复制明文。
+ */
+credential_ref?: string, proxy_url?: string, base_url_override?: string, 
 /**
  * 静态自定义 header（非敏感值）。
  */

@@ -740,6 +740,84 @@ mod tests {
     fn migration_6_applied() {
         let db = Db::open_in_memory().unwrap();
         // M6 providers/accounts/catalog + M7 extra_headers/auto-include/deprecated。
-        assert_eq!(db.schema_version().unwrap(), 7);
+        assert_eq!(db.schema_version().unwrap(), 8);
+    }
+}
+
+/// provider 级 auto-include 通配符（存在哨兵行上，不参与编译）。
+pub const AUTO_INCLUDE_SENTINEL: &str = "(auto-include)";
+
+/// 写入/清除 provider 级 auto-include 通配符。
+pub fn set_provider_auto_include(
+    db: &Db,
+    provider_id: &str,
+    pattern: Option<&str>,
+) -> Result<(), StoreError> {
+    let mut connection = db.write();
+    let tx = connection.transaction()?;
+    match pattern.map(str::trim).filter(|pattern| !pattern.is_empty()) {
+        Some(pattern) => {
+            tx.execute(
+                "INSERT INTO catalog_models (provider_id, model_id, display_name, selected, source, auto_include_pattern)
+                 VALUES (?1, ?2, '', 0, 'manual', ?3)
+                 ON CONFLICT(provider_id, model_id) DO UPDATE SET auto_include_pattern = excluded.auto_include_pattern",
+                params![provider_id, AUTO_INCLUDE_SENTINEL, pattern],
+            )?;
+        }
+        None => {
+            tx.execute(
+                "DELETE FROM catalog_models WHERE provider_id = ?1 AND model_id = ?2",
+                params![provider_id, AUTO_INCLUDE_SENTINEL],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// 读取 provider 级 auto-include 通配符。
+pub fn provider_auto_include(db: &Db, provider_id: &str) -> Result<Option<String>, StoreError> {
+    let connection = db.read();
+    connection
+        .query_row(
+            "SELECT auto_include_pattern FROM catalog_models WHERE provider_id = ?1 AND model_id = ?2",
+            params![provider_id, AUTO_INCLUDE_SENTINEL],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod auto_include_tests {
+    use super::*;
+
+    #[test]
+    fn provider_pattern_roundtrip_and_sentinel_excluded() {
+        let db = Db::open_in_memory().unwrap();
+        insert_provider(
+            &db,
+            "p1",
+            "P",
+            ProviderKindDto::OpenAiCompatible,
+            "u",
+            None,
+            None,
+        )
+        .unwrap();
+        set_provider_auto_include(&db, "p1", Some("gpt-*")).unwrap();
+        assert_eq!(
+            provider_auto_include(&db, "p1").unwrap().as_deref(),
+            Some("gpt-*")
+        );
+        // 通配符能被 apply 逻辑读到。
+        assert_eq!(
+            auto_include_patterns(&db, "p1").unwrap(),
+            vec!["gpt-*".to_string()]
+        );
+        // 清除。
+        set_provider_auto_include(&db, "p1", None).unwrap();
+        assert!(provider_auto_include(&db, "p1").unwrap().is_none());
     }
 }

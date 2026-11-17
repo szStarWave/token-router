@@ -117,6 +117,7 @@ import type {
   PlaygroundExecuteResponse,
   QuotaWindowInfo,
   HeatmapResponse,
+  ImportScanResponse,
   UsageResponse,
   ProviderTemplate,
   ProviderUpsertRequest,
@@ -184,6 +185,12 @@ export const api = {
     admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/select`, request),
   compileCandidates: (request: CompileRequest) =>
     admin.post<CompileResponse>("/v2/admin/providers/compile", request),
+  providerImport: (home?: string) =>
+    admin.post<ImportScanResponse>("/v2/admin/providers/import", home ? { home } : {}),
+  providerAutoInclude: (providerId: string, pattern: string) =>
+    admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/auto-include`, {
+      pattern,
+    }),
   // ── 配额与 key 限额（v3 P5-B）────────────────────────────────────────
   quotaList: () => admin.get<{ items: QuotaWindowInfo[] }>("/v2/admin/quotas"),
   // ── Playground（v3 P5-D）─────────────────────────────────────────────

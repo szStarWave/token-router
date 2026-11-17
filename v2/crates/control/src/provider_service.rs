@@ -227,7 +227,22 @@ pub fn create_account(
 ) -> Result<AccountInfo, AdminApiError> {
     find_provider(state, provider_id)?;
     let id = uuid_v4();
-    let (credential_ref, fingerprint) = write_credential(state, &id, &request.key)?;
+    let (credential_ref, fingerprint) = match (&request.key, &request.credential_ref) {
+        (Some(key), _) if !key.trim().is_empty() => write_credential(state, &id, key)?,
+        (None, Some(reference)) if !reference.trim().is_empty() => {
+            // 只引用不复制：env:/file: 由内核解析；指纹记引用类型。
+            let kind = reference
+                .split_once(':')
+                .map(|(kind, _)| kind)
+                .unwrap_or("ref");
+            (reference.trim().to_string(), format!("({kind})"))
+        }
+        _ => {
+            return Err(AdminApiError::invalid_request(
+                "key or credential_ref required",
+            ));
+        }
+    };
     let account = AccountInfo {
         id: id.clone(),
         provider_id: provider_id.to_string(),
@@ -488,12 +503,30 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
     inner(pattern.as_bytes(), text.as_bytes())
 }
 
+/// 设置 provider 级 auto-include 通配符（空串 = 清除），并立即匹配一轮。
+pub fn set_auto_include(
+    state: &ControlState,
+    provider_id: &str,
+    pattern: &str,
+) -> Result<CatalogResponse, AdminApiError> {
+    find_provider(state, provider_id)?;
+    store::providers::set_provider_auto_include(db(state)?, provider_id, Some(pattern))
+        .map_err(|error| AdminApiError::internal(error.to_string()))?;
+    apply_auto_include(db(state)?, provider_id)?;
+    let provider = find_provider(state, provider_id)?;
+    let mut response = catalog(state, provider_id)?;
+    // 附带当前 pattern 供 UI 回显。
+    response.provider_id = provider.id;
+    Ok(response)
+}
+
 /// 手工目录：无在线目录的厂商用 POST select 隐式创建条目。
 pub fn catalog(state: &ControlState, provider_id: &str) -> Result<CatalogResponse, AdminApiError> {
     let provider = find_provider(state, provider_id)?;
     let accounts = store::providers::list_accounts(db(state)?, provider_id)?;
     let models = store::providers::list_catalog_models(db(state)?, provider_id)?
         .into_iter()
+        .filter(|model| model.model_id != store::providers::AUTO_INCLUDE_SENTINEL)
         .map(|mut model| {
             // candidate_id = 第一个启用账号下的展开 id（展示用）。
             model.candidate_id = accounts
@@ -749,6 +782,10 @@ pub fn compile_candidates(
             }
             // deprecated（上游已下架）不编译出新候选。
             if store::providers::is_deprecated(db_handle, &provider.id, &model.model_id)? {
+                continue;
+            }
+            // auto-include 哨兵行不是模型。
+            if model.model_id == store::providers::AUTO_INCLUDE_SENTINEL {
                 continue;
             }
             let (tier, strength) = overrides

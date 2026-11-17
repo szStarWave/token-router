@@ -171,7 +171,14 @@ pub struct AccountCreateRequest {
     #[serde(default = "default_account_label")]
     pub label: String,
     /// **明文 key**：只在创建请求里出现一次，服务端写入凭据文件后即丢弃。
-    pub key: String,
+    /// 与 `credential_ref` 二选一。
+    #[serde(default)]
+    #[ts(optional)]
+    pub key: Option<String>,
+    /// 直接引用凭据（`env:NAME` / `file:path`），不复制明文。
+    #[serde(default)]
+    #[ts(optional)]
+    pub credential_ref: Option<String>,
     #[serde(default)]
     #[ts(optional)]
     pub proxy_url: Option<String>,

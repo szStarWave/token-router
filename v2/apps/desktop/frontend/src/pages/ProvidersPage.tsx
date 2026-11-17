@@ -5,7 +5,15 @@
  * 刷新/勾选模型 → 「编译为候选」写回 config（走 CAS + 审计）。
  */
 import { useState } from 'react'
-import type { AccountInfo, CatalogModel, ProviderInfo, ProviderStatus, ProviderTemplate } from '../api/types'
+import { api } from '../api/client'
+import type {
+  AccountInfo,
+  CatalogModel,
+  ImportedProviderDraft,
+  ProviderInfo,
+  ProviderStatus,
+  ProviderTemplate,
+} from '../api/types'
 import {
   useAccountsQuery,
   useCatalogQuery,
@@ -46,8 +54,47 @@ export function ProvidersPage() {
   const templatesQuery = useProviderTemplatesQuery()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [importDrafts, setImportDrafts] = useState<ImportedProviderDraft[] | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const createProvider = useCreateProviderMutation()
+  const createAccount = useCreateAccountMutation()
 
   const selected = providersQuery.data?.find((p) => p.id === selectedId) ?? null
+
+  async function scanAgents() {
+    setImportBusy(true)
+    try {
+      const response = await api.providerImport()
+      setImportDrafts(response.drafts)
+    } catch {
+      setImportDrafts([])
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  async function importDraft(draft: ImportedProviderDraft) {
+    setImportBusy(true)
+    try {
+      const provider = await createProvider.mutateAsync({
+        display_name: draft.display_name,
+        base_url: draft.base_url,
+        kind: 'open_ai_compatible',
+      })
+      if (draft.credential_ref) {
+        await createAccount.mutateAsync({
+          providerId: provider.id,
+          request: { label: '导入（引用）', credential_ref: draft.credential_ref },
+        })
+      }
+      setImportDrafts((current) => (current ?? []).filter((item) => item.base_url !== draft.base_url))
+      setSelectedId(provider.id)
+    } catch {
+      // 错误由 mutation 的 error 状态呈现。
+    } finally {
+      setImportBusy(false)
+    }
+  }
 
   if (providersQuery.isPending) return <Loading label="加载厂商…" />
   if (providersQuery.isError) {
@@ -63,10 +110,56 @@ export function ProvidersPage() {
             厂商与账号管理；勾选模型后「编译为候选」即可被虚拟模型引用。密钥只提交一次，服务端落盘后不可回读。
           </p>
         </div>
-        <button type="button" className="oc-btn-primary" onClick={() => setShowAdd((v) => !v)}>
-          {showAdd ? '收起' : '添加厂商'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="oc-btn-default"
+            disabled={importBusy}
+            onClick={() => void scanAgents()}
+          >
+            {importBusy ? '扫描中…' : '从 agent 配置导入'}
+          </button>
+          <button type="button" className="oc-btn-primary" onClick={() => setShowAdd((v) => !v)}>
+            {showAdd ? '收起' : '添加厂商'}
+          </button>
+        </div>
       </div>
+
+      {importDrafts && (
+        <section className="app-card" aria-label="导入草稿">
+          <h2 className="app-card-title">从本机 agent 配置导入</h2>
+          {importDrafts.length === 0 ? (
+            <p className="app-card-sub">
+              没有发现可导入的上游端点（已装 agent 的配置文件里没有 base_url/api_key_env）。
+              也可以先「添加厂商」手动配置。
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {importDrafts.map((draft) => (
+                <li
+                  key={`${draft.base_url}-${draft.source}`}
+                  className="flex items-center gap-2 flex-wrap"
+                >
+                  <span className="font-mono text-meta truncate flex-1">{draft.base_url}</span>
+                  <span className="app-pill">{draft.credential_ref ?? '无 key 引用'}</span>
+                  <span className="text-meta text-muted-foreground truncate">{draft.source}</span>
+                  <button
+                    type="button"
+                    className="oc-btn-primary oc-btn-sm"
+                    disabled={importBusy}
+                    onClick={() => void importDraft(draft)}
+                  >
+                    创建
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="app-card-sub">
+            明文 key 不会导入；只有 `env:`/`file:` 引用会变成账号引用。无引用的厂商需要手动添加账号。
+          </p>
+        </section>
+      )}
 
       {showAdd && (
         <AddProviderCard
@@ -279,15 +372,39 @@ function AccountsSection({
   const remove = useDeleteAccountMutation()
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [headers, setHeaders] = useState('')
   const [showAdd, setShowAdd] = useState(false)
 
   function addAccount() {
+    // header 文本：每行 `Name: Value`（非敏感值）。
+    const extra = headers
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const index = line.indexOf(':')
+        return index > 0
+          ? { name: line.slice(0, index).trim(), value: line.slice(index + 1).trim() }
+          : null
+      })
+      .filter((item): item is { name: string; value: string } => item !== null)
     create.mutate(
-      { providerId: provider.id, request: { label: label || '账号', key } },
+      {
+        providerId: provider.id,
+        request: {
+          label: label || '账号',
+          key,
+          proxy_url: proxy.trim() === '' ? undefined : proxy.trim(),
+          extra_headers: extra.length === 0 ? undefined : extra,
+        },
+      },
       {
         onSuccess: () => {
           setLabel('')
           setKey('')
+          setProxy('')
+          setHeaders('')
           setShowAdd(false)
         },
       },
@@ -305,29 +422,47 @@ function AccountsSection({
       </div>
 
       {showAdd && (
-        <div className="app-form-row">
-          <input
-            className="oc-field app-field-light app-field-ctl"
-            placeholder="备注（可选）"
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
+        <div className="flex flex-col gap-2">
+          <div className="app-form-row">
+            <input
+              className="oc-field app-field-light app-field-ctl"
+              placeholder="备注（可选）"
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
+            />
+            <input
+              className="oc-field app-field-light font-mono min-w-60"
+              type="password"
+              placeholder="API Key（服务端落盘后不可回读）"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+            />
+            <input
+              className="oc-field app-field-light font-mono min-w-52"
+              placeholder="代理（可选，http://127.0.0.1:7890）"
+              value={proxy}
+              onChange={(event) => setProxy(event.target.value)}
+            />
+          </div>
+          <textarea
+            className="oc-field app-field-light font-mono text-meta min-h-16"
+            placeholder={'自定义 header（每行 Name: Value，非敏感值）\nHTTP-Referer: https://example.com'}
+            value={headers}
+            onChange={(event) => setHeaders(event.target.value)}
           />
-          <input
-            className="oc-field app-field-light font-mono min-w-60"
-            type="password"
-            placeholder="API Key（服务端落盘后不可回读）"
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-          />
-          <button
-            type="button"
-            className="oc-btn-primary oc-btn-sm"
-            disabled={create.isPending || key.trim() === ''}
-            onClick={addAccount}
-          >
-            保存
-          </button>
-          {create.isError && <span className="text-meta text-status-error">{create.error.message}</span>}
+          <div className="app-card-actions">
+            <button
+              type="button"
+              className="oc-btn-primary oc-btn-sm"
+              disabled={create.isPending || key.trim() === ''}
+              onClick={addAccount}
+            >
+              保存
+            </button>
+            {create.isError && (
+              <span className="text-meta text-status-error">{create.error.message}</span>
+            )}
+          </div>
         </div>
       )}
 
@@ -401,6 +536,27 @@ function CatalogSection({
   const refresh = useRefreshCatalogMutation()
   const select = useSelectCatalogModelMutation()
   const [manualModel, setManualModel] = useState('')
+  const [autoPattern, setAutoPattern] = useState('')
+  const [autoBusy, setAutoBusy] = useState(false)
+  const [autoMessage, setAutoMessage] = useState<string | null>(null)
+
+  async function applyAutoInclude() {
+    setAutoBusy(true)
+    setAutoMessage(null)
+    try {
+      await api.providerAutoInclude(provider.id, autoPattern.trim())
+      setAutoMessage(
+        autoPattern.trim() === ''
+          ? '已清除自动纳入规则。'
+          : `已应用 \`${autoPattern.trim()}\`：匹配的新模型自动勾选。`,
+      )
+      await catalogQuery.refetch()
+    } catch (error) {
+      setAutoMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAutoBusy(false)
+    }
+  }
 
   function toggle(model: CatalogModel) {
     select.mutate({
@@ -440,6 +596,26 @@ function CatalogSection({
         >
           {refresh.isPending ? '拉取中…' : '刷新目录'}
         </button>
+      </div>
+
+      <div className="app-form-row">
+        <input
+          className="oc-field app-field-light font-mono h-7 min-w-52 text-meta"
+          placeholder="自动纳入通配符（如 gpt-*），新模型自动勾选"
+          value={autoPattern}
+          onChange={(event) => setAutoPattern(event.target.value)}
+        />
+        <button
+          type="button"
+          className="oc-btn-default oc-btn-sm"
+          disabled={autoBusy}
+          onClick={() => void applyAutoInclude()}
+        >
+          {autoBusy ? '应用中…' : '应用'}
+        </button>
+        {autoMessage && (
+          <span className="text-meta text-muted-foreground">{autoMessage}</span>
+        )}
       </div>
 
       {catalogQuery.isPending ? (

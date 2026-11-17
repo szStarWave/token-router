@@ -97,6 +97,10 @@ pub fn router(state: ControlState) -> Router {
             "/v2/admin/providers/{id}/catalog/select",
             post(catalog_select),
         )
+        .route(
+            "/v2/admin/providers/{id}/catalog/auto-include",
+            post(catalog_auto_include),
+        )
         .route("/v2/admin/providers/compile", post(providers_compile))
         .route("/v2/admin/providers/import", post(providers_import))
         .route("/v2/admin/quotas", get(quotas_list))
@@ -1168,4 +1172,26 @@ async fn playground_execute(
     state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
     let response = playground::execute(&state, body).await?;
     Ok(Json(response).into_response())
+}
+
+/// auto-include 通配符请求体。
+#[derive(Deserialize)]
+struct AutoIncludeBody {
+    pattern: String,
+}
+
+/// \`POST /v2/admin/providers/{id}/catalog/auto-include\`：设置目录自动纳入通配符。
+async fn catalog_auto_include(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AutoIncludeBody>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::set_auto_include(
+        &state,
+        &id,
+        &body.pattern,
+    )?)
+    .into_response())
 }
