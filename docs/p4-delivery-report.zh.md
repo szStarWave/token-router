@@ -57,10 +57,11 @@
 3. **24h soak / 性能基线**：需要在真实环境长期运行；代码侧已具备指标路径（/stats/summary p95、账本索引）。
 4. **OTA**：手动更新优先（MVP 裁剪 §4.4 第 6 项）；manifest 签名校验流程已文档化。
 5. **macOS/Linux**：打包配置以 NSIS（Windows）为主；dmg/AppImage 待平台演练（开发计划 §8 支持矩阵）。
+6. **设计系统预设 vendored**：前端 UnoCSS 预设取自 OpenChamber 提取版（MIT），未发布到 npm 故随仓 vendored；上游升级需手工同步（见 [`frontend-design-system.zh.md`](./frontend-design-system.zh.md) §2/§9）。
 
 ## 4. 门禁与测试总量
 
 - workspace：316 tests（含 16 golden 合并器测试、SSE 集成测试、22 onboard 单测）
 - 桌面壳：7 tests（supervisor/admin proxy/host/onboarding 事件桥）
-- 前端：6 tests（config-edit 语义）+ tsc/vite 构建
+- 前端：6 tests（config-edit 语义）+ tsc/vite 构建 + `check:uno`（类名命中率 + 字面量检查）
 - 门禁：fmt、clippy -D warnings、check-deps（13 crates）、fixtures-check、config-only-check、contract-check、**core/decide/proto diff = 0**

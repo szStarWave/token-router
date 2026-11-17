@@ -8,7 +8,7 @@ export function Toast() {
   const removeToast = useAppStore((s) => s.removeToast)
   const latest = toasts[toasts.length - 1]
 
-  if (!latest) return <div className="toast" id="toast" />
+  if (!latest) return <div className="app-toast" id="toast" />
 
   // 渲染后自动消失。
   setTimeout(() => removeToast(latest.id), 4000)
@@ -17,7 +17,15 @@ export function Toast() {
     ? latest.key // 原始消息（携带数据，如 revision）直接显示
     : t(latest.key, latest.vars)
   return (
-    <div className={`toast show ${latest.ok ? 'ok' : 'err'}`} id="toast" role="status">
+    <div
+      className={
+        latest.ok
+          ? 'app-toast app-toast-show app-toast-ok'
+          : 'app-toast app-toast-show app-toast-err'
+      }
+      id="toast"
+      role="status"
+    >
       {text}
     </div>
   )

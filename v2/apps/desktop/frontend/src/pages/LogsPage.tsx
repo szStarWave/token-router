@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { useLogsQuery } from '../queries/admin'
 import { QueryState } from '../components/common/QueryState'
+import { logLineClass } from '../lib/status'
 import { hostOpenPath, isTauri } from '../lib/tauri'
 
 const LEVELS = ['', 'error', 'warn', 'info', 'debug'] as const
@@ -20,36 +21,49 @@ export function LogsPage() {
   })
 
   return (
-    <div className="page">
-      <section className="card" aria-label="服务端日志">
-        <div className="filter-bar">
-          <label>
-            级别{' '}
-            <select value={level} onChange={(e) => setLevel(e.target.value)}>
+    <div className="app-page">
+      <section className="app-card" aria-label="服务端日志">
+        <div className="app-filter-bar">
+          <label className="app-filter-label">
+            级别
+            <select
+              className="app-select-sm"
+              value={level}
+              onChange={(e) => setLevel(e.target.value)}
+            >
               {LEVELS.map((value) => (
-                <option key={value} value={value}>{value || '全部'}</option>
+                <option key={value} value={value}>
+                  {value || '全部'}
+                </option>
               ))}
             </select>
           </label>
-          <label>
-            目标前缀{' '}
+          <label className="app-filter-label">
+            目标前缀
             <input
               type="text"
+              className="app-field-sm h-7 w-36"
               value={target}
               placeholder="如 tr_agent"
               onChange={(e) => setTarget(e.target.value)}
             />
           </label>
-          <label>
-            条数{' '}
-            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+          <label className="app-filter-label">
+            条数
+            <select
+              className="app-select-sm"
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+            >
               {[100, 200, 500].map((value) => (
-                <option key={value} value={value}>{value}</option>
+                <option key={value} value={value}>
+                  {value}
+                </option>
               ))}
             </select>
           </label>
           {isTauri() && (
-            <button type="button" className="btn" onClick={() => void hostOpenPath('logs')}>
+            <button type="button" className="oc-btn-default" onClick={() => void hostOpenPath('logs')}>
               打开日志目录
             </button>
           )}
@@ -60,17 +74,17 @@ export function LogsPage() {
           empty={(logsQuery.data?.items.length ?? 0) === 0}
           onRetry={() => void logsQuery.refetch()}
         >
-          <div className="log-view mono" role="log" aria-live="polite">
+          <div className="app-log" role="log" aria-live="polite">
             {logsQuery.data?.items.map((entry) => (
-              <div key={entry.seq} className={`log-line log-${entry.level}`}>
-                <span className="log-time">{new Date(entry.at).toLocaleTimeString()}</span>
-                <span className="log-level">[{entry.level}]</span>
-                <span className="log-target">{entry.target}</span>
-                <span className="log-msg">{entry.message}</span>
+              <div key={entry.seq} className={logLineClass(entry.level)}>
+                <span className="app-log-time">{new Date(entry.at).toLocaleTimeString()}</span>
+                <span className="app-log-level">[{entry.level}]</span>
+                <span className="app-log-target">{entry.target}</span>
+                <span className="app-log-msg">{entry.message}</span>
               </div>
             ))}
           </div>
-          <p className="text-dim">
+          <p className="app-card-sub">
             显示最近 {limit} 条（ring buffer 最近 2000 行）；敏感字段已由服务端脱敏。
           </p>
         </QueryState>

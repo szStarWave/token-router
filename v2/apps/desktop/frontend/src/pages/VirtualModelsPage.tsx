@@ -38,7 +38,7 @@ export function VirtualModelsPage() {
 
   if (configQuery.isLoading || (!draft && !configQuery.error)) {
     return (
-      <div className="page">
+      <div className="app-page">
         <QueryState loading={configQuery.isLoading} error={configQuery.error} onRetry={() => void configQuery.refetch()}>
           <span />
         </QueryState>
@@ -47,7 +47,7 @@ export function VirtualModelsPage() {
   }
   if (configQuery.error) {
     return (
-      <div className="page">
+      <div className="app-page">
         <QueryState loading={false} error={configQuery.error} onRetry={() => void configQuery.refetch()}>
           <span />
         </QueryState>
@@ -109,66 +109,71 @@ export function VirtualModelsPage() {
   }
 
   return (
-    <div className="page">
-      <section className="card" aria-label="虚拟模型">
-        <h2>虚拟模型（客户端看到的模型 id）</h2>
+    <div className="app-page">
+      <section className="app-card" aria-label="虚拟模型">
+        <h2 className="app-card-title">虚拟模型（客户端看到的模型 id）</h2>
         {allIssues.length > 0 && (
-          <div className="banner banner-warn">{allIssues.length} 个问题待解决。</div>
+          <div className="app-banner app-banner-warn">{allIssues.length} 个问题待解决。</div>
         )}
         {draft?.virtualModels.map((model, index) => (
-          <div key={index} className="vm-editor">
-            <div className="form-row">
-              <label>
-                id{' '}
+          <div key={index} className="app-vm-editor">
+            <div className="app-form-row">
+              <label className="app-field">
+                id
                 <input
-                  className="mono"
+                  className="oc-field app-field-light font-mono"
                   value={model.id}
                   aria-label={`虚拟模型 ${index} id`}
                   onChange={(e) => update(index, { id: e.target.value })}
                 />
               </label>
-              <label>
-                名称{' '}
+              <label className="app-field">
+                名称
                 <input
+                  className="oc-field app-field-light"
                   value={model.name}
                   aria-label={`虚拟模型 ${index} 名称`}
                   onChange={(e) => update(index, { name: e.target.value })}
                 />
               </label>
-              <label>
-                profile{' '}
+              <label className="app-field">
+                profile
                 <select
+                  className="app-select"
                   value={model.profile}
                   aria-label={`虚拟模型 ${index} profile`}
                   onChange={(e) => update(index, { profile: e.target.value })}
                 >
                   {Object.keys(draft.profiles).map((profileId) => (
-                    <option key={profileId} value={profileId}>{profileId}</option>
+                    <option key={profileId} value={profileId}>
+                      {profileId}
+                    </option>
                   ))}
                 </select>
               </label>
             </div>
-            <fieldset className="scope-fieldset">
-              <legend>候选池（至少一个）</legend>
+            <fieldset className="app-scope-fieldset">
+              <legend className="app-scope-legend">候选池（至少一个）</legend>
               {draft.candidates
                 .filter((candidate) => candidate.id.trim())
                 .map((candidate) => (
-                  <label key={candidate.id} className="scope-check">
+                  <label key={candidate.id} className="app-scope-check">
                     <input
                       type="checkbox"
+                      className="accent-primary"
                       checked={model.candidate_pool.includes(candidate.id)}
                       onChange={() => togglePoolMember(index, candidate.id)}
                     />
-                    <span className="mono">{candidate.id}</span>
-                    <span className="text-dim">({candidate.tier})</span>
+                    <span className="font-mono">{candidate.id}</span>
+                    <span className="text-muted-foreground">({candidate.tier})</span>
                   </label>
                 ))}
             </fieldset>
-            <div className="form-row">
-              <label>
-                策略（逗号分隔）{' '}
+            <div className="app-form-row">
+              <label className="app-field">
+                策略（逗号分隔）
                 <input
-                  className="mono"
+                  className="oc-field app-field-light font-mono"
                   value={model.strategies.join(', ')}
                   aria-label={`虚拟模型 ${index} 策略`}
                   onChange={(e) =>
@@ -186,7 +191,7 @@ export function VirtualModelsPage() {
         ))}
         <button
           type="button"
-          className="btn"
+          className="oc-btn-default self-start"
           onClick={() => {
             if (!draft) return
             setDraft({ ...draft, virtualModels: [...draft.virtualModels, emptyVirtualModel()] })
@@ -197,14 +202,15 @@ export function VirtualModelsPage() {
         </button>
       </section>
 
-      <section className="card" aria-label="profile">
-        <h2>Profile（路由模式）</h2>
+      <section className="app-card" aria-label="profile">
+        <h2 className="app-card-title">Profile（路由模式）</h2>
         {Object.entries(draft?.profiles ?? {}).map(([profileId, profile]) => (
-          <div key={profileId} className="vm-editor">
-            <div className="form-row">
-              <label>
-                <span className="mono">{profileId}</span> 模式{' '}
+          <div key={profileId} className="app-vm-editor">
+            <div className="app-form-row">
+              <label className="app-field">
+                <span className="font-mono">{profileId}</span> 模式
                 <select
+                  className="app-select"
                   value={profile.mode}
                   aria-label={`profile ${profileId} 模式`}
                   onChange={(e) => {
@@ -224,9 +230,10 @@ export function VirtualModelsPage() {
                   <option value="verify_after">verify_after</option>
                 </select>
               </label>
-              <label>
-                未知价格策略{' '}
+              <label className="app-field">
+                未知价格策略
                 <select
+                  className="app-select"
                   value={profile.unknown_price_policy}
                   aria-label={`profile ${profileId} 未知价格策略`}
                   onChange={(e) => {
@@ -248,15 +255,15 @@ export function VirtualModelsPage() {
             </div>
           </div>
         ))}
-        <p className="text-dim">strength_order 与判官等高级字段先用 TOML 导入（设置页）。</p>
+        <p className="app-card-sub">strength_order 与判官等高级字段先用 TOML 导入（设置页）。</p>
       </section>
 
-      <section className="card" aria-label="保存">
-        <h2>校验并应用</h2>
-        <div className="card-actions">
+      <section className="app-card" aria-label="保存">
+        <h2 className="app-card-title">校验并应用</h2>
+        <div className="app-card-actions">
           <button
             type="button"
-            className="btn"
+            className="oc-btn-default"
             disabled={local.length > 0 || validateMutation.isPending || !draft}
             onClick={() => void runValidate()}
           >
@@ -264,7 +271,7 @@ export function VirtualModelsPage() {
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="oc-btn-primary"
             disabled={!validRevision || applyMutation.isPending}
             onClick={() => void runApply()}
           >

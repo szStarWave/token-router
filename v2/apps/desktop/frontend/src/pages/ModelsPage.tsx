@@ -55,7 +55,7 @@ export function ModelsPage() {
 
   if (configQuery.isLoading || (!draft && !configQuery.error)) {
     return (
-      <div className="page">
+      <div className="app-page">
         <QueryState loading={configQuery.isLoading} error={configQuery.error} onRetry={() => void configQuery.refetch()}>
           <span />
         </QueryState>
@@ -65,7 +65,7 @@ export function ModelsPage() {
 
   if (configQuery.error) {
     return (
-      <div className="page">
+      <div className="app-page">
         <QueryState loading={false} error={configQuery.error} onRetry={() => void configQuery.refetch()}>
           <span />
         </QueryState>
@@ -143,45 +143,64 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="page">
-      <section className="card" aria-label="候选列表">
-        <h2>候选（物理上游 + 模型）</h2>
-        <p className="text-dim">
-          凭据只填引用（<code>env:NAME</code> 或 <code>file:path</code>）；密钥值不进配置。
+    <div className="app-page">
+      <section className="app-card" aria-label="候选列表">
+        <h2 className="app-card-title">候选（物理上游 + 模型）</h2>
+        <p className="app-card-sub">
+          凭据只填引用（<code className="app-inline-code">env:NAME</code> 或{' '}
+          <code className="app-inline-code">file:path</code>）；密钥值不进配置。
           修改后先「校验」，无问题再「应用」。
         </p>
 
         {allIssues.length > 0 && (
-          <div className="banner banner-warn">
+          <div className="app-banner app-banner-warn">
             {allIssues.length} 个问题待解决（见下方标红字段）。
           </div>
         )}
 
         <QueryState loading={false} error={null}>
-          <table className="table">
+          <table className="app-table">
             <thead>
-              <tr><th>id</th><th>tier</th><th>strength</th><th>provider</th><th>base_url</th><th>model</th><th>window</th><th>credential</th><th>启用</th><th /></tr>
+              <tr>
+                <th>id</th>
+                <th>tier</th>
+                <th>strength</th>
+                <th>provider</th>
+                <th>base_url</th>
+                <th>model</th>
+                <th>window</th>
+                <th>credential</th>
+                <th>启用</th>
+                <th />
+              </tr>
             </thead>
             <tbody>
               {draft?.candidates.map((candidate, index) => {
                 const references = referencesOf(draft, candidate.id)
                 return (
-                  <tr key={index} className={candidateIssue(candidate.id, 'id') ? 'row-invalid' : ''}>
+                  <tr
+                    key={index}
+                    className={candidateIssue(candidate.id, 'id') ? 'app-row-invalid' : undefined}
+                  >
                     <td>
                       <input
-                        className={`cell-input mono${candidateIssue(candidate.id, 'id') ? ' invalid' : ''}`}
+                        className={
+                          candidateIssue(candidate.id, 'id')
+                            ? 'app-cell-input font-mono app-cell-input-invalid'
+                            : 'app-cell-input font-mono'
+                        }
                         value={candidate.id}
                         aria-label={`候选 ${index} id`}
                         aria-invalid={Boolean(candidateIssue(candidate.id, 'id'))}
                         onChange={(e) => update(index, { id: e.target.value })}
                       />
                       {candidateIssue(candidate.id, 'id') && (
-                        <div className="cell-error">{candidateIssue(candidate.id, 'id')}</div>
+                        <div className="app-cell-error">{candidateIssue(candidate.id, 'id')}</div>
                       )}
                     </td>
                     <td>
                       <input
-                        className="cell-input"
+                        className="app-cell-input"
                         value={candidate.tier}
                         aria-label={`候选 ${index} tier`}
                         onChange={(e) => update(index, { tier: e.target.value })}
@@ -192,7 +211,11 @@ export function ModelsPage() {
                         type="number"
                         min={0}
                         max={100}
-                        className={`cell-input${candidateIssue(candidate.id, 'strength') ? ' invalid' : ''}`}
+                        className={
+                          candidateIssue(candidate.id, 'strength')
+                            ? 'app-cell-input app-cell-input-invalid'
+                            : 'app-cell-input'
+                        }
                         value={candidate.strength}
                         aria-label={`候选 ${index} strength`}
                         onChange={(e) => update(index, { strength: Number(e.target.value) })}
@@ -200,7 +223,7 @@ export function ModelsPage() {
                     </td>
                     <td>
                       <input
-                        className="cell-input"
+                        className="app-cell-input"
                         value={candidate.provider}
                         aria-label={`候选 ${index} provider`}
                         onChange={(e) => update(index, { provider: e.target.value })}
@@ -208,18 +231,22 @@ export function ModelsPage() {
                     </td>
                     <td>
                       <input
-                        className={`cell-input mono${candidateIssue(candidate.id, 'base_url') ? ' invalid' : ''}`}
+                        className={
+                          candidateIssue(candidate.id, 'base_url')
+                            ? 'app-cell-input font-mono app-cell-input-invalid'
+                            : 'app-cell-input font-mono'
+                        }
                         value={candidate.base_url}
                         aria-label={`候选 ${index} base_url`}
                         onChange={(e) => update(index, { base_url: e.target.value })}
                       />
                       {candidateIssue(candidate.id, 'base_url') && (
-                        <div className="cell-error">{candidateIssue(candidate.id, 'base_url')}</div>
+                        <div className="app-cell-error">{candidateIssue(candidate.id, 'base_url')}</div>
                       )}
                     </td>
                     <td>
                       <input
-                        className="cell-input mono"
+                        className="app-cell-input font-mono"
                         value={candidate.model}
                         aria-label={`候选 ${index} model`}
                         onChange={(e) => update(index, { model: e.target.value })}
@@ -228,7 +255,7 @@ export function ModelsPage() {
                     <td>
                       <input
                         type="number"
-                        className="cell-input"
+                        className="app-cell-input"
                         value={candidate.window}
                         aria-label={`候选 ${index} window`}
                         onChange={(e) => update(index, { window: Number(e.target.value) })}
@@ -236,19 +263,26 @@ export function ModelsPage() {
                     </td>
                     <td>
                       <input
-                        className={`cell-input mono${candidateIssue(candidate.id, 'credential') ? ' invalid' : ''}`}
+                        className={
+                          candidateIssue(candidate.id, 'credential')
+                            ? 'app-cell-input font-mono app-cell-input-invalid'
+                            : 'app-cell-input font-mono'
+                        }
                         value={candidate.credential}
                         placeholder="env:NAME"
                         aria-label={`候选 ${index} credential`}
                         onChange={(e) => update(index, { credential: e.target.value })}
                       />
                       {candidateIssue(candidate.id, 'credential') && (
-                        <div className="cell-error">{candidateIssue(candidate.id, 'credential')}</div>
+                        <div className="app-cell-error">
+                          {candidateIssue(candidate.id, 'credential')}
+                        </div>
                       )}
                     </td>
                     <td>
                       <input
                         type="checkbox"
+                        className="accent-primary"
                         checked={candidate.enabled}
                         aria-label={`候选 ${index} 启用`}
                         onChange={(e) => update(index, { enabled: e.target.checked })}
@@ -256,19 +290,29 @@ export function ModelsPage() {
                     </td>
                     <td>
                       {confirmDelete === candidate.id ? (
-                        <span className="confirm-inline">
-                          {references.length > 0
-                            ? `被 ${references.join(', ')} 引用`
-                            : '删除？'}
-                          <button type="button" className="btn btn-sm btn-danger" onClick={() => removeCandidate(index)}>
+                        <span className="app-confirm">
+                          {references.length > 0 ? `被 ${references.join(', ')} 引用` : '删除？'}
+                          <button
+                            type="button"
+                            className="oc-btn-destructive oc-btn-sm"
+                            onClick={() => removeCandidate(index)}
+                          >
                             确认
                           </button>
-                          <button type="button" className="btn btn-sm" onClick={() => setConfirmDelete(null)}>
+                          <button
+                            type="button"
+                            className="oc-btn-default oc-btn-sm"
+                            onClick={() => setConfirmDelete(null)}
+                          >
                             取消
                           </button>
                         </span>
                       ) : (
-                        <button type="button" className="btn btn-sm" onClick={() => setConfirmDelete(candidate.id)}>
+                        <button
+                          type="button"
+                          className="oc-btn-default oc-btn-sm"
+                          onClick={() => setConfirmDelete(candidate.id)}
+                        >
                           删除
                         </button>
                       )}
@@ -278,18 +322,18 @@ export function ModelsPage() {
               })}
             </tbody>
           </table>
-          <button type="button" className="btn" onClick={addCandidate}>
+          <button type="button" className="oc-btn-default self-start" onClick={addCandidate}>
             + 新增候选
           </button>
         </QueryState>
       </section>
 
-      <section className="card" aria-label="保存">
-        <h2>校验并应用</h2>
-        <div className="card-actions">
+      <section className="app-card" aria-label="保存">
+        <h2 className="app-card-title">校验并应用</h2>
+        <div className="app-card-actions">
           <button
             type="button"
-            className="btn"
+            className="oc-btn-default"
             disabled={local.length > 0 || validateMutation.isPending || !draft}
             onClick={() => void runValidate()}
           >
@@ -297,7 +341,7 @@ export function ModelsPage() {
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="oc-btn-primary"
             disabled={!validRevision || applyMutation.isPending}
             onClick={() => void runApply()}
           >
@@ -305,8 +349,9 @@ export function ModelsPage() {
           </button>
         </div>
         {validRevision && (
-          <p className="text-dim">
-            校验通过，revision <code className="mono">{validRevision.slice(0, 16)}…</code>。
+          <p className="app-card-sub">
+            校验通过，revision{' '}
+            <code className="app-inline-code font-mono">{validRevision.slice(0, 16)}…</code>。
             应用后需重启服务生效（设置页可重启）。
           </p>
         )}

@@ -1,12 +1,18 @@
 /**
  * 统一加载/空/错状态（P4-061）：所有页面复用。
+ *
+ * 状态行有预留槽：加载/空/错/完成都在同一块高度里，不让页面跳动。
  */
 import type { ReactNode } from 'react'
 
 export function Loading({ label = '加载中…' }: { label?: string }) {
   return (
-    <div className="state state-loading" role="status">
-      <div className="state-spinner" aria-hidden />
+    <div className="app-state" role="status">
+      <div className="app-spinner" aria-hidden>
+        {Array.from({ length: 8 }, (_, index) => (
+          <span key={index} className="app-spinner-bar" />
+        ))}
+      </div>
       <span>{label}</span>
     </div>
   )
@@ -22,10 +28,10 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="state state-empty">
-      <div className="state-title">{title}</div>
-      {hint && <div className="state-hint">{hint}</div>}
-      {action && <div className="state-action">{action}</div>}
+    <div className="app-state">
+      <div className="app-state-title">{title}</div>
+      {hint && <div className="app-state-hint">{hint}</div>}
+      {action && <div className="app-state-action">{action}</div>}
     </div>
   )
 }
@@ -38,11 +44,11 @@ export function ErrorState({
   onRetry?: () => void
 }) {
   return (
-    <div className="state state-error" role="alert">
-      <div className="state-title">出错了</div>
-      <div className="state-hint">{message}</div>
+    <div className="app-state" role="alert">
+      <div className="app-state-title app-state-error-title">出错了</div>
+      <div className="app-state-hint">{message}</div>
       {onRetry && (
-        <button type="button" className="btn" onClick={onRetry}>
+        <button type="button" className="oc-btn-default" onClick={onRetry}>
           重试
         </button>
       )}

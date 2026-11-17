@@ -1,23 +1,25 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="vercel-light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Token Router</title>
+    <title>Token Router v2</title>
     <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
-    <script src="https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js"></script>
     <script>
+      // 主题在首帧前落地，避免闪一下深色（token 层按 data-theme 切换）。
+      // 默认亮色：只有显式选「深色」，或选「跟随系统」且系统是深色，才走深色。
       (function () {
         try {
-          var raw = localStorage.getItem('tokenrouter-auth');
-          if (!raw) return;
-          var parsed = JSON.parse(raw);
-          var s = parsed && parsed.state;
-          if (s && s.isLoggedIn && s.authToken) {
-            document.documentElement.dataset.auth = 'logged-in';
-          }
-        } catch (e) { /* ignore */ }
-      })();
+          var pref = window.localStorage.getItem('tr2.theme') || 'light'
+          var dark =
+            pref === 'dark' ||
+            (pref === 'system' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.theme = dark ? 'vercel-dark' : 'vercel-light'
+        } catch (e) {
+          /* ignore */
+        }
+      })()
     </script>
   </head>
   <body>

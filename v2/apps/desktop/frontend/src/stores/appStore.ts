@@ -9,6 +9,9 @@ import type { Locale } from '../i18n/dict'
 
 export type ThemePref = 'system' | 'light' | 'dark'
 
+const THEME_KEY = 'tr2.theme'
+const LOCALE_KEY = 'tr2.locale'
+
 export interface ToastItem {
   id: number
   key: string
@@ -38,21 +41,53 @@ const prefersDark = (): boolean =>
   typeof window !== 'undefined' &&
   window.matchMedia('(prefers-color-scheme: dark)').matches
 
+/** 主题偏好：默认亮色（用户可切深色或跟随系统）。 */
+function storedThemePref(): ThemePref {
+  try {
+    const raw = window.localStorage.getItem(THEME_KEY)
+    if (raw === 'light' || raw === 'dark' || raw === 'system') return raw
+  } catch {
+    /* ignore */
+  }
+  return 'light'
+}
+
 function initialLocale(): Locale {
+  try {
+    const raw = window.localStorage.getItem(LOCALE_KEY)
+    if (raw === 'zh' || raw === 'en') return raw
+  } catch {
+    /* ignore */
+  }
   if (typeof navigator !== 'undefined' && navigator.language.startsWith('zh')) return 'zh'
   return 'en'
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  themePref: 'system',
+  themePref: storedThemePref(),
   locale: initialLocale(),
   siderNarrow: false,
   toasts: [],
   activePage: 'overview',
   activeNavId: 'overview',
 
-  setThemePref: (themePref) => set({ themePref }),
-  setLocale: (locale) => set({ locale }),
+  setThemePref: (themePref) => {
+    try {
+      window.localStorage.setItem(THEME_KEY, themePref)
+    } catch {
+      /* ignore */
+    }
+    applyThemePref(themePref)
+    set({ themePref })
+  },
+  setLocale: (locale) => {
+    try {
+      window.localStorage.setItem(LOCALE_KEY, locale)
+    } catch {
+      /* ignore */
+    }
+    set({ locale })
+  },
   setSiderNarrow: (siderNarrow) => set({ siderNarrow }),
   showToast: (key, ok = true, vars) =>
     set((state) => ({
@@ -68,8 +103,26 @@ export function toast(key: string, ok = true, vars?: Record<string, string | num
   useAppStore.getState().showToast(key, ok, vars)
 }
 
-/** 初始化主题（main.tsx 调用一次）。 */
+/** 主题 id（UnoCSS 预设按 data-theme 切换整套变量）。 */
+const THEME_IDS: Record<'light' | 'dark', string> = {
+  light: 'vercel-light',
+  dark: 'vercel-dark',
+}
+
+/** 应用主题（写 <html data-theme>；token 层按此切换深/浅两套）。 */
 export function applyThemePref(pref: ThemePref) {
   const effective = pref === 'system' ? (prefersDark() ? 'dark' : 'light') : pref
+  document.documentElement.dataset.theme = THEME_IDS[effective]
   document.documentElement.dataset.effectiveTheme = effective
+}
+
+/** 系统主题变化时重算（仅 pref = system 生效）。 */
+export function watchSystemTheme(): () => void {
+  if (typeof window === 'undefined') return () => {}
+  const media = window.matchMedia('(prefers-color-scheme: dark)')
+  const onChange = () => {
+    if (useAppStore.getState().themePref === 'system') applyThemePref('system')
+  }
+  media.addEventListener('change', onChange)
+  return () => media.removeEventListener('change', onChange)
 }

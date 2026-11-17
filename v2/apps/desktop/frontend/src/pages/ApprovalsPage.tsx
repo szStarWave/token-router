@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useApprovalsQuery, useRecordApprovalMutation } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
 import { useAppStore } from '../stores/appStore'
+import { riskPillClass } from '../lib/status'
 
 export function ApprovalsPage() {
   const approvalsQuery = useApprovalsQuery()
@@ -37,24 +38,31 @@ export function ApprovalsPage() {
   const pending = rows.filter((row) => row.decision === 'required')
 
   return (
-    <div className="page">
+    <div className="app-page">
       {pending.length > 0 && (
-        <section className="card" aria-label="待审批">
-          <h2>待审批（{pending.length}）</h2>
-          <table className="table">
+        <section className="app-card" aria-label="待审批">
+          <h2 className="app-card-title">待审批（{pending.length}）</h2>
+          <table className="app-table">
             <thead>
-              <tr><th>请求</th><th>工具</th><th>风险</th><th>决定</th></tr>
+              <tr>
+                <th>请求</th>
+                <th>工具</th>
+                <th>风险</th>
+                <th>决定</th>
+              </tr>
             </thead>
             <tbody>
               {pending.map((row) => (
                 <tr key={row.id}>
-                  <td className="mono">{row.request_id}</td>
-                  <td className="mono">{row.tool_name}</td>
-                  <td><span className="pill pill-open">{row.risk_class}</span></td>
+                  <td className="font-mono">{row.request_id}</td>
+                  <td className="font-mono">{row.tool_name}</td>
+                  <td>
+                    <span className={riskPillClass(row.risk_class)}>{row.risk_class}</span>
+                  </td>
                   <td>
                     <button
                       type="button"
-                      className="btn btn-sm"
+                      className="oc-btn-default oc-btn-sm"
                       onClick={() =>
                         void recordMutation
                           .mutateAsync({
@@ -71,7 +79,7 @@ export function ApprovalsPage() {
                     </button>{' '}
                     <button
                       type="button"
-                      className="btn btn-sm btn-danger"
+                      className="oc-btn-destructive oc-btn-sm"
                       onClick={() =>
                         void recordMutation
                           .mutateAsync({
@@ -94,24 +102,31 @@ export function ApprovalsPage() {
         </section>
       )}
 
-      <section className="card" aria-label="审批记录">
-        <h2>审批记录</h2>
+      <section className="app-card" aria-label="审批记录">
+        <h2 className="app-card-title">审批记录</h2>
         <QueryState
           loading={approvalsQuery.isLoading}
           error={approvalsQuery.error}
           empty={rows.length === 0}
           onRetry={() => void approvalsQuery.refetch()}
         >
-          <table className="table">
+          <table className="app-table">
             <thead>
-              <tr><th>时间</th><th>请求</th><th>工具</th><th>风险</th><th>决定</th><th>操作者</th></tr>
+              <tr>
+                <th>时间</th>
+                <th>请求</th>
+                <th>工具</th>
+                <th>风险</th>
+                <th>决定</th>
+                <th>操作者</th>
+              </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.id}>
                   <td>{new Date(row.created_at * 1000).toLocaleString()}</td>
-                  <td className="mono">{row.request_id}</td>
-                  <td className="mono">{row.tool_name}</td>
+                  <td className="font-mono">{row.request_id}</td>
+                  <td className="font-mono">{row.tool_name}</td>
                   <td>{row.risk_class}</td>
                   <td>{row.decision}</td>
                   <td>{row.operator ?? '—'}</td>
@@ -122,39 +137,59 @@ export function ApprovalsPage() {
         </QueryState>
       </section>
 
-      <section className="card" aria-label="手动记录">
-        <h2>手动记录决定</h2>
-        <p className="text-dim">
-          审批拦截（enforce）在请求侧返回 <code>approval_required</code> 与 request_id；
-          把它填到下面记录人工决定。需要 token 具备 <code>admin:approve</code> 作用域。
+      <section className="app-card" aria-label="手动记录">
+        <h2 className="app-card-title">手动记录决定</h2>
+        <p className="app-card-sub">
+          审批拦截（enforce）在请求侧返回{' '}
+          <code className="app-inline-code">approval_required</code> 与 request_id；
+          把它填到下面记录人工决定。需要 token 具备{' '}
+          <code className="app-inline-code">admin:approve</code> 作用域。
         </p>
-        <div className="form-row">
-          <label>
-            request_id{' '}
-            <input type="text" value={requestId} onChange={(e) => setRequestId(e.target.value)} />
+        <div className="app-form-row">
+          <label className="app-field">
+            request_id
+            <input
+              type="text"
+              className="oc-field app-field-light font-mono"
+              value={requestId}
+              onChange={(e) => setRequestId(e.target.value)}
+            />
           </label>
-          <label>
-            工具{' '}
-            <input type="text" value={toolName} onChange={(e) => setToolName(e.target.value)} />
+          <label className="app-field">
+            工具
+            <input
+              type="text"
+              className="oc-field app-field-light font-mono"
+              value={toolName}
+              onChange={(e) => setToolName(e.target.value)}
+            />
           </label>
-          <label>
-            风险{' '}
-            <select value={riskClass} onChange={(e) => setRiskClass(e.target.value)}>
+          <label className="app-field">
+            风险
+            <select
+              className="app-select"
+              value={riskClass}
+              onChange={(e) => setRiskClass(e.target.value)}
+            >
               <option value="low">low</option>
               <option value="medium">medium</option>
               <option value="high">high</option>
             </select>
           </label>
-          <label>
-            决定{' '}
-            <select value={decision} onChange={(e) => setDecision(e.target.value)}>
+          <label className="app-field">
+            决定
+            <select
+              className="app-select"
+              value={decision}
+              onChange={(e) => setDecision(e.target.value)}
+            >
               <option value="approved">approved</option>
               <option value="rejected">rejected</option>
             </select>
           </label>
           <button
             type="button"
-            className="btn"
+            className="oc-btn-default"
             disabled={!requestId.trim() || !toolName.trim() || recordMutation.isPending}
             onClick={() => void record()}
           >

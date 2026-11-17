@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node --import tsx --test src/lib/config-edit.test.ts"
+    "test": "node --import tsx --test src/lib/config-edit.test.ts",
+    "gen:uno": "node scripts/gen-uno-themes.mjs",
+    "check:uno": "node --import tsx scripts/check-uno-tokens.ts && node scripts/check-class-literals.mjs"
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.102.0",
@@ -29,11 +31,13 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@unocss/preset-wind4": "^66.13.0",
     "@vitejs/plugin-react": "^6.3.0",
     "oxc-transform-react": "^0.156.0",
     "oxlint": "^1.93.0",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
+    "unocss": "^66.13.0",
     "vite": "^8.3.8"
   },
   "allowScripts": {

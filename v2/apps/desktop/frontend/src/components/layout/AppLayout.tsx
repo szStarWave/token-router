@@ -12,6 +12,7 @@ const PAGE_TITLES: Record<string, string> = {
   requests: '请求',
   stats: '统计',
   logs: '日志',
+  onboarding: '接入',
   tokens: 'Token',
   approvals: '审批',
   diagnostics: '诊断',
@@ -26,19 +27,19 @@ export function AppLayout() {
   useLiveEvents()
 
   return (
-    <div className="app" id="app">
+    <div className="app-shell" id="app">
       <Sidebar />
-      <div className="divider-v" />
-      <main className="main">
-        <header className="page-header">
-          <div className="page-title window-drag" id="page-title">
+      <div className="app-divider" />
+      <main className="app-main">
+        <header className="app-page-header">
+          <div className="app-page-title drag-region" id="page-title">
             {title}
           </div>
-          <div className="page-header-right">
+          <div className="flex items-center gap-0.5">
             <TitleBar />
           </div>
         </header>
-        <div className="page-content">
+        <div className="app-page-content">
           <Outlet />
         </div>
       </main>

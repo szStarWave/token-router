@@ -11,10 +11,10 @@ type GroupBy = 'dispatch_model' | 'outcome' | 'protocol'
 type Metric = 'requests' | 'successes' | 'cost' | 'input_tokens' | 'output_tokens'
 
 const RANGES = [
-  { label: '最近 24 小时', hours: 24 },
-  { label: '最近 3 天', hours: 72 },
-  { label: '最近 7 天', hours: 168 },
-  { label: '最近 30 天', hours: 720 },
+  { label: '最近 24 小时', short: '24 小时', hours: 24 },
+  { label: '最近 3 天', short: '3 天', hours: 72 },
+  { label: '最近 7 天', short: '7 天', hours: 168 },
+  { label: '最近 30 天', short: '30 天', hours: 720 },
 ] as const
 
 function windowFor(hours: number): { from: number; to: number } {
@@ -46,22 +46,24 @@ export function StatsPage() {
     : 1
 
   return (
-    <div className="page">
-      <section className="card" aria-label="统计汇总">
-        <h2>汇总</h2>
-        <div className="filter-bar">
-          <label>
-            时间窗{' '}
-            <select
-              value={hours}
-              onChange={(e) => setHours(Number(e.target.value))}
-              aria-label="时间窗"
-            >
-              {RANGES.map((range) => (
-                <option key={range.hours} value={range.hours}>{range.label}</option>
-              ))}
-            </select>
-          </label>
+    <div className="app-page">
+      <section className="app-card" aria-label="统计汇总">
+        <h2 className="app-card-title">汇总</h2>
+        <div className="app-filter-bar">
+          <div className="oc-seg" role="group" aria-label="时间窗">
+            {RANGES.map((range) => (
+              <button
+                key={range.hours}
+                type="button"
+                className={hours === range.hours ? 'oc-seg-item-active' : 'oc-seg-item'}
+                aria-pressed={hours === range.hours}
+                title={range.label}
+                onClick={() => setHours(range.hours)}
+              >
+                {range.short}
+              </button>
+            ))}
+          </div>
         </div>
         <QueryState
           loading={summaryQuery.isLoading}
@@ -69,41 +71,100 @@ export function StatsPage() {
           onRetry={() => void summaryQuery.refetch()}
         >
           {summary && (
-            <dl className="kv-grid">
-              <div><dt>请求</dt><dd>{summary.requests}</dd></div>
-              <div><dt>成功</dt><dd>{summary.successes}</dd></div>
-              <div><dt>成功率</dt><dd>{(summary.success_rate * 100).toFixed(1)}%</dd></div>
-              <div><dt>上游错误</dt><dd>{summary.upstream_errors}</dd></div>
-              <div><dt>质量失败</dt><dd>{summary.quality_fails}</dd></div>
-              <div><dt>取消</dt><dd>{summary.cancelled}</dd></div>
-              <div><dt>拒绝</dt><dd>{summary.rejected}</dd></div>
-              <div><dt>切换</dt><dd>{summary.switches}</dd></div>
-              <div><dt>TTFT p95</dt><dd>{summary.latency.ttft_p95 ?? '—'}ms</dd></div>
-              <div><dt>耗时 p95</dt><dd>{summary.latency.duration_p95 ?? '—'}ms</dd></div>
-              <div><dt>tokens (in/out)</dt><dd>{summary.tokens.input} / {summary.tokens.output}</dd></div>
-              <div><dt>cache (read/write)</dt><dd>{summary.tokens.cache_read} / {summary.tokens.cache_write}</dd></div>
-              <div><dt>成本 answer</dt><dd>{summary.cost_micros.answer} micros</dd></div>
-              <div><dt>成本 routing</dt><dd>{summary.cost_micros.routing} micros</dd></div>
-              <div><dt>判官调用</dt><dd>{summary.judge.calls} (失败 {summary.judge.failed})</dd></div>
+            <dl className="app-kv">
+              <div className="app-kv-item">
+                <dt className="app-kv-key">请求</dt>
+                <dd className="app-kv-value">{summary.requests}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">成功</dt>
+                <dd className="app-kv-value">{summary.successes}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">成功率</dt>
+                <dd className="app-kv-value">{(summary.success_rate * 100).toFixed(1)}%</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">上游错误</dt>
+                <dd className="app-kv-value">{summary.upstream_errors}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">质量失败</dt>
+                <dd className="app-kv-value">{summary.quality_fails}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">取消</dt>
+                <dd className="app-kv-value">{summary.cancelled}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">拒绝</dt>
+                <dd className="app-kv-value">{summary.rejected}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">切换</dt>
+                <dd className="app-kv-value">{summary.switches}</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">TTFT p95</dt>
+                <dd className="app-kv-value">{summary.latency.ttft_p95 ?? '—'}ms</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">耗时 p95</dt>
+                <dd className="app-kv-value">{summary.latency.duration_p95 ?? '—'}ms</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">tokens (in/out)</dt>
+                <dd className="app-kv-value">
+                  {summary.tokens.input} / {summary.tokens.output}
+                </dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">cache (read/write)</dt>
+                <dd className="app-kv-value">
+                  {summary.tokens.cache_read} / {summary.tokens.cache_write}
+                </dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">成本 answer</dt>
+                <dd className="app-kv-value">{summary.cost_micros.answer} micros</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">成本 routing</dt>
+                <dd className="app-kv-value">{summary.cost_micros.routing} micros</dd>
+              </div>
+              <div className="app-kv-item">
+                <dt className="app-kv-key">判官调用</dt>
+                <dd className="app-kv-value">
+                  {summary.judge.calls} (失败 {summary.judge.failed})
+                </dd>
+              </div>
             </dl>
           )}
         </QueryState>
       </section>
 
-      <section className="card" aria-label="时间序列">
-        <h2>时间序列</h2>
-        <div className="filter-bar">
-          <label>
-            分组{' '}
-            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
+      <section className="app-card" aria-label="时间序列">
+        <h2 className="app-card-title">时间序列</h2>
+        <div className="app-filter-bar">
+          <label className="app-filter-label">
+            分组
+            <select
+              className="app-select-sm"
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+            >
               <option value="dispatch_model">派发模型</option>
               <option value="outcome">结果</option>
               <option value="protocol">协议</option>
             </select>
           </label>
-          <label>
-            指标{' '}
-            <select value={metric} onChange={(e) => setMetric(e.target.value as Metric)}>
+          <label className="app-filter-label">
+            指标
+            <select
+              className="app-select-sm"
+              value={metric}
+              onChange={(e) => setMetric(e.target.value as Metric)}
+            >
               <option value="requests">请求数</option>
               <option value="successes">成功数</option>
               <option value="cost">成本</option>
@@ -120,18 +181,18 @@ export function StatsPage() {
         >
           {seriesQuery.error !== null &&
             errorMessage(seriesQuery.error).includes('window_too_large') && (
-              <div className="banner banner-warn">窗口过大，请缩小时间范围。</div>
+              <div className="app-banner app-banner-warn">窗口过大，请缩小时间范围。</div>
             )}
           {series && (
-            <div className="series-chart" role="img" aria-label={`${groupBy} 按 ${bucket} 的${metric}序列`}>
+            <div className="app-series" role="img" aria-label={`${groupBy} 按 ${bucket} 的${metric}序列`}>
               {series.series.map((group) => (
-                <div key={group.key} className="series-row">
-                  <div className="series-key mono">{group.key}</div>
-                  <div className="series-bars">
+                <div key={group.key} className="app-series-row">
+                  <div className="app-series-key font-mono">{group.key}</div>
+                  <div className="app-series-bars">
                     {group.points.map((point) => (
                       <div
                         key={point.t}
-                        className="series-bar"
+                        className="app-series-bar"
                         style={{
                           height: `${Math.max(2, (point.value / maxPoint) * 64)}px`,
                           opacity: point.value === 0 ? 0.15 : 1,
@@ -145,11 +206,15 @@ export function StatsPage() {
             </div>
           )}
           {series && (
-            <details className="series-table-wrap">
-              <summary>表格替代视图（无障碍）</summary>
-              <table className="table">
+            <details className="text-meta text-muted-foreground">
+              <summary className="cursor-pointer py-1">表格替代视图（无障碍）</summary>
+              <table className="app-table">
                 <thead>
-                  <tr><th>{groupBy}</th><th>时间</th><th>{metric}</th></tr>
+                  <tr>
+                    <th>{groupBy}</th>
+                    <th>时间</th>
+                    <th>{metric}</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {series.series.flatMap((group) =>
@@ -157,7 +222,7 @@ export function StatsPage() {
                       .filter((point) => point.value > 0)
                       .map((point) => (
                         <tr key={`${group.key}-${point.t}`}>
-                          <td className="mono">{group.key}</td>
+                          <td className="font-mono">{group.key}</td>
                           <td>{new Date(point.t).toLocaleString()}</td>
                           <td>{point.value}</td>
                         </tr>
@@ -170,22 +235,29 @@ export function StatsPage() {
         </QueryState>
       </section>
 
-      <section className="card" aria-label="模型维度">
-        <h2>模型维度</h2>
+      <section className="app-card" aria-label="模型维度">
+        <h2 className="app-card-title">模型维度</h2>
         <QueryState
           loading={modelsQuery.isLoading}
           error={modelsQuery.error}
           empty={(modelsQuery.data?.items.length ?? 0) === 0}
           onRetry={() => void modelsQuery.refetch()}
         >
-          <table className="table">
+          <table className="app-table">
             <thead>
-              <tr><th>模型</th><th>请求</th><th>成功</th><th>输入</th><th>输出</th><th>成本</th></tr>
+              <tr>
+                <th>模型</th>
+                <th>请求</th>
+                <th>成功</th>
+                <th>输入</th>
+                <th>输出</th>
+                <th>成本</th>
+              </tr>
             </thead>
             <tbody>
               {modelsQuery.data?.items.map((item) => (
                 <tr key={String(item.model)}>
-                  <td className="mono">{String(item.model)}</td>
+                  <td className="font-mono">{String(item.model)}</td>
                   <td>{String(item.requests)}</td>
                   <td>{String(item.successes)}</td>
                   <td>{String(item.input_tokens)}</td>

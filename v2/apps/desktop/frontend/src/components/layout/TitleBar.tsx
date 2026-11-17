@@ -24,10 +24,10 @@ export function TitleBar() {
 
   const win = getCurrentWindow()
   return (
-    <div className="window-controls">
+    <div className="flex items-center gap-0.5">
       <button
         type="button"
-        className="win-btn"
+        className="app-win-btn"
         aria-label="最小化"
         onClick={() => void win.minimize()}
       >
@@ -35,7 +35,7 @@ export function TitleBar() {
       </button>
       <button
         type="button"
-        className="win-btn"
+        className="app-win-btn"
         aria-label={maximized ? '还原' : '最大化'}
         onClick={() => {
           void win.toggleMaximize().then(refreshMax)
@@ -45,7 +45,7 @@ export function TitleBar() {
       </button>
       <button
         type="button"
-        className="win-btn win-close"
+        className="app-win-btn app-win-close"
         aria-label="关闭"
         onClick={() => void win.close()}
       >

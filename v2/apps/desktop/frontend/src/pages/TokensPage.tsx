@@ -55,26 +55,28 @@ export function TokensPage() {
   }
 
   return (
-    <div className="page">
-      <section className="card" aria-label="创建 token">
-        <h2>创建 token</h2>
-        <div className="form-row">
-          <label>
-            名称{' '}
+    <div className="app-page">
+      <section className="app-card" aria-label="创建 token">
+        <h2 className="app-card-title">创建 token</h2>
+        <div className="app-form-row">
+          <label className="app-field">
+            名称
             <input
               type="text"
+              className="oc-field app-field-light"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="如 hermes-laptop"
             />
           </label>
         </div>
-        <fieldset className="scope-fieldset">
-          <legend>作用域</legend>
+        <fieldset className="app-scope-fieldset">
+          <legend className="app-scope-legend">作用域</legend>
           {SCOPES.map((scope) => (
-            <label key={scope.id} className="scope-check">
+            <label key={scope.id} className="app-scope-check">
               <input
                 type="checkbox"
+                className="accent-primary"
                 checked={scopes.includes(scope.id)}
                 onChange={(e) => {
                   setScopes((current) =>
@@ -90,19 +92,19 @@ export function TokensPage() {
         </fieldset>
         <button
           type="button"
-          className="btn"
+          className="oc-btn-default self-start"
           disabled={!name.trim() || scopes.length === 0 || createMutation.isPending}
           onClick={() => void create()}
         >
           {createMutation.isPending ? '创建中…' : '创建'}
         </button>
         {created && (
-          <div className="banner banner-ok one-time-secret">
-            <div className="state-title">token 明文（只显示这一次，请立即复制保存）</div>
-            <code className="mono">{created}</code>
+          <div className="app-banner app-banner-ok flex-col items-start gap-2">
+            <div className="app-state-title">token 明文（只显示这一次，请立即复制保存）</div>
+            <code className="app-inline-code break-all">{created}</code>
             <button
               type="button"
-              className="btn btn-sm"
+              className="oc-btn-default oc-btn-sm"
               onClick={() => {
                 void navigator.clipboard.writeText(created)
                 showToast('common.copied')
@@ -110,57 +112,79 @@ export function TokensPage() {
             >
               复制
             </button>
-            <button type="button" className="btn btn-sm" onClick={() => setCreated(null)}>
+            <button type="button" className="oc-btn-default oc-btn-sm" onClick={() => setCreated(null)}>
               我已保存
             </button>
           </div>
         )}
-        <p className="text-dim">
+        <p className="app-card-sub">
           服务端只保存 sha256；列表只显示前 8 字符。撤销立即生效。
         </p>
       </section>
 
-      <section className="card" aria-label="token 列表">
-        <h2>token 列表</h2>
+      <section className="app-card" aria-label="token 列表">
+        <h2 className="app-card-title">token 列表</h2>
         <QueryState
           loading={tokensQuery.isLoading}
           error={tokensQuery.error}
           empty={(tokensQuery.data?.items.length ?? 0) === 0}
           onRetry={() => void tokensQuery.refetch()}
         >
-          <table className="table">
+          <table className="app-table">
             <thead>
-              <tr><th>前缀</th><th>名称</th><th>作用域</th><th>创建时间</th><th>最近使用</th><th>状态</th><th /></tr>
+              <tr>
+                <th>前缀</th>
+                <th>名称</th>
+                <th>作用域</th>
+                <th>创建时间</th>
+                <th>最近使用</th>
+                <th>状态</th>
+                <th />
+              </tr>
             </thead>
             <tbody>
               {tokensQuery.data?.items.map((token) => (
-                <tr key={token.id} className={token.revoked_at ? 'row-revoked' : ''}>
-                  <td className="mono">{token.prefix}…</td>
+                <tr key={token.id} className={token.revoked_at ? 'app-row-revoked' : undefined}>
+                  <td className="font-mono">{token.prefix}…</td>
                   <td>{token.name}</td>
                   <td>{token.scopes.join(', ')}</td>
                   <td>{new Date(token.created_at).toLocaleDateString()}</td>
-                  <td>{token.last_used_at ? new Date(token.last_used_at).toLocaleString() : '—'}</td>
+                  <td>
+                    {token.last_used_at ? new Date(token.last_used_at).toLocaleString() : '—'}
+                  </td>
                   <td>
                     {token.revoked_at ? (
-                      <span className="pill pill-open">已撤销</span>
+                      <span className="app-pill app-pill-error">已撤销</span>
                     ) : (
-                      <span className="pill pill-closed">活跃</span>
+                      <span className="app-pill app-pill-ok">活跃</span>
                     )}
                   </td>
                   <td>
                     {!token.revoked_at &&
                       (confirming === token.id ? (
-                        <span className="confirm-inline">
+                        <span className="app-confirm">
                           确认撤销？
-                          <button type="button" className="btn btn-sm btn-danger" onClick={() => void revoke(token.id)}>
+                          <button
+                            type="button"
+                            className="oc-btn-destructive oc-btn-sm"
+                            onClick={() => void revoke(token.id)}
+                          >
                             撤销
                           </button>
-                          <button type="button" className="btn btn-sm" onClick={() => setConfirming(null)}>
+                          <button
+                            type="button"
+                            className="oc-btn-default oc-btn-sm"
+                            onClick={() => setConfirming(null)}
+                          >
                             取消
                           </button>
                         </span>
                       ) : (
-                        <button type="button" className="btn btn-sm" onClick={() => setConfirming(token.id)}>
+                        <button
+                          type="button"
+                          className="oc-btn-default oc-btn-sm"
+                          onClick={() => setConfirming(token.id)}
+                        >
                           撤销
                         </button>
                       ))}

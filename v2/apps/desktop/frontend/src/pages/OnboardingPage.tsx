@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAppStore } from '../stores/appStore'
 import { isTauri, invokeErrorMessage as errorMessage } from '../lib/tauri'
+import { planActionPillClass } from '../lib/status'
 import {
   onboardApply,
   onboardDetect,
@@ -152,12 +153,12 @@ export function OnboardingPage() {
 
   if (!isTauri()) {
     return (
-      <div className="page">
-        <section className="card">
-          <h2>Agent 接入</h2>
-          <p className="text-dim">
+      <div className="app-page">
+        <section className="app-card">
+          <h2 className="app-card-title">Agent 接入</h2>
+          <p className="app-card-sub">
             一键接入（detect → plan → apply → verify）需要桌面壳的 host 能力；
-            浏览器模式请用 <code>tr-cli admin</code> 手动配置。
+            浏览器模式请用 <code className="app-inline-code">tr-cli admin</code> 手动配置。
           </p>
         </section>
       </div>
@@ -165,71 +166,109 @@ export function OnboardingPage() {
   }
 
   return (
-    <div className="page">
-      <section className="card" aria-label="接入目标">
-        <h2>接入目标</h2>
-        <div className="form-row">
-          <label>
-            Agent{' '}
-            <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setStep('select'); setVerify(null) }}>
+    <div className="app-page">
+      <section className="app-card" aria-label="接入目标">
+        <h2 className="app-card-title">接入目标</h2>
+        <div className="app-form-row">
+          <label className="app-field">
+            Agent
+            <select
+              className="app-select"
+              value={agentId}
+              onChange={(e) => {
+                setAgentId(e.target.value)
+                setStep('select')
+                setVerify(null)
+              }}
+            >
               {AGENTS.map((agent) => (
-                <option key={agent.id} value={agent.id}>{agent.label}</option>
+                <option key={agent.id} value={agent.id}>
+                  {agent.label}
+                </option>
               ))}
             </select>
           </label>
           {wsl?.wsl_available && (
-            <label>
-              目标{' '}
-              <select value={distro} onChange={(e) => { setDistro(e.target.value); setStep('select'); setVerify(null) }}>
+            <label className="app-field">
+              目标
+              <select
+                className="app-select"
+                value={distro}
+                onChange={(e) => {
+                  setDistro(e.target.value)
+                  setStep('select')
+                  setVerify(null)
+                }}
+              >
                 <option value="">宿主 (Windows)</option>
                 {wsl.distros.map((name) => (
-                  <option key={name} value={name}>WSL: {name}</option>
+                  <option key={name} value={name}>
+                    WSL: {name}
+                  </option>
                 ))}
               </select>
             </label>
           )}
           {wsl && !wsl.wsl_available && (
-            <span className="text-dim">WSL 不可用（{wsl.error ?? '未安装'}）；仅宿主接入。</span>
+            <span className="text-meta text-muted-foreground">
+              WSL 不可用（{wsl.error ?? '未安装'}）；仅宿主接入。
+            </span>
           )}
         </div>
         {detect && (
-          <dl className="kv-grid">
-            <div><dt>已安装</dt><dd>{detect.installed ? '是' : '否（将创建新配置）'}</dd></div>
-            <div><dt>已指向 token-router</dt><dd>{detect.already_configured ? '是（幂等重跑）' : '否'}</dd></div>
-            <div>
-              <dt>配置文件</dt>
-              <dd className="mono">{detect.config_files.map((file) => file.path).join(', ')}</dd>
+          <dl className="app-kv">
+            <div className="app-kv-item">
+              <dt className="app-kv-key">已安装</dt>
+              <dd className="app-kv-value">{detect.installed ? '是' : '否（将创建新配置）'}</dd>
+            </div>
+            <div className="app-kv-item">
+              <dt className="app-kv-key">已指向 token-router</dt>
+              <dd className="app-kv-value">
+                {detect.already_configured ? '是（幂等重跑）' : '否'}
+              </dd>
+            </div>
+            <div className="app-kv-item">
+              <dt className="app-kv-key">配置文件</dt>
+              <dd className="app-kv-value font-mono">
+                {detect.config_files.map((file) => file.path).join(', ')}
+              </dd>
             </div>
           </dl>
         )}
       </section>
 
       {step === 'select' && (
-        <section className="card" aria-label="接入参数">
-          <h2>接入参数</h2>
-          <div className="form-row">
-            <label>
-              凭据引用{' '}
+        <section className="app-card" aria-label="接入参数">
+          <h2 className="app-card-title">接入参数</h2>
+          <div className="app-form-row">
+            <label className="app-field">
+              凭据引用
               <input
                 type="text"
-                className="mono"
+                className="oc-field app-field-light font-mono"
                 value={credentialRef}
                 placeholder="env:TR_TOKEN 或 file:admin.token"
                 onChange={(e) => setCredentialRef(e.target.value)}
               />
             </label>
-            <label>
-              模型{' '}
-              <input type="text" className="mono" value={model} onChange={(e) => setModel(e.target.value)} />
+            <label className="app-field">
+              模型
+              <input
+                type="text"
+                className="oc-field app-field-light font-mono"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
             </label>
           </div>
-          <p className="text-dim">
-            网关：<code className="mono">{gatewayUrl}</code>（来自当前配置）。
-            明文 token 不经过 UI：host 在 apply 时从 <code>env:</code>/<code>file:</code> 解析。
+          <p className="app-card-sub">
+            网关：<code className="app-inline-code">{gatewayUrl}</code>（来自当前配置）。
+            明文 token 不经过 UI：host 在 apply 时从 <code className="app-inline-code">env:</code>/
+            <code className="app-inline-code">file:</code> 解析。
           </p>
           <button
             type="button"
-            className="btn btn-primary"
+            className="oc-btn-primary self-start"
             disabled={!credentialRef.trim() || busy}
             onClick={() => void runPlan()}
           >
@@ -239,16 +278,21 @@ export function OnboardingPage() {
       )}
 
       {step === 'plan' && plan && (
-        <section className="card" aria-label="计划预览">
-          <h2>计划预览（{plan.entries.length} 个文件）</h2>
+        <section className="app-card" aria-label="计划预览">
+          <h2 className="app-card-title">计划预览（{plan.entries.length} 个文件）</h2>
           {plan.entries.map((entry) => (
             <PlanEntryView key={entry.path} entry={entry} />
           ))}
-          <div className="card-actions">
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void runApply()}>
+          <div className="app-card-actions">
+            <button
+              type="button"
+              className="oc-btn-primary"
+              disabled={busy}
+              onClick={() => void runApply()}
+            >
               {busy ? '应用中…' : '确认应用（备份 + 原子写）'}
             </button>
-            <button type="button" className="btn" onClick={() => setStep('select')}>
+            <button type="button" className="oc-btn-default" onClick={() => setStep('select')}>
               返回修改
             </button>
           </div>
@@ -256,26 +300,28 @@ export function OnboardingPage() {
       )}
 
       {step === 'applied' && verify && (
-        <section className="card" aria-label="应用结果">
-          <h2>应用完成</h2>
-          <p>
+        <section className="app-card" aria-label="应用结果">
+          <h2 className="app-card-title">应用完成</h2>
+          <p className="flex items-center gap-2 text-ui-label">
             校验结果：
-            <span className={`pill pill-${verify.ok ? 'closed' : 'open'}`}>
+            <span className={verify.ok ? 'app-pill app-pill-ok' : 'app-pill app-pill-error'}>
               {verify.ok ? '通过' : '失败'}
             </span>
           </p>
-          <ul>
+          <ul className="list-disc pl-5 text-meta text-muted-foreground">
             {verify.messages.map((message) => (
-              <li key={message} className="mono text-dim">{message}</li>
+              <li key={message} className="font-mono">
+                {message}
+              </li>
             ))}
           </ul>
-          <button type="button" className="btn" onClick={reset}>
+          <button type="button" className="oc-btn-default self-start" onClick={reset}>
             接入下一个
           </button>
         </section>
       )}
 
-      {error && <div className="banner banner-err">{error}</div>}
+      {error && <div className="app-banner app-banner-err">{error}</div>}
     </div>
   )
 }
@@ -283,20 +329,22 @@ export function OnboardingPage() {
 function PlanEntryView({ entry }: { entry: PlanEntry }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="plan-entry">
-      <div className="plan-entry-head">
-        <span className={`pill pill-${entry.action === 'create' ? 'half_open' : 'closed'}`}>
+    <div className="app-plan-entry">
+      <div className="app-plan-head">
+        <span className={planActionPillClass(entry.action)}>
           {entry.action === 'create' ? '新建' : '合并'}
         </span>
-        <span className="mono">{entry.path}</span>
-        <span className="text-dim">({entry.format})</span>
-        <button type="button" className="btn btn-sm" onClick={() => setExpanded(!expanded)}>
+        <span className="font-mono">{entry.path}</span>
+        <span className="text-muted-foreground">({entry.format})</span>
+        <button
+          type="button"
+          className="oc-btn-default oc-btn-sm app-plan-toggle"
+          onClick={() => setExpanded(!expanded)}
+        >
           {expanded ? '收起' : '展开 diff'}
         </button>
       </div>
-      {expanded && (
-        <pre className="pre-json">{entry.after_preview}</pre>
-      )}
+      {expanded && <pre className="app-code-block">{entry.after_preview}</pre>}
     </div>
   )
 }

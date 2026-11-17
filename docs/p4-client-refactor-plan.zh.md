@@ -812,6 +812,9 @@ async fn admin_events_subscribe(app: AppHandle) -> Result<(), String>;
 
 ## 7. 前端
 
+> 样式层已定为 **UnoCSS + OpenChamber 设计规范**（深浅双主题、语义色板、三级深度），
+> 不再使用手写 CSS；落地细节与写法约定见 [`frontend-design-system.zh.md`](./frontend-design-system.zh.md)。
+
 ### 7.1 目录
 
 ```text
@@ -823,6 +826,7 @@ src/
   stores/        # 仅 UI 状态
   i18n/          # 字典
   lib/           # 格式化、diff、校验映射
+  styles/uno/    # vendored UnoCSS 预设 + 主题 token（生成物）
 ```
 
 ### 7.2 数据层
