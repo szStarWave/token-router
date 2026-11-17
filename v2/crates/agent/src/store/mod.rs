@@ -13,6 +13,7 @@ pub mod judge;
 pub mod ledger;
 mod migrate;
 pub mod protocol;
+pub mod providers;
 pub mod sessions;
 pub mod stats;
 pub mod strategy;

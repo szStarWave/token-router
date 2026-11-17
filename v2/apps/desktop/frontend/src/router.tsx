@@ -8,6 +8,7 @@ import { createHashHistory } from '@tanstack/react-router'
 import { AppLayout } from './components/layout/AppLayout'
 import { OverviewPage } from './pages/OverviewPage'
 import { ModelsPage } from './pages/ModelsPage'
+import { ProvidersPage } from './pages/ProvidersPage'
 import { VirtualModelsPage } from './pages/VirtualModelsPage'
 import { RequestsPage } from './pages/RequestsPage'
 import { StatsPage } from './pages/StatsPage'
@@ -33,6 +34,7 @@ const indexRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   createRoute({ getParentRoute: () => rootRoute, path: '/overview', component: OverviewPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/providers', component: ProvidersPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/models', component: ModelsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/virtual-models', component: VirtualModelsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/requests', component: RequestsPage }),

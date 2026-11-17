@@ -16,6 +16,8 @@ uuid = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 async-stream = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
 
 [lints]
 workspace = true

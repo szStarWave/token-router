@@ -42,11 +42,13 @@ import {
   Upload,
   X,
   type LucideIcon,
+  Server,
 } from 'lucide-react'
 
 const ICONS = {
   // 导航
   'nav-overview': LayoutDashboard,
+  'nav-providers': Server,
   'nav-models': Boxes,
   'nav-virtual-models': Layers,
   'nav-requests': Activity,

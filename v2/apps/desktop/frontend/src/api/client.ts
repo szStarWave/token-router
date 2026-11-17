@@ -93,8 +93,16 @@ export { request as adminRequest };
 // ---------------------------------------------------------------------------
 
 import type {
+  AccountCreateRequest,
+  AccountInfo,
+  AccountUpdateRequest,
   AdminScope,
   ApplyResponse,
+  CatalogRefreshRequest,
+  CatalogResponse,
+  CatalogSelectRequest,
+  CompileRequest,
+  CompileResponse,
   ConfigAuditEntry,
   ConfigDocument,
   CreatedToken,
@@ -103,6 +111,9 @@ import type {
   HealthResponse,
   LogEntry,
   Page,
+  ProviderInfo,
+  ProviderTemplate,
+  ProviderUpsertRequest,
   RequestDetail,
   RequestSummary,
   SeriesResponse,
@@ -137,6 +148,36 @@ export const api = {
   revokeToken: (id: string) => admin.del<{ ok: boolean }>(`/v2/admin/tokens/${id}`),
   logs: (query: string) => admin.get<{ items: LogEntry[]; next_cursor: number | null }>(`/v2/admin/logs${query}`),
   shutdown: () => admin.post<{ ok: boolean }>("/v2/admin/shutdown"),
+  // ── Providers（v3 P5-A）───────────────────────────────────────────────
+  providerTemplates: () =>
+    admin.get<ProviderTemplate[]>("/v2/admin/provider-templates"),
+  providers: () => admin.get<ProviderInfo[]>("/v2/admin/providers"),
+  createProvider: (request: ProviderUpsertRequest) =>
+    admin.post<ProviderInfo>("/v2/admin/providers", request),
+  updateProvider: (id: string, request: ProviderUpsertRequest) =>
+    admin.patch<ProviderInfo>(`/v2/admin/providers/${id}`, request),
+  deleteProvider: (id: string) =>
+    admin.del<{ ok: boolean }>(`/v2/admin/providers/${id}`),
+  accounts: (providerId: string) =>
+    admin.get<AccountInfo[]>(`/v2/admin/providers/${providerId}/accounts`),
+  createAccount: (providerId: string, request: AccountCreateRequest) =>
+    admin.post<AccountInfo>(`/v2/admin/providers/${providerId}/accounts`, request),
+  updateAccount: (accountId: string, request: AccountUpdateRequest) =>
+    admin.patch<AccountInfo>(`/v2/admin/accounts/${accountId}`, request),
+  deleteAccount: (accountId: string) =>
+    admin.del<{ ok: boolean }>(`/v2/admin/accounts/${accountId}`),
+  verifyAccount: (providerId: string, accountId: string) =>
+    admin.post<AccountInfo>(`/v2/admin/providers/${providerId}/accounts/verify`, {
+      account_id: accountId,
+    }),
+  catalog: (providerId: string) =>
+    admin.get<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog`),
+  refreshCatalog: (providerId: string, request: CatalogRefreshRequest = {}) =>
+    admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/refresh`, request),
+  selectCatalogModel: (providerId: string, request: CatalogSelectRequest) =>
+    admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/select`, request),
+  compileCandidates: (request: CompileRequest) =>
+    admin.post<CompileResponse>("/v2/admin/providers/compile", request),
 };
 
 export type { AdminScope };
@@ -150,4 +191,9 @@ export const queryKeys = {
   stats: (params: string) => ["admin", "stats", params] as const,
   tokens: () => ["admin", "tokens"] as const,
   logs: (params: string) => ["admin", "logs", params] as const,
+  providerTemplates: () => ["admin", "provider-templates"] as const,
+  providers: () => ["admin", "providers"] as const,
+  provider: (id: string) => ["admin", "providers", id] as const,
+  accounts: (providerId: string) => ["admin", "accounts", providerId] as const,
+  catalog: (providerId: string) => ["admin", "catalog", providerId] as const,
 };

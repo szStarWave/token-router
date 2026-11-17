@@ -284,3 +284,136 @@ export function useRecordApprovalMutation() {
     },
   })
 }
+
+// ---------------------------------------------------------------------------
+// providers / accounts / catalog（v3 P5-A）
+// ---------------------------------------------------------------------------
+
+export function useProviderTemplatesQuery(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providerTemplates(),
+    queryFn: () => api.providerTemplates(),
+    enabled,
+    staleTime: Infinity,
+    retry: 1,
+  })
+}
+
+export function useProvidersQuery(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providers(),
+    queryFn: () => api.providers(),
+    enabled,
+    refetchInterval: 15_000,
+    retry: 1,
+  })
+}
+
+export function useAccountsQuery(providerId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.accounts(providerId ?? ''),
+    queryFn: () => api.accounts(providerId!),
+    enabled: enabled && providerId !== null,
+    retry: 1,
+  })
+}
+
+export function useCatalogQuery(providerId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.catalog(providerId ?? ''),
+    queryFn: () => api.catalog(providerId!),
+    enabled: enabled && providerId !== null,
+    retry: 1,
+  })
+}
+
+function useInvalidateProviderData() {
+  const queryClient = useQueryClient()
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'providers'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'accounts'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'catalog'] })
+  }
+}
+
+export function useCreateProviderMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({ mutationFn: api.createProvider, onSuccess: invalidate })
+}
+
+export function useUpdateProviderMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ id, request }: { id: string; request: Parameters<typeof api.updateProvider>[1] }) =>
+      api.updateProvider(id, request),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteProviderMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({ mutationFn: api.deleteProvider, onSuccess: invalidate })
+}
+
+export function useCreateAccountMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ providerId, request }: { providerId: string; request: Parameters<typeof api.createAccount>[1] }) =>
+      api.createAccount(providerId, request),
+    onSuccess: invalidate,
+  })
+}
+
+export function useUpdateAccountMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ accountId, request }: { accountId: string; request: Parameters<typeof api.updateAccount>[1] }) =>
+      api.updateAccount(accountId, request),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteAccountMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({ mutationFn: api.deleteAccount, onSuccess: invalidate })
+}
+
+export function useVerifyAccountMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ providerId, accountId }: { providerId: string; accountId: string }) =>
+      api.verifyAccount(providerId, accountId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRefreshCatalogMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: (providerId: string) => api.refreshCatalog(providerId, {}),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSelectCatalogModelMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ providerId, request }: { providerId: string; request: Parameters<typeof api.selectCatalogModel>[1] }) =>
+      api.selectCatalogModel(providerId, request),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCompileCandidatesMutation() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: (request: Parameters<typeof api.compileCandidates>[0]) =>
+      api.compileCandidates(request),
+    onSuccess: () => {
+      invalidate()
+      // 编译产物写进了 config（candidates/virtual_models）。
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'config'] })
+    },
+  })
+}

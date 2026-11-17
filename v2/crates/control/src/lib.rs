@@ -15,18 +15,21 @@ pub mod config_service;
 pub mod error;
 pub mod events;
 pub mod logs;
+pub mod provider_service;
+pub mod provider_templates;
 pub mod state;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use tr_contracts::{
-    AdminScope, ConfigAuditEntry, CreateTokenRequest, DoctorCheck, DoctorResponse, Page,
-    RequestSummary, TokenInfo,
+    AccountCreateRequest, AccountUpdateRequest, AdminScope, CatalogRefreshRequest,
+    CatalogSelectRequest, CompileRequest, ConfigAuditEntry, CreateTokenRequest, DoctorCheck,
+    DoctorResponse, Page, ProviderUpsertRequest, RequestSummary, TokenInfo,
 };
 
 pub use crate::auth::AdminAuth;
@@ -58,6 +61,39 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/logs", get(logs_endpoint))
         .route("/v2/admin/events", get(events_endpoint))
         .route("/v2/admin/shutdown", post(shutdown))
+        .route("/v2/admin/provider-templates", get(provider_templates_list))
+        .route(
+            "/v2/admin/providers",
+            get(providers_list).post(providers_create),
+        )
+        .route(
+            "/v2/admin/providers/{id}",
+            get(providers_get)
+                .patch(providers_update)
+                .delete(providers_delete),
+        )
+        .route(
+            "/v2/admin/providers/{id}/accounts",
+            get(accounts_list).post(accounts_create),
+        )
+        .route(
+            "/v2/admin/accounts/{id}",
+            patch(account_update).delete(account_delete),
+        )
+        .route(
+            "/v2/admin/providers/{id}/accounts/verify",
+            post(accounts_verify),
+        )
+        .route("/v2/admin/providers/{id}/catalog", get(catalog_get))
+        .route(
+            "/v2/admin/providers/{id}/catalog/refresh",
+            post(catalog_refresh),
+        )
+        .route(
+            "/v2/admin/providers/{id}/catalog/select",
+            post(catalog_select),
+        )
+        .route("/v2/admin/providers/compile", post(providers_compile))
         .with_state(state)
 }
 
@@ -841,4 +877,179 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+// ── Provider / Account / 目录 / 编译（v3 P5-A）─────────────────────────────
+
+async fn provider_templates_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::list_templates()).into_response())
+}
+
+async fn providers_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::list_providers(&state)?).into_response())
+}
+
+async fn providers_create(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(body): Json<ProviderUpsertRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    if body.display_name.as_deref().unwrap_or("").is_empty() && body.template_id.is_none() {
+        return Err(AdminApiError::invalid_request(
+            "display_name or template_id required",
+        ));
+    }
+    Ok(Json(provider_service::create_provider(&state, body)?).into_response())
+}
+
+async fn providers_get(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::find_provider(&state, &id)?).into_response())
+}
+
+async fn providers_update(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<ProviderUpsertRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::update_provider(&state, &id, body)?).into_response())
+}
+
+async fn providers_delete(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    provider_service::delete_provider(&state, &id)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn accounts_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::list_accounts(&state, &id)?).into_response())
+}
+
+async fn accounts_create(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AccountCreateRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::create_account(&state, &id, body)?).into_response())
+}
+
+/// verify 端点请求体。
+#[derive(Deserialize)]
+struct AccountVerifyBody {
+    account_id: String,
+}
+
+async fn accounts_verify(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(_id): Path<String>,
+    Json(body): Json<AccountVerifyBody>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::verify_account(&state, &body.account_id).await?).into_response())
+}
+
+async fn catalog_get(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    Ok(Json(provider_service::catalog(&state, &id)?).into_response())
+}
+
+async fn catalog_refresh(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<CatalogRefreshRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::refresh_catalog(&state, &id, body).await?).into_response())
+}
+
+async fn catalog_select(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<CatalogSelectRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::select_model(&state, &id, body)?).into_response())
+}
+
+async fn providers_compile(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(body): Json<CompileRequest>,
+) -> Result<Response, AdminApiError> {
+    let record = state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let response = provider_service::compile_candidates(&state, body)?;
+    tr_agent::store::config_audit::insert(
+        state.pipeline.db(),
+        &tr_agent::store::config_audit::AuditRecord {
+            at: now_millis(),
+            actor: "token",
+            action: "compile",
+            from_revision: Some(&response.previous_revision),
+            to_revision: Some(&response.revision),
+            note: Some(&record.id),
+            diff: &[],
+        },
+    )?;
+    state.events.publish(
+        crate::events::EventKind::ConfigApplied,
+        serde_json::json!({
+            "revision": response.revision,
+            "restart_required": true,
+            "source": "providers_compile",
+        }),
+    );
+    Ok(Json(response).into_response())
+}
+
+async fn account_update(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AccountUpdateRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::update_account(&state, &id, body)?).into_response())
+}
+
+async fn account_delete(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    provider_service::delete_account(&state, &id)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

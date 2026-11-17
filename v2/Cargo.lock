@@ -1838,6 +1838,8 @@ version = "0.20.0"
 dependencies = [
  "async-stream",
  "axum",
+ "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

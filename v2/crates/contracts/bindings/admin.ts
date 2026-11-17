@@ -2,6 +2,53 @@
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
+ * 创建账号请求体（`POST /v2/admin/providers/{id}/accounts`）。
+ */
+export type AccountCreateRequest = { label: string, 
+/**
+ * **明文 key**：只在创建请求里出现一次，服务端写入凭据文件后即丢弃。
+ */
+key: string, proxy_url?: string, base_url_override?: string, enabled?: boolean, };
+
+/**
+ * 账号（provider 下的一把 key）。
+ */
+export type AccountInfo = { id: string, provider_id: string, label: string, 
+/**
+ * 凭据引用（`file:credentials/<id>.key`）。**不含明文**。
+ */
+credential_ref: string, 
+/**
+ * key 指纹后 4 位；明文不可回读。
+ */
+fingerprint: string, 
+/**
+ * 可选代理（`http://host:port`）。
+ */
+proxy_url: string | null, 
+/**
+ * 基础 URL 覆盖（多租户网关等场景）；空 = 用 provider 的。
+ */
+base_url_override: string | null, enabled: boolean, 
+/**
+ * 最后一次连通性验证时间。
+ */
+verified_at: number | null, 
+/**
+ * 最后一次验证结果（`ok` / 错误摘要）。
+ */
+verify_status: string | null, created_at: number, };
+
+/**
+ * 更新账号请求体（`PATCH /v2/admin/accounts/{id}`）。
+ */
+export type AccountUpdateRequest = { label: string | null, 
+/**
+ * 传入则轮换 key（旧凭据文件删除）。
+ */
+key: string | null, proxy_url: string | null, base_url_override: string | null, enabled: boolean | null, };
+
+/**
  * 管理端点作用域。
  */
 export type AdminScope = "inference" | "admin_read" | "admin_write" | "admin_approve";
@@ -60,6 +107,85 @@ status: string, consecutive_failures: number, opened_count: number,
  * Unix 毫秒或 null。
  */
 open_until: number | null, half_open_since: number | null, last_error_class: string | null, last_failure_at: number | null, updated_at: number, };
+
+/**
+ * 目录中的模型条目（provider 的模型勾选池）。
+ */
+export type CatalogModel = { 
+/**
+ * 目录 model id（上游 `/v1/models` 的 `id`）。
+ */
+model_id: string, display_name: string, 
+/**
+ * 用户是否勾选为候选。
+ */
+selected: boolean, 
+/**
+ * 编译出的候选 id（`{provider}~{model}@{account}`）；未勾选为空。
+ */
+candidate_id: string | null, context_window: number | null, max_output: number | null, 
+/**
+ * micros / MTok；未目录化 = 手填。
+ */
+price: PriceDto | null, 
+/**
+ * 元数据来源：`catalog` / `models.dev` / `manual`。
+ */
+source: string, };
+
+/**
+ * 目录刷新请求（`POST /v2/admin/providers/{id}/catalog/refresh`）。
+ */
+export type CatalogRefreshRequest = { 
+/**
+ * 用哪个账号的 key 拉目录；空 = 第一个启用的账号。
+ */
+account_id?: string, };
+
+/**
+ * 目录响应（`GET /v2/admin/providers/{id}/catalog`）。
+ */
+export type CatalogResponse = { provider_id: string, refreshed_at: number | null, models: Array<CatalogModel>, };
+
+/**
+ * 勾选请求（`POST /v2/admin/providers/{id}/catalog/select`）。
+ */
+export type CatalogSelectRequest = { model_id: string, selected: boolean, 
+/**
+ * 覆盖默认档位标签（默认用 provider 的 suggested_tier）。
+ */
+tier?: string, 
+/**
+ * 覆盖 strength（0-255，越大越强）。
+ */
+strength?: number, };
+
+/**
+ * 编译选项。
+ */
+export type CompileRequest = { 
+/**
+ * 编译后是否为每个 provider 生成/更新一个聚合虚拟模型
+ * （`auto-{provider}`，含其全部候选）。默认 true。
+ */
+create_virtual_models?: boolean, 
+/**
+ * If-Match（config CAS）。
+ */
+expected_revision?: string, };
+
+/**
+ * 候选编译结果（`POST /v2/admin/providers/compile`）。
+ */
+export type CompileResponse = { revision: string, previous_revision: string, 
+/**
+ * 新写入 config 的候选 id 列表。
+ */
+candidate_ids: Array<string>, 
+/**
+ * 编译统计。
+ */
+candidates_total: number, virtual_models_total: number, backup_path: string | null, };
 
 /**
  * 配置审计条目（脱敏）。
@@ -185,6 +311,84 @@ export type Page<T> = { items: Array<T>,
  * 为空表示没有更多页。
  */
 next_cursor: string | null, };
+
+/**
+ * 创建/修改 provider 的请求体。
+ */
+export type PriceDto = { currency: string, input_micros_per_mtok: number, output_micros_per_mtok: number, cache_read_micros_per_mtok: number | null, cache_write_micros_per_mtok: number | null, request_micros: number, };
+
+/**
+ * provider 实例（`GET /v2/admin/providers` 列表项）。
+ */
+export type ProviderInfo = { id: string, display_name: string, kind: ProviderKindDto, base_url: string, catalog_url: string | null, status: ProviderStatus, 
+/**
+ * 最后一次目录刷新时间（Unix 毫秒）。
+ */
+catalog_refreshed_at: number | null, 
+/**
+ * 最后一次目录刷新错误。
+ */
+catalog_error: string | null, 
+/**
+ * 账号数（冗余计数，列表页显示）。
+ */
+account_count: number, 
+/**
+ * 该 provider 编译出的候选数。
+ */
+candidate_count: number, created_at: number, };
+
+/**
+ * provider 类型（决定 wire 协议与目录拉取方式）。
+ */
+export type ProviderKindDto = "open_ai_compatible" | "anthropic" | "responses";
+
+/**
+ * provider 状态。
+ */
+export type ProviderStatus = "not_configured" | "awaiting_catalog" | "ready" | "catalog_error";
+
+/**
+ * 内置厂商模板（`GET /v2/admin/provider-templates`）。
+ */
+export type ProviderTemplate = { 
+/**
+ * 模板 id（`deepseek`、`openrouter`、`custom-openai`…）。
+ */
+id: string, display_name: string, kind: ProviderKindDto, 
+/**
+ * 默认 base_url（用户可改）。
+ */
+base_url: string, 
+/**
+ * 目录端点；`None` = 该厂商不支持在线目录（如本地推理）。
+ */
+catalog_url: string | null, 
+/**
+ * 默认价格表（micros/MTok）；`None` = 用户手填。
+ */
+default_price: PriceDto | null, 
+/**
+ * 默认上下文窗口。
+ */
+default_window: number | null, 
+/**
+ * 建议默认档位标签。
+ */
+suggested_tier: string, };
+
+/**
+ * 创建/修改 provider 的请求体。
+ */
+export type ProviderUpsertRequest = { 
+/**
+ * 客户端生成（uuid）；不传由服务端生成。
+ */
+id?: string, 
+/**
+ * 模板 id；`custom-openai` 等自定义模板也可省略。
+ */
+template_id?: string, display_name?: string, kind?: ProviderKindDto, base_url?: string, catalog_url?: string, };
 
 /**
  * `GET /v2/admin/requests/{id}`：列表字段 + 决策详情。

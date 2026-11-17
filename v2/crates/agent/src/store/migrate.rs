@@ -20,6 +20,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M3_LEDGER_CONTRIBUTIONS,
     M4_LEDGER_AUTHORITY,
     M5_TOKENS_AUDIT,
+    M6_PROVIDERS,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -275,4 +276,51 @@ CREATE TABLE config_audit (
 
 CREATE INDEX idx_ledger_authority
   ON ledger(json_extract(authority_json, '$.authority_id'), created_at);
+"#;
+
+/// migration 6（v3 P5-A）：Provider / Account / 模型目录勾选。
+/// 明文 key 不入库存（凭据文件），目录只存勾选与元数据。
+const M6_PROVIDERS: &str = r#"
+CREATE TABLE providers (
+  id                  TEXT PRIMARY KEY,
+  display_name        TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  base_url            TEXT NOT NULL,
+  catalog_url         TEXT,
+  template_id         TEXT,
+  status              TEXT NOT NULL DEFAULT 'not_configured',
+  catalog_refreshed_at INTEGER,
+  catalog_error       TEXT,
+  created_at          INTEGER NOT NULL
+);
+
+CREATE TABLE accounts (
+  id                TEXT PRIMARY KEY,
+  provider_id       TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  label             TEXT NOT NULL,
+  credential_ref    TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL,
+  proxy_url         TEXT,
+  base_url_override TEXT,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  verified_at       INTEGER,
+  verify_status     TEXT,
+  created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX idx_accounts_provider ON accounts(provider_id);
+
+CREATE TABLE catalog_models (
+  provider_id    TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id       TEXT NOT NULL,
+  display_name   TEXT NOT NULL DEFAULT '',
+  selected       INTEGER NOT NULL DEFAULT 0,
+  context_window INTEGER,
+  max_output     INTEGER,
+  price_json     TEXT,
+  source         TEXT NOT NULL DEFAULT 'catalog',
+  tier_override  TEXT,
+  strength       INTEGER,
+  PRIMARY KEY (provider_id, model_id)
+);
 "#;
