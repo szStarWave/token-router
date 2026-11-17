@@ -27,6 +27,8 @@
     "allow-onboard-plan",
     "allow-onboard-apply",
     "allow-onboard-verify",
-    "allow-onboard-wsl-detect"
+    "allow-onboard-wsl-detect",
+    "allow-admin-events-subscribe",
+    "allow-admin-events-unsubscribe"
   ]
 }
