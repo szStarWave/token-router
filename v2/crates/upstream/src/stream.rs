@@ -30,6 +30,15 @@ pub struct StreamAttempt {
     pub candidate_id: String,
     pub status: u16,
     pub events: mpsc::Receiver<StreamItem>,
+    /// 建立连接时的限流头观测（v3 P5-B）。
+    pub rate_limit: Option<Box<tr_contracts::RateLimitSnapshot>>,
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl HttpUpstream {
@@ -49,6 +58,7 @@ impl HttpUpstream {
                 )),
                 retry_after_ms: None,
                 cause: AttemptCause::UnsupportedProvider,
+                rate_limit: None,
             });
         }
 
@@ -75,6 +85,7 @@ impl HttpUpstream {
             message: Some(error.to_string()),
             retry_after_ms: None,
             cause: AttemptCause::Transport,
+            rate_limit: None,
         })?;
 
         let status = response.status();
@@ -93,14 +104,32 @@ impl HttpUpstream {
             let body: Value = serde_json::from_str(&text)
                 .unwrap_or_else(|_| serde_json::json!({"error": {"message": text}}));
             let classified = tr_proto::errors::classify(status.as_u16(), &headers, &body);
+            let rate_limit =
+                crate::rate_limit::parse_rate_limit(&headers, status.as_u16(), now_millis())
+                    .map(Box::new);
             return Err(AttemptFailure {
                 class: classified.class,
                 status: Some(status.as_u16()),
                 message: classified.message,
                 retry_after_ms: classified.retry_after_ms,
                 cause: AttemptCause::HttpStatus,
+                rate_limit,
             });
         }
+
+        let headers: std::collections::BTreeMap<String, String> = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_string(), value.to_string()))
+            })
+            .collect();
+        let rate_limit =
+            crate::rate_limit::parse_rate_limit(&headers, status.as_u16(), now_millis())
+                .map(Box::new);
 
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
@@ -125,6 +154,7 @@ impl HttpUpstream {
                                     message: Some(error.to_string()),
                                     retry_after_ms: None,
                                     cause: AttemptCause::MalformedResponse,
+                                    rate_limit: None,
                                 }))
                                 .await;
                             return;
@@ -142,6 +172,7 @@ impl HttpUpstream {
                                 message: Some(error.to_string()),
                                 retry_after_ms: None,
                                 cause: AttemptCause::Transport,
+                                rate_limit: None,
                             }))
                             .await;
                         return;
@@ -167,6 +198,7 @@ impl HttpUpstream {
             candidate_id: candidate.id.clone(),
             status: status.as_u16(),
             events: rx,
+            rate_limit,
         })
     }
 }

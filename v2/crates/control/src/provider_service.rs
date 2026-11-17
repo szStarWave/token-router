@@ -771,6 +771,8 @@ pub fn compile_candidates(
                     model: model.model_id.clone(),
                     credential: account.credential_ref.clone(),
                     window: default_window_for(&provider.id),
+                    provider_id: provider.id.clone(),
+                    account_id: account.id.clone(),
                     proxy: account.proxy_url.clone(),
                     extra_headers: account
                         .extra_headers
@@ -828,6 +830,13 @@ pub fn compile_candidates(
             price: None,
             enabled: true,
         });
+        // 配额窗口的账号/厂商映射（P5-B 管理面分组用）。
+        let _ = store::quota::ensure_mapping(
+            db_handle,
+            &row.id,
+            Some(&row.account_id),
+            Some(&row.provider_id),
+        );
     }
 
     if request.create_virtual_models.unwrap_or(true) {
@@ -894,6 +903,8 @@ struct CandidateRow {
     window: u32,
     proxy: Option<String>,
     extra_headers: BTreeMap<String, String>,
+    provider_id: String,
+    account_id: String,
 }
 
 fn provider_kind_text(kind: ProviderKindDto) -> String {

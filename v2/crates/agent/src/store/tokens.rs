@@ -24,6 +24,8 @@ pub struct TokenRecord {
     pub last_used_at: Option<i64>,
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
+    /// 网关 key 限额（v3 P5-B）。
+    pub limits: Option<tr_contracts::KeyLimits>,
 }
 
 impl TokenRecord {
@@ -101,8 +103,8 @@ fn base64url(bytes: [u8; 32]) -> String {
 pub fn insert(db: &Db, record: &TokenRecord) -> Result<(), StoreError> {
     let connection = db.write();
     connection.execute(
-        "INSERT INTO tokens (id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO tokens (id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at, limits_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             record.id,
             record.name,
@@ -113,6 +115,11 @@ pub fn insert(db: &Db, record: &TokenRecord) -> Result<(), StoreError> {
             record.last_used_at,
             record.expires_at,
             record.revoked_at,
+            record
+                .limits
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
         ],
     )?;
     Ok(())
@@ -128,7 +135,7 @@ pub fn find_active_by_plaintext(
     let connection = db.read();
     let row = connection
         .query_row(
-            "SELECT id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at
+            "SELECT id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at, limits_json
                FROM tokens WHERE token_sha256 = ?1",
             params![digest],
             row_from,
@@ -142,7 +149,7 @@ pub fn find_by_id(db: &Db, id: &str) -> Result<Option<TokenRecord>, StoreError> 
     let connection = db.read();
     connection
         .query_row(
-            "SELECT id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at
+            "SELECT id, name, token_sha256, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at, limits_json
                FROM tokens WHERE id = ?1",
             params![id],
             row_from,
@@ -155,7 +162,7 @@ pub fn find_by_id(db: &Db, id: &str) -> Result<Option<TokenRecord>, StoreError> 
 pub fn list(db: &Db) -> Result<Vec<TokenInfo>, StoreError> {
     let connection = db.read();
     let mut statement = connection.prepare(
-        "SELECT id, name, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at
+        "SELECT id, name, prefix, scopes_json, created_at, last_used_at, expires_at, revoked_at, limits_json
            FROM tokens ORDER BY created_at DESC",
     )?;
     let rows = statement.query_map([], |row| {
@@ -169,10 +176,26 @@ pub fn list(db: &Db) -> Result<Vec<TokenInfo>, StoreError> {
             last_used_at: row.get(5)?,
             expires_at: row.get(6)?,
             revoked_at: row.get(7)?,
+            limits: row
+                .get::<_, Option<String>>(8)?
+                .and_then(|text| serde_json::from_str(&text).ok()),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(StoreError::from)
+}
+
+/// 设置/清除 key 限额（`PATCH /v2/admin/tokens/{id}`）。
+pub fn update_limits(
+    db: &Db,
+    id: &str,
+    limits: Option<&tr_contracts::KeyLimits>,
+) -> Result<bool, StoreError> {
+    let changed = db.write().execute(
+        "UPDATE tokens SET limits_json = ?2 WHERE id = ?1",
+        params![id, limits.map(serde_json::to_string).transpose()?,],
+    )?;
+    Ok(changed > 0)
 }
 
 /// 软删除（撤销）。返回是否存在。
@@ -219,6 +242,9 @@ fn row_from(row: &rusqlite::Row<'_>) -> Result<TokenRecord, rusqlite::Error> {
         last_used_at: row.get(6)?,
         expires_at: row.get(7)?,
         revoked_at: row.get(8)?,
+        limits: row
+            .get::<_, Option<String>>(9)?
+            .and_then(|text| serde_json::from_str(&text).ok()),
     })
 }
 
@@ -248,6 +274,7 @@ impl TryFrom<&CreateTokenRequest> for TokenRecord {
             last_used_at: None,
             expires_at: request.expires_at,
             revoked_at: None,
+            limits: None,
         })
     }
 }
@@ -269,6 +296,7 @@ mod tests {
             last_used_at: None,
             expires_at: None,
             revoked_at: None,
+            limits: None,
         }
     }
 

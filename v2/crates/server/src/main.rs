@@ -51,8 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .map_err(|error| format!("invalid listen address `{listen}`: {error}"))?;
 
+    // 数据面鉴权（v3 P5-B）：auth 开启时用 scoped token store（限额依赖 token 身份）；
+    // 仍保留配置里的单一 inbound key 作为兼容回退。
     let auth = if catalog.server.auth_enabled {
-        AuthMode::InboundKey(catalog.server.inbound_key.clone())
+        AuthMode::Tokens {
+            db: db.clone(),
+            fallback_inbound: Some(catalog.server.inbound_key.clone()),
+        }
     } else {
         AuthMode::Disabled
     };

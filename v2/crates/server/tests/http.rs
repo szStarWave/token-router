@@ -265,6 +265,7 @@ async fn admin_stats_matches_ledger() {
         last_used_at: None,
         expires_at: None,
         revoked_at: None,
+        limits: None,
     };
     tr_agent::store::tokens::insert(&db, &record).expect("insert token");
 
@@ -330,6 +331,7 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         last_used_at: None,
         expires_at: None,
         revoked_at: None,
+        limits: None,
     };
     tr_agent::store::tokens::insert(&db, &record).expect("insert token");
     let auth = tr_control::AdminAuth::new(db.clone(), None);
@@ -623,6 +625,7 @@ async fn events_endpoint_streams_config_applied() {
         last_used_at: None,
         expires_at: None,
         revoked_at: None,
+        limits: None,
     };
     tr_agent::store::tokens::insert(&db, &record).expect("insert token");
 
@@ -691,6 +694,88 @@ async fn events_endpoint_streams_config_applied() {
         .await
         .expect("response");
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    mock.shutdown();
+}
+
+/// v3 P5-B：token 限额超限 → 429 + Retry-After（数据面 token 鉴权）。
+#[tokio::test]
+#[allow(clippy::field_reassign_with_default)]
+async fn key_limit_exceeded_returns_429_with_retry_after() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Arc::new(Db::open_in_memory().expect("db"));
+    // 建一个带 inference scope + 限额的 token。
+    let plaintext = tr_agent::store::tokens::generate_token();
+    let record = tr_agent::store::tokens::TokenRecord {
+        id: "t-limited".to_string(),
+        name: "limited".to_string(),
+        token_sha256: tr_agent::store::tokens::sha256_hex(&plaintext),
+        prefix: plaintext.chars().take(8).collect(),
+        scopes: vec![tr_contracts::AdminScope::Inference],
+        created_at: 0,
+        last_used_at: None,
+        expires_at: None,
+        revoked_at: None,
+        limits: Some(tr_contracts::KeyLimits {
+            window: "day".to_string(),
+            tokens: 1,
+            cost_micros: 0,
+            models: Vec::new(),
+        }),
+    };
+    tr_agent::store::tokens::insert(&db, &record).expect("insert token");
+    // 账本里先记一笔（同一 authority，已用 15 token）。
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let mut ledger = tr_contracts::LedgerRecord::default();
+    ledger.request_id = uuid::Uuid::new_v4();
+    ledger.plan_id = "plan-limit".to_string();
+    ledger.session_key = "s-limit".to_string();
+    ledger.branch_id = "main".to_string();
+    ledger.selected_virtual_model = Some("auto".to_string());
+    ledger.selected_thinking_level = Some("off".to_string());
+    ledger.ingress_protocol = tr_contracts::IngressProtocol::ChatCompletions;
+    ledger.outcome = tr_contracts::OutcomeKind::Success;
+    ledger.created_at = now_secs;
+    ledger.authority = tr_contracts::RequestAuthority {
+        authority_id: "t-limited".to_string(),
+        ..tr_contracts::RequestAuthority::default()
+    };
+    ledger.input_tokens = Some(10);
+    ledger.output_tokens = Some(5);
+    ledger.answer_cost = Some(tr_contracts::Cost {
+        micros: 0,
+        currency: "USD".to_string(),
+    });
+    tr_agent::store::ledger::insert(&db, &ledger).expect("insert ledger");
+
+    let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(
+        pipeline,
+        AuthMode::Tokens {
+            db: db.clone(),
+            fallback_inbound: None,
+        },
+    ));
+
+    let response = app
+        .oneshot(post_chat(Some(&plaintext)))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("Retry-After header");
+    assert!(retry_after > 0, "Retry-After 必须是正数秒");
+
+    let body = body_text(response).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(value["error"]["type"], "rate_limit_error");
 
     mock.shutdown();
 }

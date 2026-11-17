@@ -1911,6 +1911,7 @@ dependencies = [
  "tr-upstream",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

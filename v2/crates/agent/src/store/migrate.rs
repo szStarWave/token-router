@@ -22,6 +22,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M5_TOKENS_AUDIT,
     M6_PROVIDERS,
     M7_ACCOUNT_HEADERS,
+    M8_QUOTA_LIMITS,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -334,4 +335,24 @@ ALTER TABLE accounts ADD COLUMN extra_headers_json TEXT;
 ALTER TABLE catalog_models ADD COLUMN auto_include_pattern TEXT;
 ALTER TABLE catalog_models ADD COLUMN deprecated INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE catalog_models ADD COLUMN deprecated_detected_at INTEGER;
+"#;
+
+/// migration 8（v3 P5-B）：上游配额观测与网关 key 限额。
+const M8_QUOTA_LIMITS: &str = r#"
+CREATE TABLE quota_windows (
+  candidate_id     TEXT PRIMARY KEY,
+  account_id       TEXT,
+  provider_id      TEXT,
+  remaining        INTEGER,
+  limit_value      INTEGER,
+  reset_at         INTEGER,
+  unit             TEXT NOT NULL DEFAULT 'unknown',
+  estimated        INTEGER NOT NULL DEFAULT 0,
+  consecutive_429  INTEGER NOT NULL DEFAULT 0,
+  updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX idx_quota_reset ON quota_windows(reset_at);
+
+ALTER TABLE tokens ADD COLUMN limits_json TEXT;
 "#;

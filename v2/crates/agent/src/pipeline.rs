@@ -290,7 +290,9 @@ impl Pipeline {
                 .map(|candidate| candidate.window)
                 .min()
         });
-        let signals = tr_core::build_signals(&request, Some(&facts), window_hint);
+        let mut signals = tr_core::build_signals(&request, Some(&facts), window_hint);
+        // v3 P5-B：配额信号（SignalBag 扩展位，内核不解析）。
+        inject_quota_signals(&self.db, &mut signals, &candidates, now_unix);
         let request_reason = context
             .request_reason
             .unwrap_or_else(|| reason::infer(&request));
@@ -725,6 +727,7 @@ impl Pipeline {
             }
 
             let outcome = self.upstream.execute(&candidate, &prepared.canonical).await;
+            record_quota(&self.db, &candidate.id, outcome.rate_limit.as_deref());
             attempts.push(AttemptRecord {
                 candidate_id: candidate.id.clone(),
                 error_class: outcome.failure.as_ref().map(|failure| failure.class),
@@ -882,6 +885,7 @@ impl Pipeline {
             {
                 Ok(attempt) => attempt,
                 Err(failure) => {
+                    record_quota(&self.db, &candidate.id, failure.rate_limit.as_deref());
                     attempts.push(AttemptRecord {
                         candidate_id: candidate.id.clone(),
                         error_class: Some(failure.class),
@@ -904,6 +908,7 @@ impl Pipeline {
                 }
             };
 
+            record_quota(&self.db, &candidate.id, attempt.rate_limit.as_deref());
             let mut events = attempt.events;
             match events.recv().await {
                 Some(StreamItem::Event(first)) => {
@@ -1000,6 +1005,7 @@ impl Pipeline {
                         message: Some("upstream ended before first event".to_string()),
                         retry_after_ms: None,
                         cause: tr_upstream::http::AttemptCause::MalformedResponse,
+                        rate_limit: None,
                     };
                     attempts.push(AttemptRecord {
                         candidate_id: candidate.id.clone(),
@@ -1808,6 +1814,7 @@ fn no_attempt_failure() -> AttemptFailure {
         message: Some("no attempt executed".to_string()),
         retry_after_ms: None,
         cause: tr_upstream::http::AttemptCause::Transport,
+        rate_limit: None,
     }
 }
 
@@ -1819,6 +1826,73 @@ fn with_cas_conflict(reasons: &[ReasonCode]) -> Vec<ReasonCode> {
             ReasonCodeKind::StateCasConflict,
         )))
         .collect()
+}
+
+/// 配额观测落库（v3 P5-B）。写失败只记日志，不影响请求结果。
+fn record_quota(
+    db: &store::Db,
+    candidate_id: &str,
+    snapshot: Option<&tr_contracts::RateLimitSnapshot>,
+) {
+    let Some(snapshot) = snapshot else { return };
+    if snapshot.is_empty() {
+        return;
+    }
+    let info = store::quota::snapshot(db, candidate_id).ok().flatten();
+    if let Err(error) = store::quota::record(
+        db,
+        candidate_id,
+        info.as_ref().and_then(|info| info.account_id.as_deref()),
+        info.as_ref().and_then(|info| info.provider_id.as_deref()),
+        snapshot,
+        now_millis(),
+    ) {
+        tracing::warn!(candidate = candidate_id, %error, "quota observation not persisted");
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 把配额状态注入 `Signals.extras`（v3 P5-B；唯一的信号邻接点）。
+///
+/// 键约定（`quota-reset` 策略消费）：
+/// - `quota.remaining.<candidate>`：`Int` 剩余额度（未知不写）；
+/// - `quota.reset_at.<candidate>`：`Int` 重置时间（Unix 毫秒）；
+/// - `quota.exhausted.<candidate>`：`Bool` 是否本窗口已耗尽。
+fn inject_quota_signals(
+    db: &store::Db,
+    signals: &mut tr_contracts::Signals,
+    candidates: &[Candidate],
+    now_unix: u64,
+) {
+    let now_millis = (now_unix as i64) * 1000;
+    for candidate in candidates {
+        let Ok(Some(info)) = store::quota::snapshot(db, &candidate.id) else {
+            continue;
+        };
+        if let Some(remaining) = info.remaining {
+            signals.extras.insert(
+                format!("quota.remaining.{}", candidate.id),
+                tr_contracts::SignalValue::Int(remaining),
+            );
+            let exhausted = remaining <= 0 && info.reset_at.is_none_or(|reset| reset > now_millis);
+            signals.extras.insert(
+                format!("quota.exhausted.{}", candidate.id),
+                tr_contracts::SignalValue::Bool(exhausted),
+            );
+        }
+        if let Some(reset_at) = info.reset_at {
+            signals.extras.insert(
+                format!("quota.reset_at.{}", candidate.id),
+                tr_contracts::SignalValue::Int(reset_at),
+            );
+        }
+    }
 }
 
 fn now_secs() -> u64 {
@@ -1879,7 +1953,10 @@ fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::
     use tr_core::strategy::{Baseline, Classify, CompetenceGuard, Escalation, Failover, Strategy};
 
     if virtual_model.strategies.is_empty() {
-        return tr_core::default_strategies();
+        // 默认策略集 + 配额感知（v3 P5-B）：默认只在有配额信号时过滤耗尽候选。
+        let mut strategies = tr_core::default_strategies();
+        strategies.push(Box::new(crate::strategy_quota::QuotaReset));
+        return strategies;
     }
 
     let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
@@ -1890,6 +1967,7 @@ fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::
             "escalation" => strategies.push(Box::new(Escalation)),
             "classify" => strategies.push(Box::new(Classify)),
             "competence_guard" => strategies.push(Box::new(CompetenceGuard)),
+            "quota-reset" => strategies.push(Box::new(crate::strategy_quota::QuotaReset)),
             // 未知策略由配置校验负责报错；运行时静默忽略并保持可用。
             _ => {}
         }

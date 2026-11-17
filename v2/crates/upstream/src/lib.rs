@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod http;
+pub mod rate_limit;
 pub mod stream;
 
 pub use http::{AttemptFailure, AttemptOutcome, HttpUpstream, set_data_dir};

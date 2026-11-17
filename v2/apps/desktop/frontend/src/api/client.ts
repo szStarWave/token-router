@@ -110,8 +110,10 @@ import type {
   DoctorResponse,
   HealthResponse,
   LogEntry,
+  KeyLimits,
   Page,
   ProviderInfo,
+  QuotaWindowInfo,
   ProviderTemplate,
   ProviderUpsertRequest,
   RequestDetail,
@@ -178,6 +180,12 @@ export const api = {
     admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/select`, request),
   compileCandidates: (request: CompileRequest) =>
     admin.post<CompileResponse>("/v2/admin/providers/compile", request),
+  // ── 配额与 key 限额（v3 P5-B）────────────────────────────────────────
+  quotaList: () => admin.get<{ items: QuotaWindowInfo[] }>("/v2/admin/quotas"),
+  quotaReset: (candidateId: string) =>
+    admin.del<{ ok: boolean }>(`/v2/admin/quotas/${candidateId}`),
+  updateTokenLimits: (id: string, limits: KeyLimits | null) =>
+    admin.patch<TokenInfo>(`/v2/admin/tokens/${id}`, { limits }),
 };
 
 export type { AdminScope };
@@ -192,6 +200,7 @@ export const queryKeys = {
   tokens: () => ["admin", "tokens"] as const,
   logs: (params: string) => ["admin", "logs", params] as const,
   providerTemplates: () => ["admin", "provider-templates"] as const,
+  quotas: () => ["admin", "quotas"] as const,
   providers: () => ["admin", "providers"] as const,
   provider: (id: string) => ["admin", "providers", id] as const,
   accounts: (providerId: string) => ["admin", "accounts", providerId] as const,

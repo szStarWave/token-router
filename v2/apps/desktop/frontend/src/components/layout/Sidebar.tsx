@@ -11,6 +11,7 @@ import { Icon, type IconName } from '../common/Icon'
 const NAV_ITEMS = [
   { to: '/overview', label: '总览', id: 'overview', icon: 'nav-overview' },
   { to: '/providers', label: 'Providers', id: 'providers', icon: 'nav-providers' },
+  { to: '/quotas', label: '配额', id: 'quotas', icon: 'nav-quotas' },
   { to: '/models', label: '候选模型', id: 'models', icon: 'nav-models' },
   { to: '/virtual-models', label: '虚拟模型', id: 'virtual-models', icon: 'nav-virtual-models' },
   { to: '/requests', label: '请求', id: 'requests', icon: 'nav-requests' },

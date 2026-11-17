@@ -43,12 +43,14 @@ import {
   X,
   type LucideIcon,
   Server,
+  Gauge,
 } from 'lucide-react'
 
 const ICONS = {
   // 导航
   'nav-overview': LayoutDashboard,
   'nav-providers': Server,
+  'nav-quotas': Gauge,
   'nav-models': Boxes,
   'nav-virtual-models': Layers,
   'nav-requests': Activity,

@@ -67,6 +67,7 @@ impl AdminAuth {
             last_used_at: None,
             expires_at: None,
             revoked_at: None,
+            limits: None,
         };
         tokens::insert(&self.db, &record)
             .map_err(|error| AdminApiError::internal(error.to_string()))?;
@@ -104,6 +105,7 @@ impl AdminAuth {
             last_used_at: None,
             expires_at: None,
             revoked_at: None,
+            limits: None,
         };
         tokens::insert(&self.db, &record)
             .map_err(|error| AdminApiError::internal(error.to_string()))

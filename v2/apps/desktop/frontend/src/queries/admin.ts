@@ -9,6 +9,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, adminRequest, queryKeys } from '../api/client'
+import type { KeyLimits } from '../api/types'
 export type { ApiError } from '../api/client'
 // 具体端点类型由 api/client.ts 封装；此处不再重复导入。
 
@@ -414,6 +415,43 @@ export function useCompileCandidatesMutation() {
       invalidate()
       // 编译产物写进了 config（candidates/virtual_models）。
       void queryClient.invalidateQueries({ queryKey: ['admin', 'config'] })
+    },
+  })
+}
+
+
+// ---------------------------------------------------------------------------
+// quotas / key limits（v3 P5-B）
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+export function useQuotasQuery(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.quotas(),
+    queryFn: () => api.quotaList(),
+    enabled,
+    refetchInterval: 15_000,
+    retry: 1,
+  })
+}
+
+export function useResetQuotaMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (candidateId: string) => api.quotaReset(candidateId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.quotas() })
+    },
+  })
+}
+
+export function useUpdateTokenLimitsMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, limits }: { id: string; limits: KeyLimits | null }) =>
+      api.updateTokenLimits(id, limits),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'tokens'] })
     },
   })
 }

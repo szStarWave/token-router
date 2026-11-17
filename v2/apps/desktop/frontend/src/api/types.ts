@@ -275,7 +275,11 @@ prefix: string, scopes: Array<AdminScope>,
 /**
  * Unix 毫秒。
  */
-created_at: number, last_used_at: number | null, expires_at: number | null, revoked_at: number | null, };
+created_at: number, last_used_at: number | null, expires_at: number | null, revoked_at: number | null, 
+/**
+ * 网关 key 限额（v3 P5-B）；`None` = 不限额。
+ */
+limits: KeyLimits | null, };
 
 /**
  * `GET /v2/admin/doctor` 检查项。
@@ -332,6 +336,36 @@ source: string, };
  * 判官维度汇总。
  */
 export type JudgeSummary = { calls: number, failed: number, cost_micros: number, };
+
+/**
+ * 限额命中详情（429 响应体）。
+ */
+export type KeyLimitHit = { token_id: string, window: string, used_tokens: number, limit_tokens: number, used_cost_micros: number, limit_cost_micros: number, 
+/**
+ * 窗口重置时间（Unix 毫秒）。
+ */
+reset_at: number, retry_after_secs: number, };
+
+/**
+ * 网关 key 限额（token 上配置）。
+ */
+export type KeyLimits = { 
+/**
+ * 窗口：`hour` / `day` / `week` / `month` / `hours:<n>`（计划 key 的 5h 节奏）。
+ */
+window: string, 
+/**
+ * token 预算（输入+输出）；0 = 不限。
+ */
+tokens: number, 
+/**
+ * 成本预算 micros；0 = 不限。
+ */
+cost_micros: number, 
+/**
+ * 只对列出的模型计限额（空 = 全部）。
+ */
+models: Array<string>, };
 
 /**
  * 统计延迟分位（毫秒）。
@@ -445,6 +479,39 @@ id?: string,
 template_id?: string, display_name?: string, kind?: ProviderKindDto, base_url?: string, catalog_url?: string, };
 
 /**
+ * 账号配额窗口状态（管理面 `GET /v2/admin/quotas`）。
+ */
+export type QuotaWindowInfo = { 
+/**
+ * 候选 id（编译期 `{provider}-{model}-{account}`）。
+ */
+candidate_id: string, 
+/**
+ * 账号 id（能关联到 account 时）。
+ */
+account_id: string | null, 
+/**
+ * provider id（derived，用于分组显示）。
+ */
+provider_id: string | null, remaining: number | null, limit: number | null, 
+/**
+ * 重置时间（Unix 毫秒）。
+ */
+reset_at: number | null, unit: string, 
+/**
+ * `true` = 本地计数估算（上游没给标准头）。
+ */
+estimated: boolean, 
+/**
+ * 连续 429 次数。
+ */
+consecutive_429: number, 
+/**
+ * 最近一次观测时间。
+ */
+updated_at: number, };
+
+/**
  * `GET /v2/admin/requests/{id}`：列表字段 + 决策详情。
  */
 export type RequestDetail = { task_id: string | null, session_key_source: string, collision_suspect: boolean, selection_level: string, dispatch_provider: string | null, dispatch_level: string | null, plan_mode: string, preference: JsonValue, failover: JsonValue, attempts: Array<AttemptSummary>, switches: number, cache_write_tokens: number, facts_completeness: string, profile_revision: string | null, config_digest: string | null, judge: JsonValue | null, contributions: JsonValue, authority: JsonValue | null, request_id: string, 
@@ -536,12 +603,25 @@ prefix: string, scopes: Array<AdminScope>,
 /**
  * Unix 毫秒。
  */
-created_at: number, last_used_at: number | null, expires_at: number | null, revoked_at: number | null, };
+created_at: number, last_used_at: number | null, expires_at: number | null, revoked_at: number | null, 
+/**
+ * 网关 key 限额（v3 P5-B）；`None` = 不限额。
+ */
+limits: KeyLimits | null, };
 
 /**
  * token 维度（账本列表项）。
  */
 export type TokenUsage = { input: number, cache_read: number, output: number, };
+
+/**
+ * `PATCH /v2/admin/tokens/{id}`：设置或清除限额。
+ */
+export type UpdateTokenLimitsRequest = { 
+/**
+ * 传 `null` 清除限额。
+ */
+limits?: KeyLimits, };
 
 /**
  * `POST /v2/admin/config/validate` 响应。

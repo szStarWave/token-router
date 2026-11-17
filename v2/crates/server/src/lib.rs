@@ -19,11 +19,16 @@ use tr_agent::pipeline::{DecisionHeaders, Pipeline, PipelineError, RequestContex
 use tr_contracts::{IngressProtocol, RequestAuthority};
 use tr_proto::chat;
 
-/// 鉴权方式（P0 只有入站 key）。
+/// 鉴权方式。
 #[derive(Clone)]
 pub enum AuthMode {
     Disabled,
     InboundKey(String),
+    /// v3 P5-B：scoped token 鉴权（数据面）；可选回退到单一入站 key。
+    Tokens {
+        db: Arc<tr_agent::store::Db>,
+        fallback_inbound: Option<String>,
+    },
 }
 
 /// 鉴权失败（不携带原因，避免把“哪里不对”回显给客户端）。
@@ -42,6 +47,37 @@ impl Authenticator for AuthMode {
                 authority_id: "anonymous".to_string(),
                 ..RequestAuthority::default()
             }),
+            Self::Tokens {
+                db,
+                fallback_inbound,
+            } => {
+                let provided = bearer_or_api_key(headers).ok_or(AuthError)?;
+                if let Ok(Some(record)) =
+                    tr_agent::store::tokens::find_active_by_plaintext(db, provided, now_millis())
+                {
+                    // 数据面 token 必须有 inference scope。
+                    if !record.scopes.contains(&tr_contracts::AdminScope::Inference) {
+                        return Err(AuthError);
+                    }
+                    return Ok(RequestAuthority {
+                        authority_id: record.id,
+                        ..RequestAuthority::default()
+                    });
+                }
+                // 兼容：仍配置单一入站 key 时允许旧客户端。
+                match fallback_inbound {
+                    Some(expected)
+                        if !expected.is_empty()
+                            && constant_time_eq(provided.as_bytes(), expected.as_bytes()) =>
+                    {
+                        Ok(RequestAuthority {
+                            authority_id: "inbound_key".to_string(),
+                            ..RequestAuthority::default()
+                        })
+                    }
+                    _ => Err(AuthError),
+                }
+            }
             Self::InboundKey(expected) => {
                 if expected.is_empty() {
                     return Err(AuthError);
@@ -68,6 +104,43 @@ impl Authenticator for AuthMode {
             }
         }
     }
+}
+
+/// 从 Authorization Bearer 或 x-api-key 提取入站 key。
+fn bearer_or_api_key(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        })
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 网关 key 限额检查（v3 P5-B）。返回 `Some(hit)` 表示应拒绝（429）。
+fn check_key_limits(
+    state: &AppState,
+    authority: &RequestAuthority,
+    request_model: &str,
+) -> Option<tr_contracts::KeyLimitHit> {
+    // 只有 token 身份限额；匿名 / inbound key 不受限。
+    let db = state.pipeline.db();
+    let token = tr_agent::store::tokens::find_by_id(db, &authority.authority_id)
+        .ok()
+        .flatten()?;
+    let limits = token.limits.as_ref()?;
+    tr_agent::store::limits::check_limits(db, &token.id, limits, request_model, now_millis())
+        .ok()
+        .flatten()
 }
 
 /// HTTP 应用状态。
@@ -229,6 +302,32 @@ async fn handle_ingress(
     };
     // 协议形状修复：工具调用配对、空消息清理（不改语义）。
     let _fixes = tr_proto::compat::repair(&mut request);
+
+    // v3 P5-B：网关 key 限额（按请求模型过滤子集），超限 429 + Retry-After。
+    if let Some(hit) = check_key_limits(
+        &state,
+        &authority,
+        &request.meta.virtual_model.clone().unwrap_or_default(),
+    ) {
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": format!(
+                        "key limit exceeded (window={}, used_tokens={}, limit_tokens={}, used_cost_micros={}, limit_cost_micros={})",
+                        hit.window, hit.used_tokens, hit.limit_tokens, hit.used_cost_micros, hit.limit_cost_micros
+                    ),
+                    "limit": hit,
+                }
+            })),
+        )
+            .into_response();
+        if let Ok(value) = HeaderValue::from_str(&hit.retry_after_secs.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
+    }
 
     let context = RequestContext {
         server_session_id: header_string(&headers, "x-token-router-session-id"),

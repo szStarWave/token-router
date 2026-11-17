@@ -419,6 +419,9 @@ pub struct TokenInfo {
     pub expires_at: Option<i64>,
     #[ts(as = "Option<i64>")]
     pub revoked_at: Option<i64>,
+    /// 网关 key 限额（v3 P5-B）；`None` = 不限额。
+    #[ts(as = "Option<crate::quota::KeyLimits>")]
+    pub limits: Option<crate::quota::KeyLimits>,
 }
 
 /// `POST /v2/admin/tokens` 响应：明文只返回一次。

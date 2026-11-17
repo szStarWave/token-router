@@ -37,6 +37,8 @@ pub struct AttemptFailure {
     pub message: Option<String>,
     pub retry_after_ms: Option<u64>,
     pub cause: AttemptCause,
+    /// 配额观测（429 或带限流头）；无观测为 `None`。装箱避免 Err 变大。
+    pub rate_limit: Option<Box<tr_contracts::RateLimitSnapshot>>,
 }
 
 /// 一次 attempt 的结果。
@@ -48,6 +50,8 @@ pub struct AttemptOutcome {
     pub http_status: Option<u16>,
     pub duration_ms: u64,
     pub ttft_ms: Option<u64>,
+    /// 成功响应的限流头观测（失败时在 `failure.rate_limit`）。
+    pub rate_limit: Option<Box<tr_contracts::RateLimitSnapshot>>,
 }
 
 impl AttemptOutcome {
@@ -62,6 +66,13 @@ pub struct HttpUpstream {
     pub(crate) client: Client,
     /// 单次请求超时（每 key 代理时按候选重建 client 需要）。
     pub(crate) timeout: Duration,
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// 默认客户端：120s 单次请求超时（P0a 非流式）。
@@ -88,16 +99,18 @@ impl HttpUpstream {
     ) -> AttemptOutcome {
         let started = Instant::now();
         match self.try_execute(candidate, request).await {
-            Ok(response) => AttemptOutcome {
+            Ok((response, rate_limit)) => AttemptOutcome {
                 candidate_id: candidate.id.clone(),
                 http_status: Some(200),
                 response: Some(response),
                 failure: None,
                 duration_ms: started.elapsed().as_millis() as u64,
                 ttft_ms: None,
+                rate_limit,
             },
             Err((failure, status)) => AttemptOutcome {
                 candidate_id: candidate.id.clone(),
+                rate_limit: failure.rate_limit.clone(),
                 response: None,
                 failure: Some(failure),
                 http_status: status,
@@ -111,7 +124,13 @@ impl HttpUpstream {
         &self,
         candidate: &Candidate,
         request: &CanonicalRequest,
-    ) -> Result<CanonicalResponse, (AttemptFailure, Option<u16>)> {
+    ) -> Result<
+        (
+            CanonicalResponse,
+            Option<Box<tr_contracts::RateLimitSnapshot>>,
+        ),
+        (AttemptFailure, Option<u16>),
+    > {
         if candidate.upstream.provider != ProviderKind::OpenAiCompatible {
             return Err((
                 AttemptFailure {
@@ -123,6 +142,7 @@ impl HttpUpstream {
                     )),
                     retry_after_ms: None,
                     cause: AttemptCause::UnsupportedProvider,
+                    rate_limit: None,
                 },
                 None,
             ));
@@ -180,6 +200,7 @@ impl HttpUpstream {
                     message: Some(error.to_string()),
                     retry_after_ms: None,
                     cause: AttemptCause::Transport,
+                    rate_limit: None,
                 },
                 None,
             )
@@ -204,6 +225,7 @@ impl HttpUpstream {
                     message: Some(error.to_string()),
                     retry_after_ms: None,
                     cause: AttemptCause::Transport,
+                    rate_limit: None,
                 },
                 Some(status.as_u16()),
             )
@@ -213,6 +235,9 @@ impl HttpUpstream {
             let body: Value = serde_json::from_str(&text)
                 .unwrap_or_else(|_| serde_json::json!({"error": {"message": text}}));
             let classified = tr_proto::errors::classify(status.as_u16(), &headers, &body);
+            let rate_limit =
+                crate::rate_limit::parse_rate_limit(&headers, status.as_u16(), now_millis())
+                    .map(Box::new);
             return Err((
                 AttemptFailure {
                     class: classified.class,
@@ -220,10 +245,14 @@ impl HttpUpstream {
                     message: classified.message,
                     retry_after_ms: classified.retry_after_ms,
                     cause: AttemptCause::HttpStatus,
+                    rate_limit,
                 },
                 Some(status.as_u16()),
             ));
         }
+        let rate_limit =
+            crate::rate_limit::parse_rate_limit(&headers, status.as_u16(), now_millis())
+                .map(Box::new);
 
         let value: Value = serde_json::from_str(&text).map_err(|error| {
             (
@@ -233,23 +262,27 @@ impl HttpUpstream {
                     message: Some(error.to_string()),
                     retry_after_ms: None,
                     cause: AttemptCause::MalformedResponse,
+                    rate_limit: None,
                 },
                 Some(status.as_u16()),
             )
         })?;
 
-        chat::decode_response(&value).map_err(|error| {
-            (
-                AttemptFailure {
-                    class: ErrorClass::Protocol,
-                    status: Some(status.as_u16()),
-                    message: Some(error.to_string()),
-                    retry_after_ms: None,
-                    cause: AttemptCause::MalformedResponse,
-                },
-                Some(status.as_u16()),
-            )
-        })
+        chat::decode_response(&value)
+            .map(|response| (response, rate_limit))
+            .map_err(|error| {
+                (
+                    AttemptFailure {
+                        class: ErrorClass::Protocol,
+                        status: Some(status.as_u16()),
+                        message: Some(error.to_string()),
+                        retry_after_ms: None,
+                        cause: AttemptCause::MalformedResponse,
+                        rate_limit: None,
+                    },
+                    Some(status.as_u16()),
+                )
+            })
     }
 }
 
@@ -327,6 +360,7 @@ fn credential_failure(message: String) -> AttemptFailure {
         message: Some(message),
         retry_after_ms: None,
         cause: AttemptCause::Credential,
+        rate_limit: None,
     }
 }
 

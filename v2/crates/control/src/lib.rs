@@ -57,7 +57,10 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/shadow", get(shadow))
         .route("/v2/admin/approvals", get(approvals).post(record_approval))
         .route("/v2/admin/tokens", get(tokens_list).post(tokens_create))
-        .route("/v2/admin/tokens/{id}", delete(tokens_revoke))
+        .route(
+            "/v2/admin/tokens/{id}",
+            delete(tokens_revoke).patch(tokens_update_limits),
+        )
         .route("/v2/admin/logs", get(logs_endpoint))
         .route("/v2/admin/events", get(events_endpoint))
         .route("/v2/admin/shutdown", post(shutdown))
@@ -95,6 +98,8 @@ pub fn router(state: ControlState) -> Router {
         )
         .route("/v2/admin/providers/compile", post(providers_compile))
         .route("/v2/admin/providers/import", post(providers_import))
+        .route("/v2/admin/quotas", get(quotas_list))
+        .route("/v2/admin/quotas/{id}", delete(quotas_reset))
         .with_state(state)
 }
 
@@ -562,6 +567,7 @@ async fn tokens_create(
         last_used_at: None,
         expires_at: token_record.expires_at,
         revoked_at: None,
+        limits: None,
     };
     Ok(Json(tr_contracts::CreatedToken {
         info,
@@ -1063,4 +1069,46 @@ async fn providers_import(
 ) -> Result<Response, AdminApiError> {
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
     Ok(Json(provider_service::import_scan(&state, body)?).into_response())
+}
+
+/// `GET /v2/admin/quotas`：各候选的配额窗口视图（v3 P5-B）。
+async fn quotas_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let items = tr_agent::store::quota::list(state.pipeline.db())?;
+    Ok(Json(serde_json::json!({ "items": items })).into_response())
+}
+
+/// `DELETE /v2/admin/quotas/{id}`：手动清除某候选的配额窗口（上游恢复后立即生效）。
+async fn quotas_reset(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let reset = tr_agent::store::quota::reset(state.pipeline.db(), &id)?;
+    Ok(Json(serde_json::json!({ "ok": reset })).into_response())
+}
+
+/// `PATCH /v2/admin/tokens/{id}`：设置/清除网关 key 限额（v3 P5-B）。
+async fn tokens_update_limits(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<tr_contracts::UpdateTokenLimitsRequest>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    if tr_agent::store::tokens::find_by_id(state.pipeline.db(), &id)?.is_none() {
+        return Err(AdminApiError::not_found(format!("token {id} not found")));
+    }
+    let limits = body.limits.as_ref();
+    tr_agent::store::tokens::update_limits(state.pipeline.db(), &id, limits)?;
+    let items = tr_agent::store::tokens::list(state.pipeline.db())?;
+    let info = items
+        .into_iter()
+        .find(|token| token.id == id)
+        .ok_or_else(|| AdminApiError::internal("token vanished after update"))?;
+    Ok(Json(info).into_response())
 }

@@ -70,6 +70,9 @@ reason_kinds! {
     ApprovalDenied => "APPROVAL_DENIED",
     // 胜任度保护（CompetenceGuard）
     CompetenceProtected => "COMPETENCE_PROTECTED",
+    // 配额（v3 P5-B）
+    QuotaDepleted => "QUOTA_DEPLETED",
+    QuotaResetPreferred => "QUOTA_RESET_PREFERRED",
     CompetenceTaskChanged => "COMPETENCE_TASK_CHANGED",
     // 状态/协议
     StateCasConflict => "STATE_CAS_CONFLICT",
