@@ -8,7 +8,7 @@
  * - 错误映射 ApiError；组件用 `<QueryState>` 统一加载/空/错。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, adminRequest, queryKeys } from '../api/client'
+import { api, queryKeys } from '../api/client'
 import type { KeyLimits } from '../api/types'
 export type { ApiError } from '../api/client'
 // 具体端点类型由 api/client.ts 封装；此处不再重复导入。
@@ -210,7 +210,7 @@ export function useCreateTokenMutation() {
   return useMutation({
     mutationFn: (request: {
       name: string
-      scopes: Array<'inference' | 'admin_read' | 'admin_write' | 'admin_approve'>
+      scopes: Array<'inference' | 'admin_read' | 'admin_write'>
       expires_at: number | null
     }) => api.createToken(request),
     onSuccess: () => {
@@ -244,45 +244,6 @@ export function useLogsQuery(params: { limit?: number; level?: string; target?: 
     queryFn: () => api.logs(query),
     enabled,
     retry: 1,
-  })
-}
-
-// ---------------------------------------------------------------------------
-// approvals（服务端 M1 已有 GET/POST）
-// ---------------------------------------------------------------------------
-
-export interface ApprovalRow {
-  id: number
-  request_id: string
-  session_key: string | null
-  tool_name: string
-  risk_class: string
-  decision: string
-  operator: string | null
-  created_at: number
-}
-
-export function useApprovalsQuery(limit = 50, enabled = true) {
-  return useQuery({
-    queryKey: ['admin', 'approvals', limit],
-    queryFn: () => adminRequest<{ items: ApprovalRow[] }>("GET", `/v2/admin/approvals?limit=${limit}`),
-    enabled,
-    retry: 1,
-  })
-}
-
-export function useRecordApprovalMutation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (body: {
-      request_id: string
-      tool_name: string
-      risk_class: string
-      decision: string
-    }) => adminRequest<{ ok: boolean }>("POST", "/v2/admin/approvals", body),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['admin', 'approvals'] })
-    },
   })
 }
 

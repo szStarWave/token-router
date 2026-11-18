@@ -34,7 +34,7 @@ workspace 位于 `v2/`，12 个 crate（包名统一 `tr-` 前缀）：
 | `agent` | 会话状态、latch、账本、shadow、编排、事务提交 | 内核唯一编排点 |
 | `upstream` | provider 客户端、流式、接力 | 唯一 HTTP 边界；ErrorClass 归一化只在此 |
 | `server` | axum 组装、入站鉴权、模型端点、健康 | 不直调 core/decide，一律经 agent |
-| `control` | `/v2/admin` 管理 API：配置/诊断/账本查询/token/审批 | 内核无感知（P4 增量） |
+| `control` | `/v2/admin` 管理 API：配置/诊断/账本查询/token | 内核无感知（P4 增量） |
 | `cli` | `tr-cli`：check-config/doctor/replay/eval/admin 等 | `replay` 是唯一直调 `core::decide` 的例外（只读） |
 | `client` | 管理 API 的 Rust 客户端（P4） | 供 CLI/桌面壳使用 |
 | `onboard` | agent 配置发现与精确合并、WSL（P4） | 幂等、保留用户配置 |
@@ -134,7 +134,7 @@ SessionFacts/StrategyState/Health 加载
 
 SQLite，金额整数 micros（禁 REAL），时间 Unix millis。`ledger` 逐请求记录：selection/dispatch、plan_mode、preference/failover、**attempts_json**（逐 attempt 候选/ErrorClass/耗时/是否提交）、switches、reason_codes、outcome、tokens、**answer_cost / routing_cost 分账**（判官成本入 routing）、ttft/duration、config_digest/profile_revision、judge/contributions/authority。
 
-其余表：sessions、strategy_states、virtual_model_states、shadow_records、circuit_breakers、protocol_state、judge_calls、approvals、tokens、config_audit（后两者 P4）。保留期：账本 30 天、breaker 24h、protocol_state 7 天、approvals 90 天。
+其余表：sessions、strategy_states、virtual_model_states、shadow_records、circuit_breakers、protocol_state、judge_calls、tokens、config_audit（后两者 P4）。保留期：账本 30 天、breaker 24h、protocol_state 7 天。
 
 统计只聚合账本（与直接 SQL 同源）；评测用自带 checker 判成功，不用 LLM 判。
 
@@ -142,7 +142,7 @@ SQLite，金额整数 micros（禁 REAL），时间 Unix millis。`ledger` 逐�
 
 ### 7.1 内核配置（§18.2）
 
-`config.toml`，`schema_version = 1`（代码严格校验）。段：`[server]`、`[profiles.*]`、`[[candidates]]`、`[[virtual_models]]`、`[judge]`、`[cost_gate]`、`[approvals]`、`[trust_tiers]`。字段参考见 [配置指南](./guide/configuration.zh.md)。
+`config.toml`，`schema_version = 1`（代码严格校验）。段：`[server]`、`[profiles.*]`、`[[candidates]]`、`[[virtual_models]]`、`[judge]`、`[cost_gate]`、`[trust_tiers]`。字段参考见 [配置指南](./guide/configuration.zh.md)。
 
 - credential 只存引用（`env:`/`file:`/`keyring:`）；env 只许覆盖 secrets 与 listen。
 - `deny_unknown_fields`；版本超前拒启动。
@@ -158,12 +158,12 @@ SQLite，金额整数 micros（禁 REAL），时间 Unix millis。`ledger` 逐�
 
 - 明文 key 不落库、不回显、不进日志/账本/Plan；API 只返回引用字符串。
 - 日志默认脱敏正文与工具参数；shadow 记录 30 天脱敏。
-- **审批** `[approvals]` off/observe/enforce：访问上游前扫描 ToolUse 按工具名分级（未知=high），`risk >= min_risk` 才拦截；本地 approvals 表 + TTL；enforce + fail_closed 返回 428/403。方向刻意不对称：**路由判官 fail-open，审批 fail-closed**。
+- 审批闸已于 2026-11-18 移除：网关不做请求内容级拦截（不扫描 ToolUse、不做高危工具拦截），只做路由决策。
 
 P4 桌面增量：
 
 - 管理面走本机 `/v2/admin`；admin token 不进 WebView（Rust 侧内存注入 Bearer），UI 全部经代理（路径/方法白名单、8MiB 上限）。
-- scoped token（inference/admin:read/admin:write/admin:approve），SHA-256 存库；首启生成 bootstrap token 写 `<config目录>/admin.token`。
+- scoped token（inference/admin:read/admin:write），SHA-256 存库；首启生成 bootstrap token 写 `<config目录>/admin.token`。
 - supervisor 崩溃退避重启（1..16s ×5）、孤儿进程清理。
 
 ## 9. 明确不做（§14、§2.2）

@@ -25,8 +25,6 @@ pub enum AdminScope {
     AdminRead,
     /// `config/apply`、`config/rollback`、token 管理、shutdown。
     AdminWrite,
-    /// 审批写操作。
-    AdminApprove,
 }
 
 impl AdminScope {
@@ -35,7 +33,6 @@ impl AdminScope {
             Self::Inference => "inference",
             Self::AdminRead => "admin:read",
             Self::AdminWrite => "admin:write",
-            Self::AdminApprove => "admin:approve",
         }
     }
 
@@ -44,7 +41,6 @@ impl AdminScope {
             "inference" => Some(Self::Inference),
             "admin:read" | "admin_read" => Some(Self::AdminRead),
             "admin:write" | "admin_write" => Some(Self::AdminWrite),
-            "admin:approve" | "admin_approve" => Some(Self::AdminApprove),
             _ => None,
         }
     }
@@ -97,7 +93,6 @@ pub struct StatusResponse {
 pub struct ModeSummary {
     pub judge: String,
     pub cost_gate: String,
-    pub approvals: String,
 }
 
 /// 熔断计数。
@@ -513,7 +508,6 @@ mod tests {
             AdminScope::Inference,
             AdminScope::AdminRead,
             AdminScope::AdminWrite,
-            AdminScope::AdminApprove,
         ] {
             assert_eq!(AdminScope::parse(scope.as_str()), Some(scope));
         }

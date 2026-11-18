@@ -345,7 +345,6 @@ fn diff_documents(
         "default_virtual_model": old.default_virtual_model,
         "judge": mode_label(&old.judge.mode),
         "cost_gate": mode_label_cost(&old.cost_gate),
-        "approvals": old.approvals.mode.as_str(),
         "candidates_count": old.candidates.len(),
         "virtual_models_count": old.virtual_models.len(),
     });
@@ -353,7 +352,6 @@ fn diff_documents(
         "default_virtual_model": new_file.default_virtual_model,
         "judge": new_file.judge.mode,
         "cost_gate": new_file.cost_gate.mode,
-        "approvals": new_file.approvals.mode,
         "candidates_count": new_file.candidates.len(),
         "virtual_models_count": new_file.virtual_models.len(),
     });

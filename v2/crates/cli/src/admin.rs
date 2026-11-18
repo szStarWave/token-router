@@ -194,7 +194,7 @@ async fn run_async(
                 print(&serde_json::to_value(&status)?, json);
             } else {
                 println!(
-                    "v{} api_v{} listen={} uptime={}ms digest={} judge={} cost_gate={} approvals={} requests={}",
+                    "v{} api_v{} listen={} uptime={}ms digest={} judge={} cost_gate={} requests={}",
                     status.version,
                     status.api_version,
                     status.listen,
@@ -202,7 +202,6 @@ async fn run_async(
                     &status.config_digest[..16.min(status.config_digest.len())],
                     status.modes.judge,
                     status.modes.cost_gate,
-                    status.modes.approvals,
                     status.requests_total,
                 );
                 println!(

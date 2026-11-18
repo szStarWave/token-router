@@ -45,8 +45,6 @@ pub struct Catalog {
     pub judge: JudgeSettings,
     /// 成本闸模式（P2 默认 shadow）。
     pub cost_gate: crate::gate::CostGateMode,
-    /// 审批实时拦截（P3 默认 off）。
-    pub approvals: crate::approval::ApprovalSettings,
     /// 信任档位别名 → profile（P3-14）。只换别名，不改虚拟模型与内核。
     pub trust_tiers: BTreeMap<String, ProfileId>,
     /// 规范化配置的 SHA-256，写入账本与快照。
@@ -137,37 +135,9 @@ pub struct ConfigFile {
     pub judge: JudgeFile,
     #[serde(default)]
     pub cost_gate: CostGateFile,
-    #[serde(default)]
-    pub approvals: ApprovalFile,
     /// 信任档位别名（P3-14）：`trial = "profile-id"`。
     #[serde(default)]
     pub trust_tiers: BTreeMap<String, ProfileId>,
-}
-
-/// 审批配置（§12）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ApprovalFile {
-    /// `off` | `observe` | `enforce`
-    pub mode: String,
-    /// 审批结论有效期（秒）。
-    pub ttl_secs: u64,
-    /// 达到该风险等级才需要审批：`low` | `medium` | `high`。
-    pub min_risk: String,
-    /// `enforce` 下是否 fail-closed（默认 true）。
-    pub fail_closed: bool,
-}
-
-impl Default for ApprovalFile {
-    fn default() -> Self {
-        let settings = crate::approval::ApprovalSettings::default();
-        Self {
-            mode: settings.mode.as_str().to_string(),
-            ttl_secs: settings.ttl_secs,
-            min_risk: settings.min_risk.as_str().to_string(),
-            fail_closed: settings.fail_closed,
-        }
-    }
 }
 
 /// 成本闸配置。
@@ -505,21 +475,6 @@ impl ConfigFile {
                     self.cost_gate.mode
                 ))
             })?;
-        let approval_mode =
-            crate::approval::ApprovalMode::parse(&self.approvals.mode).ok_or_else(|| {
-                ConfigError::Invalid(format!(
-                    "approvals.mode 只能是 off/observe/enforce，得到 `{}`",
-                    self.approvals.mode
-                ))
-            })?;
-        let min_risk = crate::store::approvals::RiskClass::parse(&self.approvals.min_risk)
-            .ok_or_else(|| {
-                ConfigError::Invalid(format!(
-                    "approvals.min_risk 只能是 low/medium/high，得到 `{}`",
-                    self.approvals.min_risk
-                ))
-            })?;
-
         // 信任档位只做别名：目标 profile 必须存在，否则评审时看到的是“静默不生效”。
         for (alias, profile_id) in &self.trust_tiers {
             if !profiles.contains_key(profile_id) {
@@ -537,12 +492,6 @@ impl ConfigFile {
             virtual_models,
             judge,
             cost_gate,
-            approvals: crate::approval::ApprovalSettings {
-                mode: approval_mode,
-                ttl_secs: self.approvals.ttl_secs,
-                min_risk,
-                fail_closed: self.approvals.fail_closed,
-            },
             trust_tiers: self.trust_tiers,
             config_digest,
         })

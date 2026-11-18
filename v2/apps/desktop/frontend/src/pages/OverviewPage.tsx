@@ -150,8 +150,7 @@ export function OverviewPage() {
                 <div className="app-kv-item">
                   <dt className="app-kv-key">模式</dt>
                   <dd className="app-kv-value">
-                    判官 {status.modes.judge} / 成本闸 {status.modes.cost_gate} / 审批{' '}
-                    {status.modes.approvals}
+                    判官 {status.modes.judge} / 成本闸 {status.modes.cost_gate}
                   </dd>
                 </div>
                 <div className="app-kv-item">

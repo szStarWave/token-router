@@ -6,7 +6,6 @@
 //! 仓储函数全部是显式传参的纯 DB 操作，不做策略判断；`agent::pipeline` 负责串联。
 
 pub mod admin_query;
-pub mod approvals;
 pub mod config_audit;
 pub mod health;
 pub mod judge;

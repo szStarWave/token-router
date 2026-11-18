@@ -7,14 +7,16 @@ import { useLiveEvents } from '../../hooks/useLiveEvents'
 
 const PAGE_TITLES: Record<string, string> = {
   overview: '总览',
+  providers: 'Providers',
+  quotas: '配额',
   models: '候选模型',
   'virtual-models': '虚拟模型',
   requests: '请求',
   stats: '统计',
   logs: '日志',
+  playground: 'Playground',
   onboarding: '接入',
   tokens: 'Token',
-  approvals: '审批',
   diagnostics: '诊断',
   settings: '设置',
 }

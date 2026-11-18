@@ -65,9 +65,6 @@ reason_kinds! {
     EscalationCooldown => "ESCALATION_COOLDOWN",
     ClassifyPrefer => "CLASSIFY_PREFER",
     CoreFallback => "CORE_FALLBACK",
-    // 审批（HITL）
-    ApprovalRequired => "APPROVAL_REQUIRED",
-    ApprovalDenied => "APPROVAL_DENIED",
     // 胜任度保护（CompetenceGuard）
     CompetenceProtected => "COMPETENCE_PROTECTED",
     // 配额（v3 P5-B）

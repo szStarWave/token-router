@@ -56,7 +56,6 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/stats/series", get(stats_series))
         .route("/v2/admin/stats/models", get(stats_models))
         .route("/v2/admin/shadow", get(shadow))
-        .route("/v2/admin/approvals", get(approvals).post(record_approval))
         .route("/v2/admin/tokens", get(tokens_list).post(tokens_create))
         .route(
             "/v2/admin/tokens/{id}",
@@ -146,7 +145,6 @@ async fn status(
         modes: tr_contracts::ModeSummary {
             judge: mode_label(&catalog.judge.mode).to_string(),
             cost_gate: mode_label_cost(&catalog.cost_gate).to_string(),
-            approvals: catalog.approvals.mode.as_str().to_string(),
         },
         requests_total,
         breakers: counts,
@@ -461,7 +459,7 @@ fn resolve_window(from: Option<i64>, to: Option<i64>) -> Result<(i64, i64), Admi
 }
 
 // ---------------------------------------------------------------------------
-// shadow / approvals（保留 v2 既有能力，补 scope）
+// shadow（保留 v2 既有能力，补 scope）
 // ---------------------------------------------------------------------------
 
 async fn shadow(
@@ -481,50 +479,6 @@ async fn shadow(
         "total_cost_micros": summary.total_cost_micros,
     }))
     .into_response())
-}
-
-async fn approvals(
-    State(state): State<ControlState>,
-    headers: HeaderMap,
-    Query(query): Query<LimitQuery>,
-) -> Result<Response, AdminApiError> {
-    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
-    let rows = tr_agent::store::approvals::list(state.pipeline.db(), query.limit)?;
-    Ok(Json(json!({ "items": rows })).into_response())
-}
-
-#[derive(Debug, Deserialize)]
-struct ApprovalBody {
-    request_id: String,
-    #[serde(default)]
-    session_key: Option<String>,
-    tool_name: String,
-    risk_class: String,
-    decision: String,
-    #[serde(default)]
-    operator: Option<String>,
-}
-
-async fn record_approval(
-    State(state): State<ControlState>,
-    headers: HeaderMap,
-    Json(body): Json<ApprovalBody>,
-) -> Result<Response, AdminApiError> {
-    state
-        .auth
-        .authenticate(&headers, AdminScope::AdminApprove)?;
-    let record = tr_agent::store::approvals::ApprovalRecord {
-        request_id: body.request_id,
-        session_key: body.session_key,
-        tool_name: body.tool_name,
-        risk_class: body.risk_class,
-        decision: body.decision,
-        operator: body.operator,
-        wait_ms: None,
-        created_at: now_secs(),
-    };
-    tr_agent::store::approvals::insert(state.pipeline.db(), &record)?;
-    Ok(Json(json!({"ok": true})).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -884,13 +838,6 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
         .unwrap_or(0)
 }
 

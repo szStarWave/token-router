@@ -12,6 +12,7 @@ Token Router 是一个本地 LLM 网关：把多个 coding agent 的模型请求
 |---|---|---|
 | [product.zh.md](./product.zh.md) | 产品定位、与 magpie/OmniRoute 对标、核心能力、已知限制 | 现行 |
 | [roadmap.zh.md](./roadmap.zh.md) | v3 路线图：Provider 层、配额、分析、Playground（P5-A~D） | 草案 |
+| [research/competitor-omniroute-magpie.zh.md](./research/competitor-omniroute-magpie.zh.md) | 竞品深度调研（2026-11-17 一手来源快照，逐模块逐功能带来源 URL） | 快照 |
 
 ### 使用指南（guide/）
 
@@ -21,6 +22,17 @@ Token Router 是一个本地 LLM 网关：把多个 coding agent 的模型请求
 | [guide/configuration.zh.md](./guide/configuration.zh.md) | config.toml 配置参考 |
 | [guide/agents.zh.md](./guide/agents.zh.md) | Agent 接入与 WSL |
 | [guide/desktop.zh.md](./guide/desktop.zh.md) | 桌面端页面说明 |
+
+### 产品需求（prd/）
+
+优势功能的详细需求（需求编号 + 验收标准）。已实现部分表述现行冻结语义，规划部分标注路线图期号。
+
+| 文档 | 内容 | 状态 |
+|---|---|---|
+| [prd/routing.zh.md](./prd/routing.zh.md) | 路由决策引擎：级联/判官/sticky/latch/failover/仲裁 | 现行（内核冻结） |
+| [prd/explainability.zh.md](./prd/explainability.zh.md) | 决策可解释与回放：快照/账本/分账 + P5-C 时间线 | A 现行 / B 规划 |
+| [prd/security.zh.md](./prd/security.zh.md) | 密钥与信任边界：凭据引用/token/配置治理 | 现行 |
+| [prd/onboarding.zh.md](./prd/onboarding.zh.md) | Agent 接入：精确合并/WSL + P5-D 扩列表/Profiles | 现行 + 规划 |
 
 ### 设计与契约
 

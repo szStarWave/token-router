@@ -219,14 +219,12 @@ export function SettingsPage() {
               </label>
               <label className="app-field">
                 鉴权模式
-                <select
-                  className="app-select"
-                  value={draft?.server.auth_mode ?? 'token_store'}
-                  disabled
-                  aria-label="鉴权模式（P4 固定 token_store）"
-                >
-                  <option value="token_store">token_store</option>
-                </select>
+                <input
+                  className="oc-field app-field-light font-mono"
+                  value={draft?.server.auth_mode ?? 'inbound_key'}
+                  readOnly
+                  aria-label="鉴权模式（内核未消费该字段，只做透传）"
+                />
               </label>
             </div>
             <button

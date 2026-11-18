@@ -325,7 +325,6 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
         scopes: vec![
             tr_contracts::AdminScope::AdminRead,
             tr_contracts::AdminScope::AdminWrite,
-            tr_contracts::AdminScope::AdminApprove,
         ],
         created_at: 0,
         last_used_at: None,
@@ -398,43 +397,6 @@ async fn control_api_requires_admin_token_and_redacts_secrets() {
     assert_eq!(ledger.status(), StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&body_text(ledger).await).expect("json");
     assert_eq!(value["items"].as_array().expect("items").len(), 1);
-
-    // 审批写操作需要 admin:approve。
-    let approval = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v2/admin/approvals")
-                .header("Authorization", format!("Bearer {plaintext}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "request_id": "req-1",
-                        "tool_name": "shell_exec",
-                        "risk_class": "high",
-                        "decision": "deny"
-                    })
-                    .to_string(),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(approval.status(), StatusCode::OK);
-
-    let approvals = app
-        .oneshot(
-            Request::builder()
-                .uri("/v2/admin/approvals?limit=10")
-                .header("Authorization", format!("Bearer {plaintext}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    let value: serde_json::Value = serde_json::from_str(&body_text(approvals).await).expect("json");
-    assert_eq!(value["items"][0]["tool_name"], "shell_exec");
 
     mock.shutdown();
 }
@@ -522,58 +484,6 @@ async fn anthropic_streaming_translates_events() {
     assert!(text.contains("event: content_block_delta"), "{text}");
     assert!(text.contains("hello"), "{text}");
     assert!(text.contains("event: message_stop"), "{text}");
-
-    mock.shutdown();
-}
-
-#[tokio::test]
-async fn approval_required_maps_to_428() {
-    let mock = MockUpstream::start(vec![Reply::ok("unused")]).await;
-    let db = Db::open_in_memory().expect("db");
-    let pipeline = Arc::new(Pipeline::from_catalog(
-        db,
-        catalog_with(
-            &mock.base_url(),
-            "[approvals]\nmode = \"enforce\"\nmin_risk = \"high\"\n",
-        ),
-    ));
-    let app = router(AppState::new_shared(pipeline.clone(), AuthMode::Disabled));
-
-    let response = app
-        .oneshot(post_json(
-            "/v1/chat/completions",
-            serde_json::json!({
-                "model": "auto",
-                "messages": [
-                    {"role": "user", "content": "run it"},
-                    {
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [{
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {"name": "shell_exec", "arguments": "{}"}
-                        }]
-                    }
-                ]
-            }),
-        ))
-        .await
-        .expect("response");
-
-    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
-    assert_eq!(response.headers()["x-token-router-approval"], "required");
-    assert_eq!(response.headers()["x-token-router-tool"], "shell_exec");
-
-    let text = body_text(response).await;
-    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
-    assert_eq!(value["error"]["type"], "approval_required");
-    assert_eq!(value["error"]["tool"], "shell_exec");
-    assert_eq!(value["error"]["risk_class"], "high");
-
-    // 本地拒绝也入账；上游未被访问。
-    assert_eq!(store::ledger::count(pipeline.db()).expect("count"), 1);
-    assert_eq!(mock.remaining(), 1);
 
     mock.shutdown();
 }

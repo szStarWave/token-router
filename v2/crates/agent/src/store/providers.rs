@@ -539,6 +539,36 @@ pub fn is_deprecated(db: &Db, provider_id: &str, model_id: &str) -> Result<bool,
     Ok(flag.unwrap_or(0) != 0)
 }
 
+/// 上次编译写进 config 的候选 id 集合（migration 9）。
+///
+/// 编译需要区分「编译产物」与「用户手写候选」：config 里没有来源字段，
+/// 只能记住上次写了哪些 id，本次全量替换这批、其余原样保留。
+pub fn compiled_candidate_ids(db: &Db) -> Result<Vec<String>, StoreError> {
+    let connection = db.read();
+    let mut statement =
+        connection.prepare("SELECT candidate_id FROM compiled_candidates ORDER BY candidate_id")?;
+    let items = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// 覆盖记录本次编译产物（空集合 = 清空，表示不再有编译候选）。
+pub fn replace_compiled_candidates(db: &Db, ids: &[String]) -> Result<(), StoreError> {
+    let mut connection = db.write();
+    let tx = connection.transaction()?;
+    tx.execute("DELETE FROM compiled_candidates", [])?;
+    let now = now_millis();
+    for id in ids {
+        tx.execute(
+            "INSERT INTO compiled_candidates (candidate_id, compiled_at) VALUES (?1, ?2)",
+            params![id, now],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,8 +769,25 @@ mod tests {
     #[test]
     fn migration_6_applied() {
         let db = Db::open_in_memory().unwrap();
-        // M6 providers/accounts/catalog + M7 extra_headers/auto-include/deprecated。
-        assert_eq!(db.schema_version().unwrap(), 8);
+        // M6 providers/accounts/catalog + M7 extra_headers/auto-include/deprecated
+        // + M9 compiled_candidates 登记表。
+        assert_eq!(db.schema_version().unwrap(), 10);
+    }
+
+    #[test]
+    fn compiled_candidate_registry_replaces_atomically() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(compiled_candidate_ids(&db).unwrap().is_empty());
+
+        replace_compiled_candidates(&db, &["a".to_string(), "b".to_string()]).unwrap();
+        assert_eq!(compiled_candidate_ids(&db).unwrap(), vec!["a", "b"]);
+
+        // 第二次编译换了一批 id：旧记录必须整批消失，否则下次编译还会把它们当手写候选。
+        replace_compiled_candidates(&db, &["c".to_string()]).unwrap();
+        assert_eq!(compiled_candidate_ids(&db).unwrap(), vec!["c"]);
+
+        replace_compiled_candidates(&db, &[]).unwrap();
+        assert!(compiled_candidate_ids(&db).unwrap().is_empty());
     }
 }
 

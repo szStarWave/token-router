@@ -27,7 +27,6 @@ pub enum EventKind {
     RequestCompleted,
     ConfigApplied,
     BreakerOpened,
-    ApprovalRequired,
 }
 
 impl EventKind {
@@ -36,7 +35,6 @@ impl EventKind {
             Self::RequestCompleted => "request.completed",
             Self::ConfigApplied => "config.applied",
             Self::BreakerOpened => "breaker.opened",
-            Self::ApprovalRequired => "approval.required",
         }
     }
 }

@@ -24,6 +24,7 @@
     "lucide-react": "^1.74.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "smol-toml": "^1.9.1",
     "zustand": "^5.1.0"
   },
   "devDependencies": {

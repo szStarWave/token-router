@@ -16,7 +16,6 @@ import { RequestsPage } from './pages/RequestsPage'
 import { StatsPage } from './pages/StatsPage'
 import { LogsPage } from './pages/LogsPage'
 import { TokensPage } from './pages/TokensPage'
-import { ApprovalsPage } from './pages/ApprovalsPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -45,7 +44,6 @@ const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: '/stats', component: StatsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/logs', component: LogsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/tokens', component: TokensPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: '/approvals', component: ApprovalsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/diagnostics', component: DiagnosticsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/onboarding', component: OnboardingPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage }),

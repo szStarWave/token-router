@@ -16,7 +16,6 @@ const SCOPES = [
   { id: 'inference', label: 'inference（数据面）' },
   { id: 'admin_read', label: 'admin:read（管理读）' },
   { id: 'admin_write', label: 'admin:write（管理写）' },
-  { id: 'admin_approve', label: 'admin:approve（审批）' },
 ] as const
 
 export function TokensPage() {
@@ -27,7 +26,7 @@ export function TokensPage() {
   const showToast = useAppStore((s) => s.showToast)
 
   const [name, setName] = useState('')
-  const [scopes, setScopes] = useState<Array<'inference' | 'admin_read' | 'admin_write' | 'admin_approve'>>(['inference'])
+  const [scopes, setScopes] = useState<Array<'inference' | 'admin_read' | 'admin_write'>>(['inference'])
   const [created, setCreated] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<string | null>(null)
   // key 限额编辑（v3 P5-B）：tokenId 非空时展开行内表单。

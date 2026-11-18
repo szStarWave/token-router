@@ -16,7 +16,6 @@ default_virtual_model = "auto"      # 可选；请求未指定 model 时的缺�
 [[virtual_models]]
 [judge]
 [cost_gate]
-[approvals]
 [trust_tiers]
 ```
 
@@ -112,16 +111,8 @@ agent 面向的命名入口。
 
 成本闸：`mode = "off" | "shadow" | "active"`，默认 `shadow`。
 
-## [approvals]
-
-工具调用审批，默认关闭。
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `mode` | `off` | `off` / `observe` / `enforce` |
-| `min_risk` | — | `low` / `medium` / `high`；达到才拦截（未知工具按 high） |
-| `ttl_secs` | — | 审批结论有效期 |
-| `fail_closed` | `true` | enforce 下审批不可用时拒绝（428/403） |
+> `[approvals]` 段已于 2026-11-18 随审批模块整体移除。旧配置里出现该段会因
+> `deny_unknown_fields` 报错，删掉即可。
 
 ## [trust_tiers]
 

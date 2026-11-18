@@ -119,6 +119,6 @@ cd apps/desktop/src-tauri && cargo tauri dev  # 需要 tauri-cli
 
 ## 下一步
 
-- 配置调优（级联/判官/审批）：[配置参考](./configuration.zh.md)
+- 配置调优（级联/判官）：[配置参考](./configuration.zh.md)
 - 理解路由行为：[架构精编](../architecture.zh.md)
 - 管理 API：[契约](../contracts/admin-api.zh.md)

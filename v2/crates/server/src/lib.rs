@@ -467,30 +467,6 @@ fn map_error(error: PipelineError) -> Response {
                 message.as_deref().unwrap_or("upstream error"),
             )
         }
-        PipelineError::ApprovalRequired {
-            tool,
-            risk_class,
-            request_id,
-        } => approval_error(
-            StatusCode::PRECONDITION_REQUIRED,
-            "approval_required",
-            "required",
-            &tool,
-            &risk_class,
-            request_id,
-        ),
-        PipelineError::ApprovalDenied {
-            tool,
-            risk_class,
-            request_id,
-        } => approval_error(
-            StatusCode::FORBIDDEN,
-            "approval_denied",
-            "denied",
-            &tool,
-            &risk_class,
-            request_id,
-        ),
         PipelineError::Store(err) => {
             eprintln!("storage failure: {err}");
             error_response(
@@ -508,39 +484,6 @@ fn error_response(status: StatusCode, kind: &str, message: &str) -> Response {
         Json(json!({"error": {"type": kind, "message": message}})),
     )
         .into_response()
-}
-
-/// 审批拦截响应：带上工具与 request_id，客户端可据此发起/关联人工审批。
-fn approval_error(
-    status: StatusCode,
-    kind: &str,
-    signal: &str,
-    tool: &str,
-    risk_class: &str,
-    request_id: impl std::fmt::Display,
-) -> Response {
-    let mut response = (
-        status,
-        Json(json!({
-            "error": {
-                "type": kind,
-                "message": format!("tool `{tool}` requires approval ({risk_class})"),
-                "tool": tool,
-                "risk_class": risk_class,
-                "request_id": request_id.to_string(),
-            }
-        })),
-    )
-        .into_response();
-    if let Ok(value) = HeaderValue::from_str(signal) {
-        response
-            .headers_mut()
-            .insert("x-token-router-approval", value);
-    }
-    if let Ok(value) = HeaderValue::from_str(tool) {
-        response.headers_mut().insert("x-token-router-tool", value);
-    }
-    response
 }
 
 fn apply_decision_headers(headers: &mut HeaderMap, decision: &DecisionHeaders) {

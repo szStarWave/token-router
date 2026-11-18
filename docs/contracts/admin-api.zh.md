@@ -55,19 +55,17 @@
 | POST | `/v2/admin/config/apply` | CAS 写配置 + 备份，返回 `restart_required` | write |
 | POST | `/v2/admin/config/rollback` | 回滚到上一份可用备份 | write |
 | GET | `/v2/admin/config/audit` | 配置变更审计（脱敏） | read |
-| GET | `/v2/admin/candidates` | 候选只读投影 | read |
-| GET | `/v2/admin/virtual-models` | 虚拟模型只读投影 | read |
-| GET | `/v2/admin/profiles` | profile 只读投影 | read |
-| GET | `/v2/admin/trust-tiers` | 别名 → profile | read |
+| GET | `/v2/admin/candidates` | 候选只读投影（**未实现**，见 §2.1） | read |
+| GET | `/v2/admin/virtual-models` | 虚拟模型只读投影（**未实现**，见 §2.1） | read |
+| GET | `/v2/admin/profiles` | profile 只读投影（**未实现**，见 §2.1） | read |
+| GET | `/v2/admin/trust-tiers` | 别名 → profile（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/requests` | 账本列表：时间/会话/模型/outcome/协议/原因码过滤 | read |
 | GET | `/v2/admin/requests/{id}` | 单请求详情 | read |
 | GET | `/v2/admin/stats/summary` | 时间窗汇总（`/v2/admin/stats` 为兼容别名） | read |
 | GET | `/v2/admin/stats/series` | 时间序列 | read |
 | GET | `/v2/admin/stats/models` | 模型维度汇总 | read |
 | GET | `/v2/admin/shadow` | shadow 一致率/延迟/成本 | read |
-| GET | `/v2/admin/judge/calls` | 判官调用审计 | read |
-| GET | `/v2/admin/approvals` | 审批列表 | read |
-| POST | `/v2/admin/approvals` | 记录审批决定 | approve |
+| GET | `/v2/admin/judge/calls` | 判官调用审计（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/tokens` | token 列表（脱敏） | read |
 | POST | `/v2/admin/tokens` | 创建 token（明文只返回一次） | write |
 | DELETE | `/v2/admin/tokens/{id}` | 撤销 token | write |
@@ -76,6 +74,21 @@
 
 （SSE `/v2/admin/events` 为 P6 任务，不在 v1 契约内。）
 
+### 2.1 声明但未实现的端点（2026-11-18 核对）
+
+`crates/control/src/lib.rs` 的路由表里没有下面五个端点，调用返回 404：
+
+- `GET /v2/admin/candidates`
+- `GET /v2/admin/virtual-models`
+- `GET /v2/admin/profiles`
+- `GET /v2/admin/trust-tiers`
+- `GET /v2/admin/judge/calls`
+
+前端目前通过 `GET /v2/admin/config` 的 `document` 读候选/虚拟模型/profile，功能上不受影响。
+保留在表里是为了记下「契约承诺 vs 实现」的差距；补齐或删除都要走 `api_version` 规则。
+`GET /v2/admin/shadow` 已实现，返回 `{total, agreed, disagreed, unknown, avg_latency_ms,
+p95_latency_ms, total_cost_micros}`。
+
 ## 3. 作用域
 
 | 作用域 | 允许 |
@@ -83,7 +96,6 @@
 | `inference` | 数据面三协议、`/v1/models` |
 | `admin:read` | 所有 GET 管理端点 |
 | `admin:write` | `config/apply`、`config/rollback`、token 管理、shutdown |
-| `admin:approve` | 审批写操作 |
 
 - token 随机 32 字节；库中只存 `sha256`；列表只返回 `prefix`（前 8 字符）与 `last_used_at`。
 - 首次启动且 `tokens` 表为空时，生成全 scope admin token，明文写入 `<data_dir>/admin.token`（0600）。
@@ -103,11 +115,11 @@
   "started_at": 1763000000000,
   "uptime_ms": 12345,
   "listen": "127.0.0.1:17621",
-  "schema_version": 5,
-  "db_schema_version": 5,
+  "schema_version": 1,
+  "db_schema_version": 9,
   "config_digest": "6f2c...",
   "default_virtual_model": "auto",
-  "modes": {"judge": "off", "cost_gate": "shadow", "approvals": "observe"},
+  "modes": {"judge": "off", "cost_gate": "shadow"},
   "requests_total": 128,
   "breakers": {"closed": 2, "half_open": 0, "open": 1}
 }
@@ -161,4 +173,17 @@
 ## 5. 兼容规则
 
 - `GET /v2/admin/status` 的 `api_version: 1`；新字段只增不改；客户端忽略未知字段。
-- 配置 schema 独立演进：DB `schema_version`（迁移 5 起）与配置文件 `schema_version` 分开计数。配置文件当前为 `1`（代码严格校验，见 `tr-agent::config::SCHEMA_VERSION`；勘误 2026-11-17：原文误写"P4 起 2"）。
+- 配置 schema 独立演进：DB `schema_version`（当前迁移 10）与配置文件 `schema_version` 分开计数。配置文件当前为 `1`（代码严格校验，见 `tr-agent::config::SCHEMA_VERSION`；勘误 2026-11-17：原文误写"P4 起 2"）。
+
+### 5.1 不兼容变更记录
+
+产品尚未发布，「只增不改」的舍入在 2026-11-18 由维护者放弃，允许删除端点/字段。
+
+| 日期 | 变更 | 影响 |
+|---|---|---|
+| 2026-11-18 | 删除 `/v2/admin/approvals`（GET/POST） | 审批模块整体移除 |
+| 2026-11-18 | `ModeSummary` 去掉 `approvals` 字段 | `GET /v2/admin/status` 响应少一个键 |
+| 2026-11-18 | `AdminScope` 去掉 `admin_approve` | 已存 token 里的该 scope 在读取时被静默丢弃 |
+| 2026-11-18 | DB migration 10 `DROP TABLE approvals` | 审批审计记录永久删除 |
+
+`api_version` 保持 `1`：没有外部消费者，不引入版本协商成本。

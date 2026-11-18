@@ -23,6 +23,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M6_PROVIDERS,
     M7_ACCOUNT_HEADERS,
     M8_QUOTA_LIMITS,
+    M9_COMPILED_CANDIDATES,
+    M10_DROP_APPROVALS,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -355,4 +357,25 @@ CREATE TABLE quota_windows (
 CREATE INDEX idx_quota_reset ON quota_windows(reset_at);
 
 ALTER TABLE tokens ADD COLUMN limits_json TEXT;
+"#;
+
+/// migration 9（v3 P5-A 修正）：记录「上次编译写进 config 的候选 id」。
+///
+/// 编译是「全量重建 compiled 候选 + 原样保留手写候选」，但 config 里没有来源标记。
+/// 早先靠 id 前缀猜测，猜不出来就退化成「现有全部候选都算手写」，于是第二次编译
+/// 同一 id 出现两次 → `candidate id 重复` 422。改为把上次产物落库，编译前精确移除。
+const M9_COMPILED_CANDIDATES: &str = r#"
+CREATE TABLE compiled_candidates (
+  candidate_id  TEXT PRIMARY KEY,
+  compiled_at   INTEGER NOT NULL
+);
+"#;
+
+/// migration 10：移除人工审批（HITL）模块。
+///
+/// 审批闸与产品定位冲突——本产品是"每个请求选哪个模型"的路由网关，
+/// 不做请求内容级的高危工具拦截。整个模块（approval.rs、admin 端点、
+/// `admin:approve` scope、[approvals] 配置段）已删除，审计表一并清掉。
+const M10_DROP_APPROVALS: &str = r#"
+DROP TABLE IF EXISTS approvals;
 "#;

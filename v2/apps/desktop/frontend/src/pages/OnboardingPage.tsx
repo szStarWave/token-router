@@ -20,6 +20,7 @@ import {
   onboardPlan,
   onboardVerify,
   onboardWslDetect,
+  supervisorStatus,
   type DetectReport,
   type PlanEntry,
   type SetupPlan,
@@ -49,6 +50,7 @@ export function OnboardingPage() {
   })
 
   const [wsl, setWsl] = useState<WslReport | null>(null)
+  const [supervisorListen, setSupervisorListen] = useState<string | null>(null)
   const [distro, setDistro] = useState<string>('')
   const [agentId, setAgentId] = useState<string>('claude-code')
   const [credentialRef, setCredentialRef] = useState('')
@@ -76,12 +78,23 @@ export function OnboardingPage() {
   useEffect(() => {
     if (isTauri()) {
       void onboardWslDetect().then(setWsl).catch(() => setWsl(null))
+      // supervisor 端口占用时会从 17621 递增，接入地址必须用实际监听地址。
+      void supervisorStatus()
+        .then((status) => setSupervisorListen(status.listen))
+        .catch(() => setSupervisorListen(null))
     }
   }, [])
 
-  const gatewayUrl = configQuery.data
-    ? `http://${(configQuery.data.document as Record<string, Record<string, unknown>>)?.server?.listen ?? '127.0.0.1:17621'}`
-    : 'http://127.0.0.1:17621'
+  // 优先级：supervisor 实际监听 > 配置里的 listen > 桌面端默认端口。
+  const gatewayUrl = (() => {
+    const document = configQuery.data?.document as
+      | Record<string, Record<string, unknown>>
+      | undefined
+    const configured = document?.server?.listen
+    const listen =
+      supervisorListen ?? (typeof configured === 'string' ? configured : '127.0.0.1:17621')
+    return `http://${listen}`
+  })()
 
   const runDetect = useCallback(async () => {
     if (!isTauri()) return
@@ -359,11 +372,19 @@ function ManualAgents() {
     queryFn: () => api.config(),
     retry: 1,
   })
+  const [supervisorListen, setSupervisorListen] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isTauri()) return
+    void supervisorStatus()
+      .then((status) => setSupervisorListen(status.listen))
+      .catch(() => setSupervisorListen(null))
+  }, [])
   const listen = (() => {
+    if (supervisorListen) return supervisorListen
     const document = configQuery.data?.document as
       | { server?: { listen?: string } }
       | undefined
-    return document?.server?.listen ?? '127.0.0.1:16621'
+    return document?.server?.listen ?? '127.0.0.1:17621'
   })()
   const baseUrl = `http://${listen}/v1`
 

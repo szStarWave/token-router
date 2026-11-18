@@ -10,7 +10,7 @@
 //!   （0600 权限尽力而为）后立即丢弃；API 响应只回 `file:credentials/...` 引用与指纹后 4 位；
 //! - config.toml 只落凭据引用，明文永不入配置。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tr_agent::store::{self, Db};
 use tr_contracts::{
@@ -840,13 +840,21 @@ pub fn compile_candidates(
     let previous_revision = state.pipeline.catalog().config_digest.clone();
     let new_ids: Vec<String> = candidate_rows.iter().map(|row| row.id.clone()).collect();
 
-    // 保留非 provider 编译来源的候选（用户手写的）：按 id 前缀区分不可靠，
-    // 改用「编译候选 = 本次全量」并把手写候选并入：手写 = 现有 - 上次编译产物。
-    // 上次编译产物从 audit 无法取，这里采用简单规则：id 含 provider 前缀 `p-` 的交给编译管理。
+    // 本次编译全量替换「上次编译写进去的候选」，用户手写的原样保留。
+    // 上次产物记在表里（migration 9）：config 没有来源字段，猜 id 前缀会漏。
+    // 另外按本次产物 id 去重：即使登记表丢了，同一 id 也只会留编译版本，不会触发
+    // 「candidate id 重复」。
+    let previous_ids: BTreeSet<String> = store::providers::compiled_candidate_ids(db_handle)?
+        .into_iter()
+        .collect();
+    let new_id_set: BTreeSet<&str> = new_ids.iter().map(String::as_str).collect();
     let manual_candidates: Vec<_> = file
         .candidates
         .iter()
-        .filter(|candidate| !compiled_id(&candidate.id))
+        .filter(|candidate| {
+            !previous_ids.contains(candidate.id.as_str())
+                && !new_id_set.contains(candidate.id.as_str())
+        })
         .cloned()
         .collect();
     file.candidates = manual_candidates;
@@ -901,6 +909,8 @@ pub fn compile_candidates(
 
     let document_toml = toml::to_string_pretty(&file)
         .map_err(|error| AdminApiError::internal(format!("serialize config: {error}")))?;
+    let candidates_total = file.candidates.len() as u32;
+    let virtual_models_total = file.virtual_models.len() as u32;
     let outcome = crate::config_service::apply(
         state.pipeline.catalog(),
         state,
@@ -911,22 +921,17 @@ pub fn compile_candidates(
             .or(Some(&previous_revision)),
     )?;
 
+    // 写盘成功后才登记产物 id；失败时保留上次记录，重试仍能正确替换。
+    store::providers::replace_compiled_candidates(db_handle, &new_ids)?;
+
     Ok(CompileResponse {
         revision: outcome.revision,
         previous_revision: outcome.previous_revision.unwrap_or(previous_revision),
         candidate_ids: new_ids,
-        candidates_total: file.candidates.len() as u32,
-        virtual_models_total: file.virtual_models.len() as u32,
+        candidates_total,
+        virtual_models_total,
         backup_path: outcome.backup_path,
     })
-}
-
-/// 编译产物 id 形如 `{provider}-{model}-{account8}`；手写候选按约定不含三段 `-` 结构。
-/// 规则保守：以「存在 accounts/catalog 引用」为准，手写候选保持原样。
-fn compiled_id(_id: &str) -> bool {
-    // 编译产物一定以某个 provider id 开头（provider id 由模板或 `custom-` 前缀生成）。
-    // 为避免误删手写候选，只在 id 同时包含 provider 段与候选段特征时判定编译产物。
-    false // P5-A 保守实现：手写候选永保留，编译候选按 provider 全量重建（见 compile 内注释）。
 }
 
 struct CandidateRow {

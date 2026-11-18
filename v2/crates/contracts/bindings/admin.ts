@@ -69,7 +69,7 @@ extra_headers?: Array<HeaderPair>, enabled: boolean | null, };
 /**
  * 管理端点作用域。
  */
-export type AdminScope = "inference" | "admin_read" | "admin_write" | "admin_approve";
+export type AdminScope = "inference" | "admin_read" | "admin_write";
 
 /**
  * 统一错误信封（`error.type` 见契约文档 §1 错误码表）。
@@ -416,7 +416,7 @@ export type LogsResponse = { items: Array<LogEntry>, next_cursor: number | null,
 /**
  * 运行模式摘要。
  */
-export type ModeSummary = { judge: string, cost_gate: string, approvals: string, };
+export type ModeSummary = { judge: string, cost_gate: string, };
 
 /**
  * 分页信封：游标为 `(created_at, id)` 的 base64 编码。

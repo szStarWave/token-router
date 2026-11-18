@@ -11,7 +11,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod approval;
 pub mod config;
 pub mod dispatch;
 pub mod gate;

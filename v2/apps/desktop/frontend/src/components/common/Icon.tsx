@@ -35,7 +35,6 @@ import {
   Search,
   Settings,
   Square,
-  SquareCheck,
   Stethoscope,
   Sun,
   Trash2,
@@ -60,7 +59,6 @@ const ICONS = {
   'nav-logs': ScrollText,
   'nav-onboarding': Plug,
   'nav-tokens': Key,
-  'nav-approvals': SquareCheck,
   'nav-diagnostics': Stethoscope,
   'nav-settings': Settings,
 

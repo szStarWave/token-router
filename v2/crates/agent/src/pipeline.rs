@@ -91,18 +91,6 @@ pub enum PipelineError {
         message: Option<String>,
         request_id: Uuid,
     },
-    #[error("approval required for tool `{tool}` ({risk_class})")]
-    ApprovalRequired {
-        tool: String,
-        risk_class: String,
-        request_id: Uuid,
-    },
-    #[error("approval denied for tool `{tool}` ({risk_class})")]
-    ApprovalDenied {
-        tool: String,
-        risk_class: String,
-        request_id: Uuid,
-    },
     #[error("store: {0}")]
     Store(#[from] StoreError),
 }
@@ -488,105 +476,6 @@ impl Pipeline {
             return Err(PipelineError::NoEligibleCandidate {
                 plan_id,
                 reason_codes: plan.reason_codes,
-            });
-        }
-
-        // 审批实时拦截（P3-12/13）：只在本地判定，不访问上游、不进入判官 deadline。
-        let approval = crate::approval::evaluate(
-            &self.db,
-            &self.catalog.approvals,
-            &derived.key,
-            &request,
-            now_unix,
-        )?;
-        let pending = match &approval {
-            crate::approval::ApprovalOutcome::Clear => None,
-            crate::approval::ApprovalOutcome::Required(tool) => {
-                plan.reason_codes.push(ReasonCode::with_detail(
-                    ReasonCodeKind::ApprovalRequired,
-                    format!("{}:{}", tool.tool_name, tool.risk.as_str()),
-                ));
-                Some((tool.clone(), 428u16, false))
-            }
-            crate::approval::ApprovalOutcome::Denied(tool) => {
-                plan.reason_codes.push(ReasonCode::with_detail(
-                    ReasonCodeKind::ApprovalDenied,
-                    format!("{}:{}", tool.tool_name, tool.risk.as_str()),
-                ));
-                Some((tool.clone(), 403u16, true))
-            }
-        };
-
-        // observe 只记录；enforce 且 fail_closed 才拒绝。审批与路由不共享预算池。
-        if let Some((tool, status, denied)) = pending
-            && self.catalog.approvals.mode == crate::approval::ApprovalMode::Enforce
-            && self.catalog.approvals.fail_closed
-        {
-            let ledger = build_ledger(
-                &LedgerInput {
-                    plan_id: plan_id.clone(),
-                    session_key: derived.key.clone(),
-                    branch_id: branch_id.clone(),
-                    task_id: task_id.clone(),
-                    session_key_source: derived.source,
-                    collision_suspect: derived.collision_suspect,
-                    ingress_protocol: request.meta.ingress_protocol,
-                    authority: facts.authority.clone(),
-                    virtual_model_id: virtual_model.id.clone(),
-                    thinking_level: thinking_level.clone(),
-                    request_reason,
-                    plan_mode: plan.mode,
-                    preference: plan.preference_ids().into_iter().cloned().collect(),
-                    failover: plan
-                        .failover
-                        .iter()
-                        .map(|slot| slot.candidate_id.clone())
-                        .collect(),
-                    dispatch_source: plan.dispatch_source,
-                    reason_codes: plan.reason_codes.clone(),
-                    profile_revision: profile.revision.clone(),
-                    config_digest: self.catalog.config_digest.clone(),
-                    now_unix,
-                    judge: Some(plan.judge.clone()),
-                    routing_cost: routing_cost.clone(),
-                    contributions: plan.contributions.clone(),
-                },
-                Vec::new(),
-                None,
-                OutcomeKind::Rejected,
-                Some(status),
-                0,
-            );
-            let request_id = ledger.request_id;
-            if !denied {
-                // 记录“已拦截、等待人工”；pending 不是结论，不会让后续请求放行。
-                let _ = store::approvals::insert(
-                    &self.db,
-                    &store::approvals::ApprovalRecord {
-                        request_id: request_id.to_string(),
-                        session_key: Some(derived.key.clone()),
-                        tool_name: tool.tool_name.clone(),
-                        risk_class: tool.risk.as_str().to_string(),
-                        decision: "pending".to_string(),
-                        operator: None,
-                        wait_ms: None,
-                        created_at: now_unix,
-                    },
-                );
-            }
-            store::commit(&self.db, None, &[], &ledger, None)?;
-            return Err(if denied {
-                PipelineError::ApprovalDenied {
-                    tool: tool.tool_name,
-                    risk_class: tool.risk.as_str().to_string(),
-                    request_id,
-                }
-            } else {
-                PipelineError::ApprovalRequired {
-                    tool: tool.tool_name,
-                    risk_class: tool.risk.as_str().to_string(),
-                    request_id,
-                }
             });
         }
 

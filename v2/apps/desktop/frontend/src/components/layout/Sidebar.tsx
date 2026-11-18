@@ -1,6 +1,6 @@
 /**
  * v2 导航（§7.3 页面清单）：Overview/Models/Virtual Models/Requests/Stats/
- * Logs/Onboarding/Tokens/Settings/Approvals/Diagnostics。
+ * Logs/Onboarding/Tokens/Settings/Diagnostics。
  *
  * 选中态用 selection（"当前是"），不用 primary（"去做"）——见 DESIGN.md §Colors。
  */
@@ -20,7 +20,6 @@ const NAV_ITEMS = [
   { to: '/playground', label: 'Playground', id: 'playground', icon: 'nav-playground' },
   { to: '/onboarding', label: '接入', id: 'onboarding', icon: 'nav-onboarding' },
   { to: '/tokens', label: 'Token', id: 'tokens', icon: 'nav-tokens' },
-  { to: '/approvals', label: '审批', id: 'approvals', icon: 'nav-approvals' },
   { to: '/diagnostics', label: '诊断', id: 'diagnostics', icon: 'nav-diagnostics' },
   { to: '/settings', label: '设置', id: 'settings', icon: 'nav-settings' },
 ] as const satisfies ReadonlyArray<{ to: string; label: string; id: string; icon: IconName }>
