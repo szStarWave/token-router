@@ -29,6 +29,11 @@
     "allow-onboard-verify",
     "allow-onboard-wsl-detect",
     "allow-admin-events-subscribe",
-    "allow-admin-events-unsubscribe"
+    "allow-admin-events-unsubscribe",
+    "allow-app-set-exit-guard",
+    "allow-app-force-close",
+    "allow-app-cancel-exit",
+    "allow-app-set-close-to-tray",
+    "allow-app-quit"
   ]
 }

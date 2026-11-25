@@ -45,10 +45,7 @@ pub fn ui_state_load(data_dir: &std::path::Path) -> UiState {
 }
 
 /// 保存 ui-state（原子写：临时文件 + rename）。
-pub fn ui_state_save(
-    data_dir: &std::path::Path,
-    state: &UiState,
-) -> Result<(), String> {
+pub fn ui_state_save(data_dir: &std::path::Path, state: &UiState) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
     let path = data_dir.join("ui-state.json");
     let temp = data_dir.join("ui-state.json.tmp");
@@ -76,7 +73,10 @@ pub fn open_path_allowed(
     };
     let data = normalize(data_dir);
     let candidate = normalize(target);
-    if candidate == data || candidate.starts_with(&format!("{data}\\")) || candidate.starts_with(&format!("{data}/")) {
+    if candidate == data
+        || candidate.starts_with(&format!("{data}\\"))
+        || candidate.starts_with(&format!("{data}/"))
+    {
         Ok(())
     } else {
         Err(format!(
@@ -95,11 +95,14 @@ mod tests {
         let dir = std::env::temp_dir().join("tr-desktop-test-ui");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        ui_state_save(&dir, &UiState {
-            theme: Some("dark".into()),
-            tour_done: Some(true),
-            ..Default::default()
-        })
+        ui_state_save(
+            &dir,
+            &UiState {
+                theme: Some("dark".into()),
+                tour_done: Some(true),
+                ..Default::default()
+            },
+        )
         .unwrap();
         let loaded = ui_state_load(&dir);
         assert_eq!(loaded.theme.as_deref(), Some("dark"));

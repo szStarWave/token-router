@@ -56,11 +56,7 @@ pub fn validate_method(method: &str) -> Result<(), String> {
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// 转发请求：`base` 是服务端 base URL，`token` 来自 Rust 侧内存。
-pub async fn forward(
-    base: &str,
-    token: &str,
-    request: &AdminRequest,
-) -> AdminResponse {
+pub async fn forward(base: &str, token: &str, request: &AdminRequest) -> AdminResponse {
     if let Err(message) = validate_path(&request.path) {
         return error_response(400, "invalid_request", &message);
     }
@@ -77,8 +73,8 @@ pub async fn forward(
     };
 
     let url = format!("{}{}", base.trim_end_matches('/'), request.path);
-    let method = reqwest::Method::from_bytes(request.method.as_bytes())
-        .unwrap_or(reqwest::Method::GET);
+    let method =
+        reqwest::Method::from_bytes(request.method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut builder = client.request(method, &url).bearer_auth(token);
     if let Some(if_match) = &request.if_match {
         builder = builder.header("If-Match", if_match);

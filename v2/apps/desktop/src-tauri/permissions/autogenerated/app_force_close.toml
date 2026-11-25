@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-force-close"
+description = "Enables the app_force_close command without any pre-configured scope."
+commands.allow = ["app_force_close"]
+
+[[permission]]
+identifier = "deny-app-force-close"
+description = "Denies the app_force_close command without any pre-configured scope."
+commands.deny = ["app_force_close"]

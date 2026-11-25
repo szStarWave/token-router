@@ -14,10 +14,12 @@ pub mod events_bridge;
 pub mod host;
 pub mod onboard;
 pub mod supervisor;
+pub mod tray;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 use supervisor::Supervisor;
@@ -32,6 +34,14 @@ pub struct AppState {
     pub base_url: Mutex<Option<String>>,
     /// 数据目录。
     pub data_dir: PathBuf,
+    /// 退出前询问：开启时拦截窗口关闭，交回前端确认。
+    pub exit_guard: AtomicBool,
+    /// 用户已确认退出：放行这一次关闭。
+    pub exit_confirmed: AtomicBool,
+    /// 关闭到托盘：开启时窗口关闭 = 隐藏到托盘（不询问、不退出）。
+    pub close_to_tray: AtomicBool,
+    /// 托盘/菜单发起的真退出：绕过关闭到托盘，走退出确认或直接关窗。
+    pub quit_requested: AtomicBool,
 }
 
 impl AppState {
@@ -48,6 +58,10 @@ impl AppState {
             admin_token: Mutex::new(None),
             base_url: Mutex::new(None),
             data_dir,
+            exit_guard: AtomicBool::new(false),
+            exit_confirmed: AtomicBool::new(false),
+            close_to_tray: AtomicBool::new(true),
+            quit_requested: AtomicBool::new(false),
         }
     }
 }
@@ -131,13 +145,14 @@ pub fn run() {
         .manage(state)
         .manage(events_bridge::EventBridge::default())
         .setup(|app| {
-            // 外部服务模式：启动即连上，省掉一次手动「启动服务」。
+            // 常驻托盘：启动即创建（显示/状态/退出；左键恢复窗口）。
+            tray::create(app.handle())?;
+
+            // 启动即拉起/连上服务：本地模式 spawn sidecar，外部模式只探测连通，
+            // 省掉一次手动「启动服务」；失败时保持 Failed，由界面提供重试。
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async {
                 let state = handle.state::<AppState>();
-                if state.supervisor.external_base().is_none() {
-                    return;
-                }
                 let outcome = state.supervisor.start().await;
                 if outcome.state != supervisor::SupervisionState::Ready {
                     return;
@@ -148,6 +163,32 @@ pub fn run() {
                     *state.admin_token.lock().await = Some(token.trim().to_string());
                 }
             });
+
+            // 退出前询问：拦截窗口关闭，把决定权交回前端。
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        let state = handle.state::<AppState>();
+                        let confirmed = state.exit_confirmed.load(Ordering::SeqCst);
+                        let quitting = state.quit_requested.swap(false, Ordering::SeqCst);
+                        // 关闭到托盘：非退出路径（未确认且非托盘退出）只隐藏窗口，服务继续跑。
+                        if state.close_to_tray.load(Ordering::SeqCst) && !confirmed && !quitting {
+                            api.prevent_close();
+                            if let Some(window) = handle.get_webview_window("main") {
+                                let _ = window.hide();
+                            }
+                            return;
+                        }
+                        // 退出前询问：把决定权交回前端确认框。
+                        let guarded = state.exit_guard.load(Ordering::SeqCst);
+                        if guarded && !confirmed {
+                            api.prevent_close();
+                            let _ = handle.emit("app://close-requested", ());
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -160,6 +201,12 @@ pub fn run() {
             commands::host_open_path,
             commands::host_ui_state_load,
             commands::host_ui_state_save,
+            commands::host_lan_addresses,
+            commands::app_set_exit_guard,
+            commands::app_force_close,
+            commands::app_cancel_exit,
+            commands::app_set_close_to_tray,
+            commands::app_quit,
             onboard::onboard_detect,
             onboard::onboard_plan,
             onboard::onboard_apply,
@@ -168,8 +215,16 @@ pub fn run() {
             events_bridge::admin_events_subscribe,
             events_bridge::admin_events_unsubscribe,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 退出时显式停掉本壳拉起的 sidecar：tokio Child 的 kill_on_drop 在
+            // 运行时关闭阶段并不可靠，实测会留下孤儿进程占着 17621。
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                tauri::async_runtime::block_on(state.supervisor.stop());
+            }
+        });
 }
 
 #[cfg(test)]
@@ -237,6 +292,42 @@ candidate_pool = ["test-local"]
             SupervisionState::Ready,
             "message: {}",
             outcome.message
+        );
+    }
+
+    /// 重启必须停在配置的端口：旧进程还占端口时会顺延（17621 → 17622），
+    /// 配置里的 listen 与实际监听分叉，按固定 base-url 连接的客户端就断了。
+    ///
+    /// 同 `supervisor_starts_real_sidecar`：需要先构建 sidecar，默认忽略。
+    #[tokio::test]
+    #[ignore = "需要先构建 v2 的 token-router-v2 二进制"]
+    async fn restart_keeps_configured_listen() {
+        let data_dir =
+            std::env::temp_dir().join(format!("tr-supervisor-restart-it-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&data_dir);
+        std::fs::write(data_dir.join("config.toml"), TEST_CONFIG).expect("write config");
+
+        let listen = "127.0.0.1:17632";
+        let supervisor = Supervisor::new(SupervisorConfig {
+            sidecar_path: sidecar_binary(),
+            data_dir: data_dir.clone(),
+            listen: listen.to_string(),
+            external: None,
+        });
+
+        let first = supervisor.start().await;
+        let second = supervisor.restart_with_backoff().await;
+        let _ = supervisor.stop().await;
+        let _ = std::fs::remove_dir_all(&data_dir);
+
+        assert_eq!(first.state, SupervisionState::Ready, "{}", first.message);
+        assert_eq!(first.listen.as_deref(), Some(listen));
+        assert_eq!(second.state, SupervisionState::Ready, "{}", second.message);
+        assert_eq!(
+            second.listen.as_deref(),
+            Some(listen),
+            "重启后端口漂移：{:?}",
+            second.listen
         );
     }
 

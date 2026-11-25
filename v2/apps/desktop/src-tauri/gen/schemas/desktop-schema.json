@@ -363,10 +363,46 @@
           "markdownDescription": "Enables the admin_request command without any pre-configured scope."
         },
         {
+          "description": "Enables the app_cancel_exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-cancel-exit",
+          "markdownDescription": "Enables the app_cancel_exit command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_force_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-force-close",
+          "markdownDescription": "Enables the app_force_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_quit command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-quit",
+          "markdownDescription": "Enables the app_quit command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_set_close_to_tray command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-set-close-to-tray",
+          "markdownDescription": "Enables the app_set_close_to_tray command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_set_exit_guard command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-set-exit-guard",
+          "markdownDescription": "Enables the app_set_exit_guard command without any pre-configured scope."
+        },
+        {
           "description": "Enables the host_app_info command without any pre-configured scope.",
           "type": "string",
           "const": "allow-host-app-info",
           "markdownDescription": "Enables the host_app_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the host_lan_addresses command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-host-lan-addresses",
+          "markdownDescription": "Enables the host_lan_addresses command without any pre-configured scope."
         },
         {
           "description": "Enables the host_open_path command without any pre-configured scope.",
@@ -459,10 +495,46 @@
           "markdownDescription": "Denies the admin_request command without any pre-configured scope."
         },
         {
+          "description": "Denies the app_cancel_exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-cancel-exit",
+          "markdownDescription": "Denies the app_cancel_exit command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_force_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-force-close",
+          "markdownDescription": "Denies the app_force_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_quit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-quit",
+          "markdownDescription": "Denies the app_quit command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_set_close_to_tray command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-set-close-to-tray",
+          "markdownDescription": "Denies the app_set_close_to_tray command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_set_exit_guard command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-set-exit-guard",
+          "markdownDescription": "Denies the app_set_exit_guard command without any pre-configured scope."
+        },
+        {
           "description": "Denies the host_app_info command without any pre-configured scope.",
           "type": "string",
           "const": "deny-host-app-info",
           "markdownDescription": "Denies the host_app_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the host_lan_addresses command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-host-lan-addresses",
+          "markdownDescription": "Denies the host_lan_addresses command without any pre-configured scope."
         },
         {
           "description": "Denies the host_open_path command without any pre-configured scope.",

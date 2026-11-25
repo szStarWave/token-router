@@ -32,6 +32,9 @@ pub struct OnboardSetupArgs {
     /// 要写入的模型（虚拟模型 id）。
     #[serde(default = "default_model")]
     pub model: String,
+    /// 显式切换入口：true 时覆盖客户端已有的 model 键；Onboarding 默认 false。
+    #[serde(default)]
+    pub force_model: bool,
 }
 
 fn default_model() -> String {
@@ -81,6 +84,7 @@ pub async fn onboard_plan(
             .unwrap_or_else(|| "http://127.0.0.1:17621".to_string()),
         credential_ref: args.credential_ref.clone(),
         model: args.model.clone(),
+        force_model: args.force_model,
     };
     tauri::async_runtime::spawn_blocking(move || {
         tr_onboard::plan(&target, agent, &request).map_err(|error| error.to_string())
@@ -123,6 +127,7 @@ pub async fn onboard_apply(
         gateway_url,
         credential_ref: credential,
         model: args.model.clone(),
+        force_model: args.force_model,
     };
     // 先 plan（解析后的真实值产出 after 全文），再 apply。
     tauri::async_runtime::spawn_blocking(move || {
