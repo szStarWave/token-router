@@ -62,6 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AuthMode::Disabled
     };
 
+    // 监听/鉴权在进程启动时固化：记录启动值，供热加载判断是否真的需要重启。
+    let running_server = catalog.server.clone();
     let pipeline = Arc::new(Pipeline::from_shared(db.clone(), catalog));
 
     // 管理面鉴权：scoped token store + admin.token bootstrap。
@@ -86,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let control_state = ControlState::new(pipeline.clone(), admin_auth)
         .with_config_path(args.config.clone())
+        .with_running_server(running_server)
         .with_logs(logs);
 
     let app = tr_server::router(AppState::new_shared(pipeline.clone(), auth))

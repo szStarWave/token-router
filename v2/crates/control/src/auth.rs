@@ -103,6 +103,25 @@ impl AdminAuth {
             .map_err(|error| AdminApiError::internal(error.to_string()))
     }
 
+    /// 该记录是否是 bootstrap admin token（明文持久化在 `<data_dir>/admin.token`）。
+    ///
+    /// 这类 token 的明文有文件副本，重新签发会让文件与库里的哈希不一致
+    /// （重启时 `bootstrap_if_empty` 会按文件里的旧明文重建记录），
+    /// 所以管理面禁止对它 rotate。
+    pub fn is_bootstrap_token(&self, record: &TokenRecord) -> bool {
+        let Some(path) = &self.token_file_path else {
+            return false;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let plaintext = text.trim();
+        if plaintext.is_empty() {
+            return false;
+        }
+        tokens::sha256_hex(plaintext) == record.token_sha256
+    }
+
     /// 鉴权：返回通过校验的 token 记录；失败返回对应错误。
     pub fn authenticate(
         &self,

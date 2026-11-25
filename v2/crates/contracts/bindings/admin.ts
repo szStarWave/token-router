@@ -67,6 +67,39 @@ key: string | null, proxy_url: string | null, base_url_override: string | null,
 extra_headers?: Array<HeaderPair>, enabled: boolean | null, };
 
 /**
+ * 单个账号的余额/订阅查询结果（每次查询独立，失败不伪造数值）。
+ */
+export type AccountUsageInfo = { provider_id: string, provider_name: string, account_id: string, account_label: string, 
+/**
+ * 凭据指纹后 4 位；明文永不出现。
+ */
+fingerprint: string, enabled: boolean, status: UsageStatus, 
+/**
+ * 计划/计费模式（API 返回时才有，例如 OpenRouter 的免费层/按量）。
+ */
+plan?: string, 
+/**
+ * 多币种余额条目（不跨条目求和）。
+ */
+balances: Array<BalanceInfo>, 
+/**
+ * 订阅窗口用量（OpenCode Go 等按窗口计费的厂商）。
+ */
+windows: Array<UsageWindowInfo>, 
+/**
+ * 键级限额（API 返回时才有）。
+ */
+limits?: UsageLimitInfo, 
+/**
+ * 本次查询时间（Unix 毫秒）；0 = 未查询。
+ */
+fetched_at: number, 
+/**
+ * 失败原因（`status = error`）。
+ */
+error?: string, };
+
+/**
  * 管理端点作用域。
  */
 export type AdminScope = "inference" | "admin_read" | "admin_write";
@@ -99,7 +132,7 @@ restart: string | null, };
  */
 export type ApplyResponse = { revision: string, 
 /**
- * P4 恒为 true（不做热加载）。
+ * 仅在 `[server]` 段变化时为 true（其余段落写盘后热加载，立即生效）。
  */
 restart_required: boolean, backup_path: string | null, };
 
@@ -107,6 +140,31 @@ restart_required: boolean, backup_path: string | null, };
  * 一次尝试的脱敏摘要（详情页展开）。
  */
 export type AttemptSummary = { candidate_id: string, outcome: string, latency_ms: number | null, error_class: string | null, };
+
+/**
+ * 一个币种的余额。金额保留 API 原始字符串，避免浮点误差。
+ */
+export type BalanceInfo = { currency: string, 
+/**
+ * 可用余额（API 直接给或有明确派生）。
+ */
+available?: string, 
+/**
+ * 已用（如 OpenRouter 的 total_usage）。
+ */
+used?: string, 
+/**
+ * 总额/已购（如 OpenRouter 的 total_credits）。
+ */
+total?: string, 
+/**
+ * 赠送/代金券部分。
+ */
+granted?: string, 
+/**
+ * 充值/现金部分。
+ */
+topped_up?: string, };
 
 /**
  * 熔断计数。
@@ -139,6 +197,18 @@ model_id: string, display_name: string,
  */
 selected: boolean, 
 /**
+ * 用途（选择器分组元数据；不参与候选编译）。
+ */
+purpose: ModelPurposeDto, 
+/**
+ * 能力标签（编译时写入候选 `capability.tags["caps"]`，供组判断参考）。
+ */
+caps: Array<string>, 
+/**
+ * 模型支持的推理档位（models.dev `reasoning_options.effort` 派生；编译时作为候选默认）。
+ */
+thinking_levels: Array<string>, 
+/**
  * 编译出的候选 id（`{provider}~{model}@{account}`）；未勾选为空。
  */
 candidate_id: string | null, context_window: number | null, max_output: number | null, 
@@ -149,7 +219,11 @@ price: PriceDto | null,
 /**
  * 元数据来源：`catalog` / `models.dev` / `manual`。
  */
-source: string, };
+source: string, 
+/**
+ * 已被用户移除（持久隐藏）；刷新目录不会带回。
+ */
+hidden: boolean, };
 
 /**
  * 目录刷新请求（`POST /v2/admin/providers/{id}/catalog/refresh`）。
@@ -170,6 +244,26 @@ export type CatalogResponse = { provider_id: string, refreshed_at: number | null
  */
 export type CatalogSelectRequest = { model_id: string, selected: boolean, 
 /**
+ * 更新用途元数据（`None` = 不变；不影响 selected 行为）。
+ */
+purpose?: ModelPurposeDto, 
+/**
+ * 更新能力标签（`None` = 不变；不影响 selected 行为）。
+ */
+caps?: Array<string>, 
+/**
+ * 上下文窗口（token）：`None` = 不变；`Some(0)` = 清除（未设置）。
+ */
+context_window?: number, 
+/**
+ * 最大输出（token）：`None` = 不变；`Some(0)` = 清除（未设置）。
+ */
+max_output?: number, 
+/**
+ * 价格（micros / MTok）：`None` = 不变；全 0 = 清除（未定价）。
+ */
+price?: PriceDto, 
+/**
  * 覆盖默认档位标签（默认用 provider 的 suggested_tier）。
  */
 tier?: string, 
@@ -185,17 +279,16 @@ auto_include_pattern?: string,
 /**
  * 取消 deprecated 标记（上游恢复但刷新没清掉的场合手动恢复）。
  */
-clear_deprecated?: boolean, };
+clear_deprecated?: boolean, 
+/**
+ * 持久隐藏/恢复目录条目（删除/还原）。
+ */
+hidden?: boolean, };
 
 /**
  * 编译选项。
  */
 export type CompileRequest = { 
-/**
- * 编译后是否为每个 provider 生成/更新一个聚合虚拟模型
- * （`auto-{provider}`，含其全部候选）。默认 true。
- */
-create_virtual_models?: boolean, 
 /**
  * If-Match（config CAS）。
  */
@@ -245,6 +338,23 @@ revision: string, editable: boolean, document: JsonValue, secrets: Array<SecretR
  * 配置校验问题（字段路径可映射到表单控件）。
  */
 export type ConfigIssue = { path: string, code: string, message: string, };
+
+/**
+ * `POST /v2/admin/config/reload` 响应。
+ */
+export type ConfigReloadResponse = { 
+/**
+ * 重读后磁盘配置的 revision（与 GET /config 同源）。
+ */
+revision: string, 
+/**
+ * 运行时目录是否已替换（非法配置时为 false，运行时保持原样）。
+ */
+reloaded: boolean, 
+/**
+ * 磁盘 `[server]` 段与进程启动时不同 → 需要重启才能生效。
+ */
+restart_required: boolean, issues: Array<ConfigIssue>, };
 
 /**
  * `GET /v2/admin/config` 的 warnings。
@@ -360,6 +470,47 @@ credential_ref?: string,
 source: string, };
 
 /**
+ * 一次判官（决策模型）调用。审计表只存结构化字段，不含 prompt 正文。
+ */
+export type JudgeCallSummary = { 
+/**
+ * 触发这次判官的客户端请求。
+ */
+request_id: string, 
+/**
+ * 路由组 id（组判断）或判官问题 id（全局判官）。
+ */
+question_id: string, 
+/**
+ * 判官模型 / 服务标识。
+ */
+service_id: string, outcome: string, failure_code: string | null, 
+/**
+ * 本次调用的输出版本/来源（例如 `external_jev` 表示 JEV 决策模型）。
+ */
+effective_source: string, 
+/**
+ * 调用耗时（毫秒）。
+ */
+latency_ms: number, prompt_tokens: number | null, completion_tokens: number | null, cost_micros: number | null, 
+/**
+ * 调用输入摘要：`{task, prompt, choices}`（任务与提示词截断；不含 system/工具正文）。
+ */
+request: JsonValue | null, 
+/**
+ * 调用输出：`{kind, value, confidence, reason}`（失败时为 `None`）。
+ */
+response: JsonValue | null, 
+/**
+ * 失败详情（失败码之外的错误消息）。
+ */
+failure_message: string | null, 
+/**
+ * Unix 毫秒。
+ */
+created_at: number, };
+
+/**
  * 判官维度汇总。
  */
 export type JudgeSummary = { calls: number, failed: number, cost_micros: number, };
@@ -417,6 +568,11 @@ export type LogsResponse = { items: Array<LogEntry>, next_cursor: number | null,
  * 运行模式摘要。
  */
 export type ModeSummary = { judge: string, cost_gate: string, };
+
+/**
+ * 目录模型的用途（选择器分组元数据；不参与候选编译）。
+ */
+export type ModelPurposeDto = "chat" | "judge_llm" | "jev";
 
 /**
  * 分页信封：游标为 `(created_at, id)` 的 base64 编码。
@@ -478,7 +634,11 @@ account_count: number,
 /**
  * 该 provider 编译出的候选数。
  */
-candidate_count: number, created_at: number, };
+candidate_count: number, 
+/**
+ * provider 级启停；停用后下次编译的候选为 disabled，账号/目录保留。
+ */
+enabled: boolean, created_at: number, };
 
 /**
  * provider 类型（决定 wire 协议与目录拉取方式）。
@@ -530,7 +690,16 @@ id?: string,
 /**
  * 模板 id；`custom-openai` 等自定义模板也可省略。
  */
-template_id?: string, display_name?: string, kind?: ProviderKindDto, base_url?: string, catalog_url?: string, };
+template_id?: string, display_name?: string, kind?: ProviderKindDto, base_url?: string, catalog_url?: string, 
+/**
+ * provider 级启停；`None` = 创建默认启用 / 更新不变。
+ */
+enabled?: boolean, };
+
+/**
+ * `GET /v2/admin/provider-usage` 响应。
+ */
+export type ProviderUsageResponse = { accounts: Array<AccountUsageInfo>, };
 
 /**
  * 账号配额窗口状态（管理面 `GET /v2/admin/quotas`）。
@@ -568,7 +737,11 @@ updated_at: number, };
 /**
  * `GET /v2/admin/requests/{id}`：列表字段 + 决策详情。
  */
-export type RequestDetail = { task_id: string | null, session_key_source: string, collision_suspect: boolean, selection_level: string, dispatch_provider: string | null, dispatch_level: string | null, plan_mode: string, preference: JsonValue, failover: JsonValue, attempts: Array<AttemptSummary>, switches: number, cache_write_tokens: number, facts_completeness: string, profile_revision: string | null, config_digest: string | null, judge: JsonValue | null, contributions: JsonValue, authority: JsonValue | null, request_id: string, 
+export type RequestDetail = { task_id: string | null, session_key_source: string, collision_suspect: boolean, selection_level: string, dispatch_provider: string | null, dispatch_level: string | null, plan_mode: string, preference: JsonValue, failover: JsonValue, attempts: Array<AttemptSummary>, 
+/**
+ * 这次请求触发的判官调用（组判断与全局判官）。
+ */
+judge_calls: Array<JudgeCallSummary>, switches: number, cache_write_tokens: number, facts_completeness: string, profile_revision: string | null, config_digest: string | null, judge: JsonValue | null, contributions: JsonValue, authority: JsonValue | null, request_id: string, 
 /**
  * Unix 毫秒。
  */
@@ -582,6 +755,34 @@ export type RequestSummary = { request_id: string,
  * Unix 毫秒。
  */
 created_at: number, session_key: string, branch_id: string, ingress_protocol: string, selection_model: string, dispatch_model: string | null, dispatch_source: string | null, outcome: string, http_status: number | null, ttft_ms: number | null, duration_ms: number, tokens: TokenUsage, cost_micros: CostUsage, reason_codes: Array<string>, plan_id: string, };
+
+/**
+ * `GET /v2/admin/requests/{id}/transcript`：一轮请求的消息与模型回复。
+ *
+ * 消息记录由配置 `[recording] transcript`（默认 `true`）控制；关闭后新请求不再记录，
+ * 但历史记录保留。`recorded = false` 表示这次请求没有消息（关闭记录或早于该能力）。
+ */
+export type RequestTranscript = { request_id: string, session_key: string, 
+/**
+ * Unix 毫秒。
+ */
+created_at: number, 
+/**
+ * 这一轮发给上游的消息（system 在最前）。
+ */
+input: Array<TranscriptMessage>, 
+/**
+ * 上游回复（通常一条 assistant；失败/取消时可能为空或只有部分文本）。
+ */
+output: Array<TranscriptMessage>, 
+/**
+ * 有内容因单条/单轮上限被截断。
+ */
+truncated: boolean, 
+/**
+ * 这次请求是否有消息记录。
+ */
+recorded: boolean, };
 
 /**
  * 配置文档中的凭据引用（不返回密钥值）。
@@ -618,6 +819,35 @@ bucket: string,
  * Unix 毫秒。
  */
 from: number, to: number, group_by: string, metric: string, series: Array<SeriesGroup>, };
+
+/**
+ * `GET /v2/admin/sessions` 列表项：一个会话的完整调用汇总（服务端聚合，不受列表分页影响）。
+ */
+export type SessionSummary = { session_key: string, requests: number, failures: number, tokens: TokenUsage, cost_micros: CostUsage, 
+/**
+ * 判官调用次数。
+ */
+judge_calls: number, 
+/**
+ * 其中没拿到结论的次数（`failed` / `unavailable` / `budget_exceeded`；`no_match` 是合法答案）。
+ */
+judge_failures: number, 
+/**
+ * 判官成本（已包含在 `cost_micros.routing` 里，单独给出便于观测，不要重复相加）。
+ */
+judge_cost_micros: number, 
+/**
+ * 会话涉及的路由组/模型（去重）。
+ */
+models: Array<string>, 
+/**
+ * Unix 毫秒。
+ */
+first_at: number, 
+/**
+ * Unix 毫秒。
+ */
+last_at: number, };
 
 /**
  * `GET /v2/admin/stats/summary`。
@@ -669,6 +899,22 @@ limits: KeyLimits | null, };
 export type TokenUsage = { input: number, cache_read: number, output: number, };
 
 /**
+ * `GET /v2/admin/requests/{id}/transcript` 里的一条消息。
+ *
+ * 正文是**展平后的文本**：图片/音频只留占位符（不存 base64），
+ * 工具调用/工具结果以可读文本展开。
+ */
+export type TranscriptMessage = { 
+/**
+ * `system` / `user` / `assistant` / `tool`。
+ */
+role: string, 
+/**
+ * 工具名或消息名（有则带上）。
+ */
+name: string | null, text: string, };
+
+/**
  * `PATCH /v2/admin/tokens/{id}`：设置或清除限额。
  */
 export type UpdateTokenLimitsRequest = { 
@@ -681,6 +927,15 @@ limits?: KeyLimits, };
  * 用量维度。
  */
 export type UsageDimension = "agent" | "model" | "candidate" | "account" | "session";
+
+/**
+ * 键级限额（如 OpenRouter key 的 limit / limit_remaining / usage）。
+ */
+export type UsageLimitInfo = { 
+/**
+ * 限额币种（OpenRouter 为 USD）。
+ */
+currency: string, limit?: string, remaining?: string, used?: string, };
 
 /**
  * `GET /v2/admin/usage`。
@@ -715,6 +970,32 @@ avg_ttft_ms: number | null,
  * 缓存命中率 = cache_read / (input + cache_read)；无输入为 null。
  */
 cache_hit_ratio: number | null, };
+
+/**
+ * 用量查询状态。
+ */
+export type UsageStatus = "ok" | "unsupported" | "error";
+
+/**
+ * 订阅窗口用量（如 OpenCode Go 的 rolling / weekly / monthly）。
+ */
+export type UsageWindowInfo = { 
+/**
+ * 窗口标识（`rolling` / `weekly` / `monthly`）。
+ */
+label: string, 
+/**
+ * 已用百分比（厂商原始口径，通常 0–100）。
+ */
+percent: number, 
+/**
+ * 厂商标记为已限流。
+ */
+limited: boolean, 
+/**
+ * 窗口重置时间（Unix 毫秒）。
+ */
+resets_at?: number, };
 
 /**
  * `POST /v2/admin/config/validate` 响应。

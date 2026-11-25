@@ -25,6 +25,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     M8_QUOTA_LIMITS,
     M9_COMPILED_CANDIDATES,
     M10_DROP_APPROVALS,
+    M11_PROVIDER_ENABLED,
+    M12_MODEL_PURPOSE_CAPS,
+    M13_CATALOG_HIDDEN,
+    M14_MODEL_THINKING_LEVELS,
+    M15_REQUEST_TRANSCRIPTS,
+    M16_JUDGE_CALL_DETAIL,
 ];
 
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
@@ -378,4 +384,62 @@ CREATE TABLE compiled_candidates (
 /// `admin:approve` scope、[approvals] 配置段）已删除，审计表一并清掉。
 const M10_DROP_APPROVALS: &str = r#"
 DROP TABLE IF EXISTS approvals;
+"#;
+
+/// migration 11（v3 供应商页）：provider 级停用开关。
+///
+/// 停用后不删除账号/目录；下次编译时其候选以 `enabled = false` 写入配置，
+/// 已有路由组继续引用但不会再被派发。
+const M11_PROVIDER_ENABLED: &str = r#"
+ALTER TABLE providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+"#;
+
+/// migration 12（M2 增强）：目录模型的用途与能力标签。
+///
+/// 只是目录/UI 元数据 + 编译时写入候选 capability tags；不改变候选编译的
+/// 「全部勾选模型都进候选」语义，也不把 purpose 写进候选。
+const M12_MODEL_PURPOSE_CAPS: &str = r#"
+ALTER TABLE catalog_models ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat';
+ALTER TABLE catalog_models ADD COLUMN caps_json TEXT;
+"#;
+
+/// migration 13：目录模型持久删除（隐藏）。
+///
+/// 删除不物理删行：刷新目录时保留 hidden，避免同一模型被上游目录重新带回。
+/// 用户可在目录页「显示已移除」后恢复。
+const M13_CATALOG_HIDDEN: &str = r#"
+ALTER TABLE catalog_models ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// migration 14：目录模型的推理档位（models.dev 自动填充；编译成候选默认值）。
+const M14_MODEL_THINKING_LEVELS: &str = r#"
+ALTER TABLE catalog_models ADD COLUMN thinking_levels_json TEXT;
+"#;
+
+/// migration 15：每轮请求的消息与模型回复（活动 → 会话 查看轮次消息）。
+///
+/// 只存展平后的文本（图片/音频变占位符，不存 base64）；与账本同键 `request_id`，
+/// 会话维度走 `session_key` 索引。由配置 `[recording] transcript` 控制是否写入。
+const M15_REQUEST_TRANSCRIPTS: &str = r#"
+CREATE TABLE request_transcripts (
+  request_id  TEXT PRIMARY KEY,
+  session_key TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  input_json  TEXT    NOT NULL,
+  output_json TEXT    NOT NULL,
+  truncated   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_request_transcripts_session
+  ON request_transcripts(session_key, created_at);
+"#;
+
+/// migration 16：判官（含 JEV 决策模型）调用的详细输入/输出。
+///
+/// 只存结构化摘要：任务文本（截断）、问题提示词、选项；答案（choice/bool/score、
+/// 置信度、理由）与失败信息。不存完整 HTTP 请求体。
+const M16_JUDGE_CALL_DETAIL: &str = r#"
+ALTER TABLE judge_calls ADD COLUMN request_json TEXT;
+ALTER TABLE judge_calls ADD COLUMN response_json TEXT;
+ALTER TABLE judge_calls ADD COLUMN failure_message TEXT;
 "#;

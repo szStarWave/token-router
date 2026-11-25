@@ -20,6 +20,7 @@ fn request() -> SetupRequest {
         gateway_url: "http://127.0.0.1:17621".to_string(),
         credential_ref: "env:TR_TOKEN".to_string(),
         model: "auto".to_string(),
+        force_model: false,
     }
 }
 

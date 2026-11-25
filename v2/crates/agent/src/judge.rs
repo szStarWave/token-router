@@ -17,9 +17,10 @@ use tr_decide::budget::{Budget, BudgetDecision, BudgetTracker};
 use tr_decide::http::{HttpJudgeConfig, HttpJudgeModel};
 use tr_decide::llm::{LlmJudgeConfig, LlmJudgeModel, StructuredOutput};
 use tr_decide::local::{LocalDecisionModel, LocalSignals};
+use tr_decide::system_one::{SystemOneJudgeConfig, SystemOneJudgeModel};
 use tr_decide::{DecisionModel, consult, to_verdict};
 
-use crate::store::judge::JudgeCallRecord;
+use crate::store::judge::{JudgeCallDetail, JudgeCallRecord};
 
 /// 判官模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +62,15 @@ pub enum Backend {
         max_output_tokens: u32,
         timeout_ms: u32,
         service_id: String,
+        /// 判官关闭思考（judge service 配置，默认 true）。
+        disable_thinking: bool,
+    },
+    Jev {
+        endpoint: String,
+        model: String,
+        credential: Option<String>,
+        timeout_ms: u32,
+        service_id: String,
     },
 }
 
@@ -68,7 +78,9 @@ impl Backend {
     fn service_id(&self) -> &str {
         match self {
             Self::Local => "local-heuristic",
-            Self::Http { service_id, .. } | Self::Llm { service_id, .. } => service_id,
+            Self::Http { service_id, .. }
+            | Self::Llm { service_id, .. }
+            | Self::Jev { service_id, .. } => service_id,
         }
     }
 
@@ -76,7 +88,7 @@ impl Backend {
         match self {
             Self::Local => 1,
             Self::Http { revision, .. } => *revision,
-            Self::Llm { .. } => 1,
+            Self::Llm { .. } | Self::Jev { .. } => 1,
         }
     }
 
@@ -85,6 +97,7 @@ impl Backend {
             Self::Local => "heuristic",
             Self::Http { .. } => "external_service",
             Self::Llm { .. } => "external_llm",
+            Self::Jev { .. } => "external_jev",
         }
     }
 }
@@ -169,6 +182,7 @@ impl JudgeRuntime {
                 max_output_tokens,
                 timeout_ms,
                 service_id,
+                disable_thinking,
             } => {
                 let judge = LlmJudgeModel::new(LlmJudgeConfig {
                     endpoint: endpoint.clone(),
@@ -179,8 +193,26 @@ impl JudgeRuntime {
                     temperature: *temperature,
                     max_output_tokens: *max_output_tokens,
                     service_id: service_id.clone(),
+                    disable_thinking: *disable_thinking,
                 })
                 .map_err(|error| format!("judge llm client: {error}"))?;
+                Some(Arc::new(judge))
+            }
+            Backend::Jev {
+                endpoint,
+                model,
+                credential,
+                timeout_ms,
+                service_id,
+            } => {
+                let judge = SystemOneJudgeModel::new(SystemOneJudgeConfig {
+                    endpoint: endpoint.clone(),
+                    model: model.clone(),
+                    credential: credential.clone(),
+                    timeout: Duration::from_millis(u64::from(*timeout_ms)),
+                    service_id: service_id.clone(),
+                })
+                .map_err(|error| format!("judge jev client: {error}"))?;
                 Some(Arc::new(judge))
             }
         };
@@ -204,9 +236,11 @@ impl JudgeRuntime {
         self.settings.mode == JudgeMode::Shadow
     }
 
-    /// 咨询一批请求。`turn_key` 用于预算的轮次划分（通常是 plan_id）。
+    /// 咨询一批请求。`turn_key` 用于预算的轮次划分（通常是 plan_id）；
+    /// `request_id` 是触发这次判官的客户端请求（审计与账本用它关联）。
     pub async fn consult(
         &self,
+        request_id: uuid::Uuid,
         session_key: &str,
         turn_key: &str,
         snapshot: &DecisionSnapshot,
@@ -226,12 +260,25 @@ impl JudgeRuntime {
         sorted.sort_by_key(|request| std::cmp::Reverse(request.priority));
 
         for request in sorted {
+            let input = JudgeInput {
+                question: request.question.clone(),
+                category: request.category.clone(),
+                evidence: request.evidence.clone(),
+                context: context.clone(),
+            };
+            // 详细调用记录：LLM 记录实际发出的 messages，其余后端记录任务/提示词/选项。
+            let request_json = match &self.settings.backend {
+                Backend::Llm { .. } => {
+                    crate::judge_detail::llm_messages(&tr_decide::llm::build_messages(&input))
+                }
+                _ => crate::judge_detail::request_summary(&input),
+            };
             let decision = self
                 .tracker
                 .try_consume(session_key, turn_key, self.settings.budget);
             if decision != BudgetDecision::Allowed {
                 outcome.calls.push(JudgeCallRecord {
-                    request_id: uuid::Uuid::new_v4(),
+                    request_id,
                     question_id: request.id.clone(),
                     service_id: self.settings.backend.service_id().to_string(),
                     revision: self.settings.backend.revision(),
@@ -244,16 +291,15 @@ impl JudgeRuntime {
                     completion_tokens: None,
                     cost_micros: None,
                     created_at: snapshot.now_unix,
+                    detail: JudgeCallDetail {
+                        request_json: Some(request_json.to_string()),
+                        response_json: None,
+                        failure_message: Some(format!("budget: {decision:?}")),
+                    },
                 });
                 continue;
             }
 
-            let input = JudgeInput {
-                question: request.question.clone(),
-                category: request.category.clone(),
-                evidence: request.evidence.clone(),
-                context: context.clone(),
-            };
             let deadline = Duration::from_millis(u64::from(self.settings.budget.deadline_ms));
             let started = Instant::now();
 
@@ -330,7 +376,10 @@ impl JudgeRuntime {
                 effective_source: match effective_source {
                     "fallback" => tr_contracts::JudgeEffectiveSource::Fallback,
                     "external_llm" => tr_contracts::JudgeEffectiveSource::ExternalLlm,
-                    "external_service" => tr_contracts::JudgeEffectiveSource::ExternalService,
+                    // 契约枚举没有单独的 JEV 变体；JEV 是外部决策服务。
+                    "external_jev" | "external_service" => {
+                        tr_contracts::JudgeEffectiveSource::ExternalService
+                    }
                     _ => tr_contracts::JudgeEffectiveSource::Heuristic,
                 },
                 fallback_used: failure.is_some(),
@@ -341,7 +390,7 @@ impl JudgeRuntime {
             outcome.traces.push(trace.clone());
 
             outcome.calls.push(JudgeCallRecord {
-                request_id: uuid::Uuid::new_v4(),
+                request_id,
                 question_id: request.id.clone(),
                 service_id: self.settings.backend.service_id().to_string(),
                 revision: self.settings.backend.revision(),
@@ -360,6 +409,21 @@ impl JudgeRuntime {
                 completion_tokens: usage.map(|usage| usage.completion_tokens),
                 cost_micros: usage.map(|usage| usage.cost_micros),
                 created_at: snapshot.now_unix,
+                // 详细调用记录：任务/提示词/选项 + 答案（或失败信息）。
+                detail: JudgeCallDetail {
+                    request_json: Some(request_json.to_string()),
+                    response_json: answer
+                        .as_ref()
+                        .map(|answer| crate::judge_detail::response_summary(answer).to_string()),
+                    failure_message: failure.as_ref().map(|failure| {
+                        match failure.message.as_deref() {
+                            Some(message) if !message.is_empty() => {
+                                format!("{:?}: {message}", failure.code)
+                            }
+                            _ => format!("{:?}", failure.code),
+                        }
+                    }),
+                },
             });
         }
 
@@ -601,10 +665,13 @@ mod tests {
             evidence: EvidenceRef::default(),
         };
 
+        let request_id = uuid::Uuid::new_v4();
         let outcome = runtime
-            .consult("session", "turn", &snapshot, &[request])
+            .consult(request_id, "session", "turn", &snapshot, &[request])
             .await;
         assert_eq!(outcome.verdicts.len(), 1);
+        // 审计行必须挂在触发它的请求上（否则无法按请求/会话关联）。
+        assert_eq!(outcome.calls[0].request_id, request_id);
         assert!(matches!(outcome.verdicts[0], Verdict::Escalate { .. }));
         assert_eq!(outcome.calls.len(), 1);
         assert_eq!(outcome.calls[0].outcome, "answered");
@@ -614,7 +681,13 @@ mod tests {
     async fn off_mode_does_nothing() {
         let runtime = JudgeRuntime::new(JudgeSettings::default()).expect("runtime");
         let outcome = runtime
-            .consult("s", "t", &DecisionSnapshot::default(), &[])
+            .consult(
+                uuid::Uuid::new_v4(),
+                "s",
+                "t",
+                &DecisionSnapshot::default(),
+                &[],
+            )
             .await;
         assert!(outcome.verdicts.is_empty());
         assert!(outcome.calls.is_empty());

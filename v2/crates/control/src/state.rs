@@ -25,8 +25,18 @@ pub struct ControlState {
     pub events: Arc<EventBus>,
     /// 进程启动时间（Unix 毫秒）。
     pub started_at: i64,
+    /// 进程启动时生效的 `[server]` 段（热加载不改监听/鉴权；用于 restart 判定）。
+    running_server: Option<Arc<tr_agent::config::ServerConfig>>,
     /// 优雅关闭信号（supervisor/CLI 触发）。
     shutdown: Arc<AtomicBool>,
+    /// 配置写锁（可靠性修复）：apply / rollback / provider compile 的
+    /// 「读盘 → 改 → 写」全程必须持锁，防止管理面自身两个写者交错。
+    /// 只序列化本服务内的写者；外部进程手改 config.toml 无 OS 级锁，
+    /// 由 CAS（If-Match 对当前磁盘 revision）兜底。
+    config_write_lock: Arc<Mutex<()>>,
+    /// 账户余额查询缓存（account_id → (fetched_at, info)），进程内 60s TTL。
+    usage_cache:
+        Arc<Mutex<std::collections::HashMap<String, (i64, tr_contracts::AccountUsageInfo)>>>,
 }
 
 impl ControlState {
@@ -40,7 +50,25 @@ impl ControlState {
             events: Arc::new(EventBus::new()),
             started_at: now_millis(),
             shutdown: Arc::new(AtomicBool::new(false)),
+            running_server: None,
+            config_write_lock: Arc::new(Mutex::new(())),
+            usage_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// 账户余额缓存（克隆 Arc，调用方只在读写瞬间持锁，不跨 await）。
+    pub(crate) fn usage_cache(
+        &self,
+    ) -> Arc<Mutex<std::collections::HashMap<String, (i64, tr_contracts::AccountUsageInfo)>>> {
+        self.usage_cache.clone()
+    }
+
+    /// 配置写锁的守卫。持锁期间再取锁会阻塞（不许嵌套：compile 持锁后
+    /// 只能走 `config_service::apply_locked` 这类不加锁的内部 helper）。
+    pub fn config_write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.config_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
@@ -49,6 +77,18 @@ impl ControlState {
         }
         self.config_path = Some(path);
         self
+    }
+
+    /// 记录进程启动时生效的 `[server]` 段：热加载不会改变监听/鉴权，
+    /// 用它判断磁盘改动是否需要重启（`None` = 未知，视为不需要）。
+    pub fn with_running_server(mut self, server: tr_agent::config::ServerConfig) -> Self {
+        self.running_server = Some(std::sync::Arc::new(server));
+        self
+    }
+
+    /// 启动时生效的 `[server]` 段（测试/CLI 未设置时为 `None`）。
+    pub fn running_server(&self) -> Option<tr_agent::config::ServerConfig> {
+        self.running_server.as_deref().cloned()
     }
 
     pub fn with_logs(mut self, logs: LogTail) -> Self {

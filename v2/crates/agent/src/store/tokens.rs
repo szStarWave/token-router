@@ -208,6 +208,35 @@ pub fn revoke(db: &Db, id: &str, now_millis: i64) -> Result<bool, StoreError> {
     Ok(updated > 0)
 }
 
+/// 重新签发 token 明文（rotate）：同 id / 名称 / 作用域，换新的哈希与前缀。
+///
+/// 旧明文立即失效（哈希不再匹配）；`last_used_at` 清空——新密文尚未被任何客户端用过。
+/// `created_at` 保留：这是同一把钥匙换了齿。已撤销的 token 不可重新签发。
+/// 返回是否存在（不存在或已撤销均为 false）。
+pub fn rotate(db: &Db, id: &str, plaintext: &str) -> Result<bool, StoreError> {
+    let digest = sha256_hex(plaintext);
+    let prefix: String = plaintext.chars().take(8).collect();
+    let updated = db.write().execute(
+        "UPDATE tokens SET token_sha256 = ?2, prefix = ?3, last_used_at = NULL
+          WHERE id = ?1 AND revoked_at IS NULL",
+        params![id, digest, prefix],
+    )?;
+    Ok(updated > 0)
+}
+
+/// 硬删除已撤销的 token（purge）。
+///
+/// 只删已撤销的：活跃 token 必须先撤销（保留审计），再清理记录。
+/// 账本里的 `authority_id` 只是字符串，没有外键，删记录不影响历史请求。
+/// 返回是否存在（不存在或未撤销均为 false）。
+pub fn purge(db: &Db, id: &str) -> Result<bool, StoreError> {
+    let changed = db.write().execute(
+        "DELETE FROM tokens WHERE id = ?1 AND revoked_at IS NOT NULL",
+        params![id],
+    )?;
+    Ok(changed > 0)
+}
+
 /// `last_used_at` 每分钟最多回写一次。
 pub fn touch_last_used(db: &Db, token_sha256: &str, now_millis: i64) -> Result<(), StoreError> {
     let connection = db.write();
@@ -362,5 +391,65 @@ mod tests {
         touch_last_used(&db, &record.token_sha256, 70000).unwrap();
         let fetched = find_by_id(&db, "t-1").unwrap().unwrap();
         assert_eq!(fetched.last_used_at, Some(70000));
+    }
+
+    #[test]
+    fn rotate_replaces_secret_and_keeps_identity() {
+        let db = Db::open_in_memory().unwrap();
+        let record = sample(vec![AdminScope::Inference]);
+        insert(&db, &record).unwrap();
+
+        let fresh = generate_token();
+        assert!(rotate(&db, "t-1", &fresh).unwrap());
+
+        let fetched = find_by_id(&db, "t-1").unwrap().unwrap();
+        // id / 名称 / 作用域 / 创建时间不变。
+        assert_eq!(fetched.id, "t-1");
+        assert_eq!(fetched.name, "admin");
+        assert_eq!(fetched.scopes, vec![AdminScope::Inference]);
+        assert_eq!(fetched.created_at, 1000);
+        // 哈希与前缀换成新的。
+        assert_eq!(fetched.token_sha256, sha256_hex(&fresh));
+        assert_eq!(fetched.prefix, fresh.chars().take(8).collect::<String>());
+        // 旧明文立即失效，新明文可用。
+        assert!(
+            find_active_by_plaintext(&db, &record.token_sha256, 2000)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            find_active_by_plaintext(&db, &fresh, 2000)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn rotate_rejects_revoked_and_missing() {
+        let db = Db::open_in_memory().unwrap();
+        let record = sample(vec![AdminScope::AdminRead]);
+        insert(&db, &record).unwrap();
+        assert!(!rotate(&db, "nope", &generate_token()).unwrap());
+        revoke(&db, "t-1", 2000).unwrap();
+        assert!(!rotate(&db, "t-1", &generate_token()).unwrap());
+    }
+
+    #[test]
+    fn purge_only_deletes_revoked() {
+        let db = Db::open_in_memory().unwrap();
+        let record = sample(vec![AdminScope::AdminRead]);
+        insert(&db, &record).unwrap();
+
+        // 活跃的不能直接删。
+        assert!(!purge(&db, "t-1").unwrap());
+        assert!(find_by_id(&db, "t-1").unwrap().is_some());
+
+        // 撤销后可删。
+        revoke(&db, "t-1", 2000).unwrap();
+        assert!(purge(&db, "t-1").unwrap());
+        assert!(find_by_id(&db, "t-1").unwrap().is_none());
+
+        // 重复删除返回 false。
+        assert!(!purge(&db, "t-1").unwrap());
     }
 }

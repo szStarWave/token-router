@@ -15,9 +15,11 @@ pub mod config_service;
 pub mod error;
 pub mod events;
 pub mod logs;
+pub mod modelsdev;
 pub mod playground;
 pub mod provider_service;
 pub mod provider_templates;
+pub mod provider_usage;
 pub mod state;
 
 use axum::extract::{Path, Query, State};
@@ -29,8 +31,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tr_contracts::{
     AccountCreateRequest, AccountUpdateRequest, AdminScope, CatalogRefreshRequest,
-    CatalogSelectRequest, CompileRequest, ConfigAuditEntry, CreateTokenRequest, DoctorCheck,
-    DoctorResponse, ImportScanRequest, Page, ProviderUpsertRequest, RequestSummary, TokenInfo,
+    CatalogSelectRequest, CompileRequest, ConfigAuditEntry, ConfigReloadResponse,
+    CreateTokenRequest, DoctorCheck, DoctorResponse, ImportScanRequest, Page,
+    ProviderUpsertRequest, TokenInfo,
 };
 
 pub use crate::auth::AdminAuth;
@@ -47,10 +50,17 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/config", get(config))
         .route("/v2/admin/config/validate", post(config_validate))
         .route("/v2/admin/config/apply", post(config_apply))
+        .route("/v2/admin/config/reload", post(config_reload))
         .route("/v2/admin/config/rollback", post(config_rollback))
         .route("/v2/admin/config/audit", get(config_audit))
         .route("/v2/admin/requests", get(requests))
         .route("/v2/admin/requests/{id}", get(request_detail))
+        .route(
+            "/v2/admin/requests/{id}/transcript",
+            get(request_transcript),
+        )
+        .route("/v2/admin/judge/calls", get(judge_calls_list))
+        .route("/v2/admin/sessions", get(sessions_list))
         .route("/v2/admin/stats/summary", get(stats_summary))
         .route("/v2/admin/stats", get(stats_summary_alias))
         .route("/v2/admin/stats/series", get(stats_series))
@@ -61,6 +71,8 @@ pub fn router(state: ControlState) -> Router {
             "/v2/admin/tokens/{id}",
             delete(tokens_revoke).patch(tokens_update_limits),
         )
+        .route("/v2/admin/tokens/{id}/rotate", post(tokens_rotate))
+        .route("/v2/admin/tokens/{id}/purge", post(tokens_purge))
         .route("/v2/admin/logs", get(logs_endpoint))
         .route("/v2/admin/events", get(events_endpoint))
         .route("/v2/admin/shutdown", post(shutdown))
@@ -93,8 +105,16 @@ pub fn router(state: ControlState) -> Router {
             post(catalog_refresh),
         )
         .route(
+            "/v2/admin/providers/{id}/catalog/enrich",
+            post(catalog_enrich),
+        )
+        .route(
             "/v2/admin/providers/{id}/catalog/select",
             post(catalog_select),
+        )
+        .route(
+            "/v2/admin/providers/{id}/catalog/{model_id}",
+            delete(catalog_delete),
         )
         .route(
             "/v2/admin/providers/{id}/catalog/auto-include",
@@ -103,6 +123,7 @@ pub fn router(state: ControlState) -> Router {
         .route("/v2/admin/providers/compile", post(providers_compile))
         .route("/v2/admin/providers/import", post(providers_import))
         .route("/v2/admin/quotas", get(quotas_list))
+        .route("/v2/admin/provider-usage", get(provider_usage_list))
         .route("/v2/admin/usage", get(usage_endpoint))
         .route("/v2/admin/playground/execute", post(playground_execute))
         .route("/v2/admin/usage/heatmap", get(usage_heatmap_endpoint))
@@ -319,10 +340,8 @@ async fn requests(
         limit: query.limit.unwrap_or(50),
         cursor,
     };
-    let rows = tr_agent::store::admin_query::list_requests(state.pipeline.db(), &db_query)?;
-    let next_cursor = rows.last().map(|row| {
-        tr_agent::store::admin_query::encode_cursor(row.created_at, request_row_id(row))
-    });
+    let (rows, next_cursor) =
+        tr_agent::store::admin_query::list_requests_page(state.pipeline.db(), &db_query)?;
     Ok(Json(Page {
         items: rows,
         next_cursor,
@@ -331,17 +350,6 @@ async fn requests(
 }
 
 /// 游标需要 ledger 的 `id` 列；Summary 不含它，用 (created_at, request_id) 的确定性
-/// 排序代替：游标用 `(created_at, request_id 的字典序排名)` 不可行，
-/// 直接取 created_at 与 request_id 的哈希。这里简化为 created_at + plan_id 序。
-fn request_row_id(row: &RequestSummary) -> i64 {
-    // 用 request_id 的稳定哈希作为次序键（可重放）。
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    row.request_id.hash(&mut hasher);
-    i64::from_ne_bytes(hasher.finish().to_ne_bytes())
-}
-
 async fn request_detail(
     State(state): State<ControlState>,
     headers: HeaderMap,
@@ -350,9 +358,95 @@ async fn request_detail(
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
     let detail = tr_agent::store::admin_query::request_detail(state.pipeline.db(), &id)?;
     match detail {
-        Some(detail) => Ok(Json(detail).into_response()),
+        Some(mut detail) => {
+            // 决策模型调用随请求返回：审计表只存结构化字段，不含 prompt 正文。
+            detail.judge_calls = tr_agent::store::judge::list_calls(
+                state.pipeline.db(),
+                &tr_agent::store::judge::JudgeCallFilter {
+                    request_id: Some(id.clone()),
+                    limit: 50,
+                    ..Default::default()
+                },
+            )?;
+            Ok(Json(detail).into_response())
+        }
         None => Err(AdminApiError::not_found(format!("request {id} not found"))),
     }
+}
+
+/// `GET /v2/admin/requests/{id}/transcript`：这一轮的消息与回复。
+///
+/// 没有记录时返回 `recorded: false`（关闭记录或早于该能力的请求），不当作错误。
+async fn request_transcript(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let transcript = tr_agent::store::transcript::get(state.pipeline.db(), &id)?
+        .unwrap_or_else(|| tr_agent::store::transcript::empty(&id));
+    Ok(Json(transcript).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct JudgeCallsQuery {
+    request_id: Option<String>,
+    session: Option<String>,
+    from: Option<i64>,
+    to: Option<i64>,
+    limit: Option<u32>,
+}
+
+/// `GET /v2/admin/judge-calls`：判官（决策模型）调用审计。
+async fn judge_calls_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(query): Query<JudgeCallsQuery>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let items = tr_agent::store::judge::list_calls(
+        state.pipeline.db(),
+        &tr_agent::store::judge::JudgeCallFilter {
+            request_id: query.request_id,
+            session_key: query.session,
+            from_ms: query.from,
+            to_ms: query.to,
+            limit: query.limit.unwrap_or(100),
+        },
+    )?;
+    Ok(Json(Page {
+        items,
+        next_cursor: None,
+    })
+    .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionsQuery {
+    from: Option<i64>,
+    to: Option<i64>,
+    limit: Option<u32>,
+}
+
+/// `GET /v2/admin/sessions`：会话级完整调用汇总（服务端聚合）。
+async fn sessions_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(query): Query<SessionsQuery>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let (from, to) = resolve_window(query.from, query.to)?;
+    let items = tr_agent::store::admin_query::sessions(
+        state.pipeline.db(),
+        from,
+        to,
+        query.limit.unwrap_or(50),
+    )?;
+    Ok(Json(Page {
+        items,
+        next_cursor: None,
+    })
+    .into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +647,83 @@ async fn tokens_revoke(
     Ok(Json(json!({"ok": true})).into_response())
 }
 
+/// 硬删除已撤销的 token（purge）：清掉撤销后的残留记录。
+///
+/// 撤销是软删除（保留审计）；这是第二步的清理，只删已撤销的记录。
+/// bootstrap token 的明文另有文件副本，删记录会让文件与库不一致——因此拒绝。
+async fn tokens_purge(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let existing = tr_agent::store::tokens::find_by_id(state.pipeline.db(), &id)?
+        .ok_or_else(|| AdminApiError::not_found(format!("token {id} not found")))?;
+    // bootstrap 先判：它的明文另有文件副本，删记录会让文件与库不一致。
+    if state.auth.is_bootstrap_token(&existing) {
+        return Err(AdminApiError::invalid_request(
+            "bootstrap token cannot be purged; its plaintext lives in admin.token",
+        ));
+    }
+    if existing.revoked_at.is_none() {
+        return Err(AdminApiError::invalid_request(
+            "token is still active; revoke it first",
+        ));
+    }
+    let purged = tr_agent::store::tokens::purge(state.pipeline.db(), &id)?;
+    if !purged {
+        return Err(AdminApiError::not_found(format!("token {id} not found")));
+    }
+    Ok(Json(json!({"ok": true})).into_response())
+}
+
+/// 重新签发 token 明文（rotate）：同 id / 名称 / 作用域，换新的明文与前缀。
+///
+/// 旧明文立即失效；明文只在响应里出现这一次。bootstrap token 的明文写在
+/// `<data_dir>/admin.token`，重新签发会让该文件与库里的哈希不一致——因此拒绝。
+async fn tokens_rotate(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let existing = tr_agent::store::tokens::find_by_id(state.pipeline.db(), &id)?
+        .ok_or_else(|| AdminApiError::not_found(format!("token {id} not found")))?;
+    if existing.revoked_at.is_some() {
+        return Err(AdminApiError::invalid_request("token is revoked"));
+    }
+    if state.auth.is_bootstrap_token(&existing) {
+        return Err(AdminApiError::invalid_request(
+            "bootstrap token cannot be rotated; its plaintext lives in admin.token",
+        ));
+    }
+    let plaintext = tr_agent::store::tokens::generate_token();
+    let rotated = tr_agent::store::tokens::rotate(state.pipeline.db(), &id, &plaintext)?;
+    if !rotated {
+        return Err(AdminApiError::not_found(format!(
+            "token {id} not found or already revoked"
+        )));
+    }
+    let updated = tr_agent::store::tokens::find_by_id(state.pipeline.db(), &id)?
+        .ok_or_else(|| AdminApiError::internal("token vanished after rotate"))?;
+    let info = TokenInfo {
+        id: updated.id.clone(),
+        name: updated.name.clone(),
+        prefix: updated.prefix.clone(),
+        scopes: updated.scopes.clone(),
+        created_at: updated.created_at,
+        last_used_at: updated.last_used_at,
+        expires_at: updated.expires_at,
+        revoked_at: updated.revoked_at,
+        limits: updated.limits.clone(),
+    };
+    Ok(Json(tr_contracts::CreatedToken {
+        info,
+        token: plaintext,
+    })
+    .into_response())
+}
+
 // ---------------------------------------------------------------------------
 // logs
 // ---------------------------------------------------------------------------
@@ -687,7 +858,7 @@ async fn config(
     headers: HeaderMap,
 ) -> Result<Response, AdminApiError> {
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
-    let document = config_service::config_document(state.pipeline.catalog(), &state)?;
+    let document = config_service::config_document(&state.pipeline.catalog(), &state)?;
     Ok(Json(document).into_response())
 }
 
@@ -702,8 +873,9 @@ async fn config_validate(
     Json(body): Json<ValidateBody>,
 ) -> Result<Response, AdminApiError> {
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
-    let response = config_service::validate(state.pipeline.catalog(), &state, &body.document_toml)?;
-    // validate 也写审计（契约 §4.7）。
+    let response =
+        config_service::validate(&state.pipeline.catalog(), &state, &body.document_toml)?;
+    // validate 也写审计（契约 §4.7）。normalized_toml 已脱敏后才回传/审计。
     let _ = tr_agent::store::config_audit::insert(
         state.pipeline.db(),
         &tr_agent::store::config_audit::AuditRecord {
@@ -725,16 +897,27 @@ async fn config_apply(
     Json(body): Json<ValidateBody>,
 ) -> Result<Response, AdminApiError> {
     let record = state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    // If-Match 必需：缺失直接 400，不允许无锁盲写。
     let expected_revision = headers
         .get("If-Match")
         .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let response = config_service::apply(
-        state.pipeline.catalog(),
-        &state,
-        &body.document_toml,
-        expected_revision.as_deref(),
-    )?;
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AdminApiError::invalid_request(
+                "If-Match header with the current config revision is required",
+            )
+        })?;
+    // 写盘 + 热替换运行时目录在同一把写锁内完成（不再依赖重启）。
+    let (response, reload) =
+        config_service::apply_and_reload(&state, &body.document_toml, &expected_revision)?;
+    let restart_required = match reload {
+        Ok(outcome) => outcome.restart_required,
+        Err(error) => {
+            eprintln!("config applied but runtime reload failed: {error:?}");
+            true
+        }
+    };
     tr_agent::store::config_audit::insert(
         state.pipeline.db(),
         &tr_agent::store::config_audit::AuditRecord {
@@ -752,12 +935,12 @@ async fn config_apply(
         crate::events::EventKind::ConfigApplied,
         json!({
             "revision": response.revision,
-            "restart_required": true,
+            "restart_required": restart_required,
         }),
     );
     Ok(Json(tr_contracts::ApplyResponse {
         revision: response.revision,
-        restart_required: true,
+        restart_required,
         backup_path: response.backup_path,
     })
     .into_response())
@@ -768,7 +951,14 @@ async fn config_rollback(
     headers: HeaderMap,
 ) -> Result<Response, AdminApiError> {
     let record = state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
-    let response = config_service::rollback(&state)?;
+    let (response, reload) = config_service::rollback_and_reload(&state)?;
+    let restart_required = match reload {
+        Ok(outcome) => outcome.restart_required,
+        Err(error) => {
+            eprintln!("config rolled back but runtime reload failed: {error:?}");
+            true
+        }
+    };
     tr_agent::store::config_audit::insert(
         state.pipeline.db(),
         &tr_agent::store::config_audit::AuditRecord {
@@ -783,8 +973,45 @@ async fn config_rollback(
     )?;
     Ok(Json(tr_contracts::ApplyResponse {
         revision: response.revision,
-        restart_required: true,
+        restart_required,
         backup_path: response.backup_path,
+    })
+    .into_response())
+}
+
+/// `POST /v2/admin/config/reload`：重读磁盘配置并热替换运行时（不写盘）。
+///
+/// 用于外部编辑配置后的手动生效；非法配置返回 422 + issues，运行时保持原样。
+async fn config_reload(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminApiError> {
+    let record = state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let outcome = config_service::reload_runtime(&state)?;
+    tr_agent::store::config_audit::insert(
+        state.pipeline.db(),
+        &tr_agent::store::config_audit::AuditRecord {
+            at: now_millis(),
+            actor: "token",
+            action: "reload",
+            from_revision: Some(&outcome.previous_revision),
+            to_revision: Some(&outcome.revision),
+            note: Some(&record.id),
+            diff: &[],
+        },
+    )?;
+    state.events.publish(
+        crate::events::EventKind::ConfigApplied,
+        json!({
+            "revision": outcome.revision,
+            "restart_required": outcome.restart_required,
+        }),
+    );
+    Ok(Json(ConfigReloadResponse {
+        revision: outcome.revision,
+        reloaded: true,
+        restart_required: outcome.restart_required,
+        issues: Vec::new(),
     })
     .into_response())
 }
@@ -848,7 +1075,44 @@ async fn provider_templates_list(
     headers: HeaderMap,
 ) -> Result<Response, AdminApiError> {
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
-    Ok(Json(provider_service::list_templates()).into_response())
+    let mut items = provider_service::list_templates();
+    // models.dev 补充长尾供应商（内置模板优先；同 id / 同 host 不重复）。
+    // 拉取失败或超时只返回内置模板，添加供应商入口不会被网络阻塞太久。
+    if let Ok(Ok(extra)) = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        crate::modelsdev::provider_templates(&state),
+    )
+    .await
+    {
+        let known_ids: std::collections::BTreeSet<String> =
+            items.iter().map(|item| item.id.clone()).collect();
+        let known_hosts: std::collections::BTreeSet<String> = items
+            .iter()
+            .filter_map(|item| host_of(&item.base_url))
+            .collect();
+        for template in extra {
+            if known_ids.contains(&template.id) {
+                continue;
+            }
+            if host_of(&template.base_url)
+                .map(|host| known_hosts.contains(&host))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            items.push(template);
+        }
+    }
+    Ok(Json(items).into_response())
+}
+
+/// base_url 的 host（去 scheme / 端口 / 路径），用于模板去重。
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = rest.split('/').next().unwrap_or_default();
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 async fn providers_list(
@@ -956,6 +1220,33 @@ async fn catalog_refresh(
     Ok(Json(provider_service::refresh_catalog(&state, &id, body).await?).into_response())
 }
 
+/// `POST /v2/admin/providers/{id}/catalog/enrich`：用 models.dev 补全模型元数据。
+///
+/// 只填空字段（窗口 / 输出上限 / 价格 / 推理档位），不覆盖用户值；成功后重编译候选。
+async fn catalog_enrich(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    let report = crate::modelsdev::enrich_provider(&state, &id).await?;
+    if let Err(error) = provider_service::compile_candidates(
+        &state,
+        CompileRequest {
+            expected_revision: None,
+        },
+    ) {
+        eprintln!("catalog enrich applied but compile failed: {error:?}");
+    }
+    Ok(Json(json!({
+        "provider_id": id,
+        "source_provider": report.source_provider,
+        "matched": report.matched,
+        "filled": report.filled,
+    }))
+    .into_response())
+}
+
 async fn catalog_select(
     State(state): State<ControlState>,
     headers: HeaderMap,
@@ -964,6 +1255,18 @@ async fn catalog_select(
 ) -> Result<Response, AdminApiError> {
     state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
     Ok(Json(provider_service::select_model(&state, &id, body)?).into_response())
+}
+
+async fn catalog_delete(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Path((id, model_id)): Path<(String, String)>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminWrite)?;
+    Ok(Json(provider_service::delete_catalog_model(
+        &state, &id, &model_id,
+    )?)
+    .into_response())
 }
 
 async fn providers_compile(
@@ -1034,6 +1337,25 @@ async fn quotas_list(
     state.auth.authenticate(&headers, AdminScope::AdminRead)?;
     let items = tr_agent::store::quota::list(state.pipeline.db())?;
     Ok(Json(serde_json::json!({ "items": items })).into_response())
+}
+
+/// `GET /v2/admin/provider-usage`：向厂商 usage 接口查询账户余额/订阅。
+///
+/// `?refresh=true` 跳过 60s 缓存；无公开接口的厂商返回 `unsupported`。
+async fn provider_usage_list(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(params): Query<ProviderUsageParams>,
+) -> Result<Response, AdminApiError> {
+    state.auth.authenticate(&headers, AdminScope::AdminRead)?;
+    let usage = provider_usage::list_account_usage(&state, params.refresh).await?;
+    Ok(Json(usage).into_response())
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProviderUsageParams {
+    #[serde(default)]
+    refresh: bool,
 }
 
 /// `DELETE /v2/admin/quotas/{id}`：手动清除某候选的配额窗口（上游恢复后立即生效）。

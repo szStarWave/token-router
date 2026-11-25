@@ -93,7 +93,8 @@ pub enum AdminCommand {
     ConfigApply {
         /// TOML 文件路径
         document: std::path::PathBuf,
-        /// 当前 revision（`admin config` 输出中的 revision）
+        /// 当前 revision（`admin config` GET 输出中的 revision；不要用
+        /// `config-validate` 返回的候选 digest——CAS 基准是当前磁盘 revision）
         #[arg(long)]
         revision: String,
         #[arg(long)]

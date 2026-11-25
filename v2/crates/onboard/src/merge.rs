@@ -97,10 +97,11 @@ fn merge_openclaw(before: &str, request: &SetupRequest) -> Result<String, SetupE
     // 仅在未设置时改默认模型（幂等：不覆盖用户选择）。
     if let Some(agents) = root_obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
         if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-            if defaults
-                .get("model")
-                .and_then(|m| m.get("primary"))
-                .is_none()
+            if request.force_model
+                || defaults
+                    .get("model")
+                    .and_then(|m| m.get("primary"))
+                    .is_none()
             {
                 defaults.insert(
                     "model".to_string(),
@@ -135,17 +136,28 @@ fn merge_claude_code(before: &str, request: &SetupRequest) -> Result<String, Set
         "ANTHROPIC_AUTH_TOKEN".to_string(),
         Value::String(request.credential_ref.clone()),
     );
-    env_obj
-        .entry("ANTHROPIC_MODEL".to_string())
-        .or_insert_with(|| Value::String(request.model.clone()));
-    env_obj
-        .entry("ANTHROPIC_SMALL_FAST_MODEL".to_string())
-        .or_insert_with(|| Value::String(request.model.clone()));
+    if request.force_model {
+        env_obj.insert(
+            "ANTHROPIC_MODEL".to_string(),
+            Value::String(request.model.clone()),
+        );
+        env_obj.insert(
+            "ANTHROPIC_SMALL_FAST_MODEL".to_string(),
+            Value::String(request.model.clone()),
+        );
+    } else {
+        env_obj
+            .entry("ANTHROPIC_MODEL".to_string())
+            .or_insert_with(|| Value::String(request.model.clone()));
+        env_obj
+            .entry("ANTHROPIC_SMALL_FAST_MODEL".to_string())
+            .or_insert_with(|| Value::String(request.model.clone()));
+    }
     Ok(to_json_pretty(&root))
 }
 
 // ---------------------------------------------------------------------------
-// opencode：provider["token-router"]；不强制根 model
+// opencode：provider["token-router"]；默认不强制根 model，显式切换时写入
 // ---------------------------------------------------------------------------
 
 fn merge_opencode(before: &str, request: &SetupRequest) -> Result<String, SetupError> {
@@ -163,6 +175,12 @@ fn merge_opencode(before: &str, request: &SetupRequest) -> Result<String, SetupE
             "models": { request.model.clone(): {} },
         }),
     );
+    if request.force_model {
+        root_obj.insert(
+            "model".to_string(),
+            Value::String(format!("{PROVIDER_KEY}/{}", request.model)),
+        );
+    }
     Ok(to_json_pretty(&root))
 }
 
@@ -193,6 +211,15 @@ fn merge_buddy(before: &str, request: &SetupRequest) -> Result<String, SetupErro
     } else {
         list.push(entry);
     }
+    if request.force_model
+        && let Some(position) = list
+            .iter()
+            .position(|m| m.get("id").and_then(|id| id.as_str()) == Some(request.model.as_str()))
+        && position > 0
+    {
+        let selected = list.remove(position);
+        list.insert(0, selected);
+    }
     Ok(to_json_pretty(&root))
 }
 
@@ -221,8 +248,8 @@ fn merge_hermes(before: &str, request: &SetupRequest) -> Result<String, SetupErr
         }),
     );
 
-    // 仅在未选择时改 model（幂等）。
-    if !root_obj.contains_key("model") {
+    // 显式切换时覆盖；否则仅在未选择时补 model（幂等）。
+    if request.force_model || !root_obj.contains_key("model") {
         root_obj.insert("model".to_string(), Value::String(request.model.clone()));
     }
 
@@ -256,8 +283,8 @@ fn merge_codex_toml(before: &str, request: &SetupRequest) -> Result<String, Setu
     provider_table["wire_api"] = toml_edit::value("responses");
     providers.insert(PROVIDER_KEY, toml_edit::Item::Table(provider_table));
 
-    // 顶层 model 仅未设置时写（幂等）。
-    if doc.get("model").is_none() {
+    // 显式切换时覆盖；否则顶层 model 仅未设置时写（幂等）。
+    if request.force_model || doc.get("model").is_none() {
         doc["model"] = toml_edit::value(request.model.clone());
     }
 

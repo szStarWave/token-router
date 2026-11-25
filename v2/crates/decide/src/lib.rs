@@ -18,6 +18,7 @@ pub mod budget;
 pub mod http;
 pub mod llm;
 pub mod local;
+pub mod system_one;
 
 use std::time::Duration;
 

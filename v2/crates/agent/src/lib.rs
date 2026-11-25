@@ -14,7 +14,9 @@
 pub mod config;
 pub mod dispatch;
 pub mod gate;
+pub mod group_judge;
 pub mod judge;
+pub mod judge_detail;
 pub mod pipeline;
 pub mod reason;
 pub mod route_state;
@@ -22,3 +24,4 @@ pub mod session;
 pub mod store;
 pub mod strategy_fast;
 pub mod strategy_quota;
+pub mod transcript;

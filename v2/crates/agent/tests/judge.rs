@@ -305,6 +305,7 @@ async fn llm_judge_adapter_parses_structured_answer() {
         temperature: 0.0,
         max_output_tokens: 64,
         service_id: "test-judge".to_string(),
+        disable_thinking: true,
     })
     .expect("model");
 

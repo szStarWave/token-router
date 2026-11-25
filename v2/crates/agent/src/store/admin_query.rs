@@ -9,7 +9,7 @@
 use rusqlite::{OptionalExtension, params};
 use tr_contracts::{
     CostUsage, JudgeSummary, LatencySummary, RequestDetail, RequestSummary, SeriesGroup,
-    SeriesPoint, SeriesResponse, StatsSummary, StatsTokenUsage, TokenUsage,
+    SeriesPoint, SeriesResponse, SessionSummary, StatsSummary, StatsTokenUsage, TokenUsage,
 };
 
 use crate::store::{Db, StoreError};
@@ -94,6 +94,17 @@ pub struct LedgerQuery {
 /// 单位约定：DB 里 `created_at` 是 Unix **秒**；契约 API 是 Unix **毫秒**。
 /// 查询入口把毫秒窗口折算成秒；返回前把 `created_at` 放大成毫秒。
 pub fn list_requests(db: &Db, query: &LedgerQuery) -> Result<Vec<RequestSummary>, StoreError> {
+    Ok(list_requests_page(db, query)?.0)
+}
+
+/// 账本列表 + 下一页游标。
+///
+/// 游标内含 **DB 秒**与账本行 `id`（与 `ORDER BY created_at DESC, id DESC` 同一口径）；
+/// 对调用方不透明。只有取满一页时才给游标，最后一页不会诱使客户端多请求一次。
+pub fn list_requests_page(
+    db: &Db,
+    query: &LedgerQuery,
+) -> Result<(Vec<RequestSummary>, Option<String>), StoreError> {
     let to_ms = query.to.unwrap_or_else(now_millis);
     let from_ms = query.from.unwrap_or(to_ms - 24 * 3600 * 1000);
     if to_ms - from_ms > MAX_WINDOW_MS {
@@ -157,9 +168,123 @@ pub fn list_requests(db: &Db, query: &LedgerQuery) -> Result<Vec<RequestSummary>
     let connection = db.read();
     let mut statement = connection.prepare(&sql)?;
     let reference: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|arg| arg.as_ref()).collect();
-    let rows = statement.query_map(reference.as_slice(), row_summary)?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+    let mut out = Vec::new();
+    let mut last: Option<(i64, i64)> = None;
+    // 游标键是 (created_at 秒, 账本 id)；与列表 ORDER BY 同口径。
+    for row in statement.query_map(reference.as_slice(), |row| {
+        let row_id: i64 = row.get(0)?;
+        let created_at_secs: i64 = row.get(2)?;
+        let summary = row_summary(row)?;
+        Ok((created_at_secs, row_id, summary))
+    })? {
+        let (created_at_secs, row_id, summary) = row?;
+        last = Some((created_at_secs, row_id));
+        out.push(summary);
+    }
+    let limit = query.limit.clamp(1, 200);
+    let next_cursor = if out.len() as u32 == limit {
+        last.map(|(created_at_secs, row_id)| encode_cursor(created_at_secs, row_id))
+    } else {
+        None
+    };
+    Ok((out, next_cursor))
+}
+
+/// 会话汇总（契约 `SessionSummary`）：服务端按 `session_key` 聚合整段会话的调用，
+/// 不受请求列表分页/时间窗截断影响；判官调用按 request_id join 账本归到会话。
+pub fn sessions(
+    db: &Db,
+    from_ms: i64,
+    to_ms: i64,
+    limit: u32,
+) -> Result<Vec<SessionSummary>, StoreError> {
+    if to_ms - from_ms > MAX_WINDOW_MS {
+        return Err(StoreError::Invalid("window too large".to_string()));
+    }
+    let from = from_ms / 1000;
+    let to = to_ms / 1000 + 1;
+    let limit = limit.clamp(1, 200);
+
+    let connection = db.read();
+    let mut statement = connection.prepare(
+        "SELECT session_key,
+                COUNT(*),
+                SUM(CASE WHEN outcome = 'success' THEN 0 ELSE 1 END),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(answer_cost_micros), 0),
+                COALESCE(SUM(routing_cost_micros), 0),
+                COALESCE(GROUP_CONCAT(DISTINCT COALESCE(dispatch_model, selection_model)), ''),
+                MIN(created_at),
+                MAX(created_at)
+           FROM ledger
+          WHERE created_at >= ?1 AND created_at < ?2
+          GROUP BY session_key
+          ORDER BY MAX(created_at) DESC
+          LIMIT ?3",
+    )?;
+    let mut rows = statement
+        .query_map(params![from, to, limit], |row| {
+            Ok(SessionSummary {
+                session_key: row.get(0)?,
+                requests: row.get(1)?,
+                failures: row.get(2)?,
+                tokens: TokenUsage {
+                    input: row.get(3)?,
+                    cache_read: row.get(4)?,
+                    output: row.get(5)?,
+                },
+                cost_micros: CostUsage {
+                    answer: row.get(6)?,
+                    routing: row.get(7)?,
+                },
+                judge_calls: 0,
+                judge_failures: 0,
+                judge_cost_micros: 0,
+                models: row
+                    .get::<_, String>(8)?
+                    .split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                first_at: row.get::<_, i64>(9)?.saturating_mul(1000),
+                last_at: row.get::<_, i64>(10)?.saturating_mul(1000),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut judge_statement = connection.prepare(
+        "SELECT l.session_key,
+                COUNT(*),
+                SUM(CASE WHEN jc.outcome NOT IN ('answered', 'selected', 'no_match') THEN 1 ELSE 0 END),
+                COALESCE(SUM(jc.cost_micros), 0)
+           FROM judge_calls jc JOIN ledger l ON l.request_id = jc.request_id
+          WHERE l.created_at >= ?1 AND l.created_at < ?2
+          GROUP BY l.session_key",
+    )?;
+    let judge_rows = judge_statement
+        .query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let judge_by_session: std::collections::HashMap<_, _> = judge_rows
+        .into_iter()
+        .map(|(key, calls, failures, cost)| (key, (calls, failures, cost)))
+        .collect();
+    for row in &mut rows {
+        if let Some((calls, failures, cost)) = judge_by_session.get(&row.session_key) {
+            row.judge_calls = *calls;
+            row.judge_failures = *failures;
+            row.judge_cost_micros = *cost;
+        }
+    }
+    Ok(rows)
 }
 
 /// 单请求详情（契约 `RequestDetail`）。
@@ -179,32 +304,37 @@ pub fn request_detail(db: &Db, request_id: &str) -> Result<Option<RequestDetail>
     let row = statement
         .query_row(params![request_id], |row| {
             let summary = row_summary(row)?;
-            let preference_json: String = row.get(13)?;
-            let failover_json: String = row.get(14)?;
-            let attempts_json: String = row.get(15)?;
-            let _reason_codes: Vec<String> = parse_reason_codes(&row.get::<_, String>(18)?);
-            let task_id: Option<String> = row.get(29)?;
-            let session_key_source: String = row.get(30)?;
-            let collision_suspect: i64 = row.get(31)?;
-            let facts_completeness: String = row.get(32)?;
-            let profile_revision: Option<String> = row.get(33)?;
-            let config_digest: Option<String> = row.get(34)?;
-            let judge_json: Option<String> = row.get(35)?;
-            let contributions_json: String = row.get(36)?;
-            let authority_json: Option<String> = row.get(37)?;
+            // 按列名读取：列表查询与详情查询的 SELECT 顺序不同（详情多出若干列），
+            // 按位置读会在两处 SQL 增删列时静默错位（曾把 http_status 当成 reason_codes_json）。
+            let preference_json: String = row.get("preference_json")?;
+            let failover_json: String = row.get("failover_json")?;
+            let attempts_json: String = row.get("attempts_json")?;
+            let task_id: Option<String> = row.get("task_id")?;
+            let session_key_source: String = row.get("session_key_source")?;
+            let collision_suspect: i64 = row.get("collision_suspect")?;
+            let facts_completeness: String = row.get("facts_completeness")?;
+            let profile_revision: Option<String> = row.get("profile_revision")?;
+            let config_digest: Option<String> = row.get("config_digest")?;
+            let judge_json: Option<String> = row.get("judge_json")?;
+            let contributions_json: String = row.get("contributions_json")?;
+            let authority_json: Option<String> = row.get("authority_json")?;
 
             // attempts 脱敏投影：candidate/outcome/latency/error_class。
+            // 账本里没有独立的 outcome 字段：没有错误类即视为成功。
             let attempts = serde_json::from_str::<serde_json::Value>(&attempts_json)
                 .ok()
                 .and_then(|value| value.as_array().cloned())
                 .unwrap_or_default()
                 .into_iter()
                 .map(|attempt| {
+                    let error_class = attempt.get("error_class").cloned().filter(|v| !v.is_null());
                     serde_json::json!({
                         "candidate_id": attempt.get("candidate_id").cloned().unwrap_or_default(),
-                        "outcome": attempt.get("outcome").cloned().unwrap_or_default(),
+                        "outcome": error_class
+                            .clone()
+                            .unwrap_or_else(|| serde_json::Value::String("success".into())),
                         "latency_ms": attempt.get("duration_ms").cloned().unwrap_or_default(),
-                        "error_class": attempt.get("error_class").cloned().unwrap_or_default(),
+                        "error_class": error_class.unwrap_or(serde_json::Value::Null),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -214,10 +344,10 @@ pub fn request_detail(db: &Db, request_id: &str) -> Result<Option<RequestDetail>
                 task_id,
                 session_key_source,
                 collision_suspect: collision_suspect != 0,
-                selection_level: String::new(),
-                dispatch_provider: None,
-                dispatch_level: None,
-                plan_mode: String::new(),
+                selection_level: row.get("selection_level")?,
+                dispatch_provider: row.get("dispatch_provider")?,
+                dispatch_level: row.get("dispatch_level")?,
+                plan_mode: row.get("plan_mode")?,
                 preference: serde_json::from_str(&preference_json)
                     .unwrap_or(serde_json::Value::Null),
                 failover: serde_json::from_str(&failover_json).unwrap_or(serde_json::Value::Null),
@@ -225,8 +355,12 @@ pub fn request_detail(db: &Db, request_id: &str) -> Result<Option<RequestDetail>
                     .into_iter()
                     .filter_map(|value| serde_json::from_value(value).ok())
                     .collect(),
-                switches: 0,
-                cache_write_tokens: row.get::<_, Option<i64>>(23)?.unwrap_or(0),
+                // 判官调用由调用方（control handler）按 request_id 补齐。
+                judge_calls: Vec::new(),
+                switches: row.get("switches")?,
+                cache_write_tokens: row
+                    .get::<_, Option<i64>>("cache_write_tokens")?
+                    .unwrap_or(0),
                 facts_completeness,
                 profile_revision,
                 config_digest,
@@ -246,38 +380,61 @@ pub fn request_detail(db: &Db, request_id: &str) -> Result<Option<RequestDetail>
 
 #[allow(clippy::type_complexity)]
 fn row_summary(row: &rusqlite::Row<'_>) -> Result<RequestSummary, rusqlite::Error> {
-    let reason_codes = parse_reason_codes(&row.get::<_, String>(18)?);
+    // 按列名读（列表查询与详情查询的 SELECT 顺序不同，位置读取会错位）。
+    let reason_codes = parse_reason_codes(&row.get::<_, String>("reason_codes_json")?);
     // DB 秒 → 契约毫秒。
-    let created_at_secs: i64 = row.get(2)?;
+    let created_at_secs: i64 = row.get("created_at")?;
     Ok(RequestSummary {
-        request_id: row.get(1)?,
+        request_id: row.get("request_id")?,
         created_at: created_at_secs.saturating_mul(1000),
-        session_key: row.get(3)?,
-        branch_id: row.get(4)?,
-        ingress_protocol: row.get(5)?,
-        selection_model: row.get(6)?,
-        dispatch_model: row.get(7)?,
-        dispatch_source: row.get(8)?,
-        outcome: row.get(9)?,
-        http_status: row.get(10)?,
-        ttft_ms: row.get(11)?,
-        duration_ms: row.get(12)?,
+        session_key: row.get("session_key")?,
+        branch_id: row.get("branch_id")?,
+        ingress_protocol: row.get("ingress_protocol")?,
+        selection_model: row.get("selection_model")?,
+        dispatch_model: row.get("dispatch_model")?,
+        dispatch_source: row.get("dispatch_source")?,
+        outcome: row.get("outcome")?,
+        http_status: row.get("http_status")?,
+        ttft_ms: row.get("ttft_ms")?,
+        duration_ms: row.get("duration_ms")?,
         tokens: TokenUsage {
-            input: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
-            cache_read: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
-            output: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
+            input: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
+            cache_read: row.get::<_, Option<i64>>("cache_read_tokens")?.unwrap_or(0),
+            output: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
         },
         cost_micros: CostUsage {
-            answer: row.get::<_, Option<i64>>(16)?.unwrap_or(0),
-            routing: row.get::<_, Option<i64>>(17)?.unwrap_or(0),
+            answer: row
+                .get::<_, Option<i64>>("answer_cost_micros")?
+                .unwrap_or(0),
+            routing: row
+                .get::<_, Option<i64>>("routing_cost_micros")?
+                .unwrap_or(0),
         },
         reason_codes,
-        plan_id: row.get(19)?,
+        plan_id: row.get("plan_id")?,
     })
 }
 
+/// 账本里存的是 `ReasonCode` 对象数组（`{"code":"…","detail":…}`）；契约投影成
+/// `string[]`。兼容纯字符串数组（早期/测试数据）。
 fn parse_reason_codes(json: &str) -> Vec<String> {
-    serde_json::from_str::<Vec<String>>(json).unwrap_or_default()
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| match item {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Object(map) => map
+                .get("code")
+                .and_then(|code| code.as_str())
+                .map(str::to_string),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 时间窗统计汇总（契约 `StatsSummary`）。只从 ledger 聚合。
@@ -398,7 +555,7 @@ fn judge_stats(
     connection
         .query_row(
             "SELECT COUNT(*),
-                    SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN outcome NOT IN ('answered', 'selected', 'no_match') THEN 1 ELSE 0 END),
                     COALESCE(SUM(cost_micros), 0)
                FROM judge_calls WHERE created_at >= ?1 AND created_at < ?2",
             params![from, to],
@@ -700,6 +857,232 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].outcome, "success");
+    }
+
+    /// 详情查询的 SELECT 比列表多出若干列；按列名读才对得上（按位置读曾把
+    /// http_status 当成 reason_codes_json，报 `Invalid column type Integer`）。
+    #[test]
+    fn request_detail_reads_columns_by_name() {
+        let db = seed();
+        let detail = request_detail(&db, "00000000-0000-0000-0000-000000000001")
+            .unwrap()
+            .expect("detail exists");
+        let summary = &detail.summary;
+        assert_eq!(summary.request_id, "00000000-0000-0000-0000-000000000001");
+        assert_eq!(summary.outcome, "success");
+        assert_eq!(summary.http_status, Some(200));
+        assert_eq!(summary.created_at, 1_763_000_000_000);
+        assert_eq!(summary.tokens.input, 10);
+        assert_eq!(summary.tokens.output, 5);
+        assert_eq!(summary.cost_micros.answer, 100);
+        assert_eq!(summary.reason_codes.len(), 1);
+        assert_eq!(summary.plan_id, "pl-00000000-0000-0000-0000-000000000001");
+        // 详情独有字段按列名读：thinking level 与 plan mode 不再被硬编码成空串。
+        assert_eq!(detail.selection_level, "auto");
+        assert_eq!(detail.plan_mode, "cascade");
+        assert_eq!(detail.attempts.len(), 1);
+        assert_eq!(detail.attempts[0].candidate_id, "c-1");
+        assert_eq!(detail.attempts[0].outcome, "success");
+        assert_eq!(detail.attempts[0].latency_ms, Some(100));
+    }
+
+    /// 会话汇总覆盖整段会话（不分页），并把判官调用按 request_id join 进来；
+    /// `selected`/`no_match` 是合法答案，只有 unavailable/failed/budget 计入失败。
+    #[test]
+    fn sessions_aggregate_includes_judge_calls() {
+        let db = seed();
+        let first = "00000000-0000-0000-0000-000000000001";
+        let second = "00000000-0000-0000-0000-000000000002";
+        for (request_id, outcome, cost) in
+            [(first, "selected", Some(7)), (second, "unavailable", None)]
+        {
+            crate::store::judge::insert_call(
+                &db,
+                &crate::store::judge::JudgeCallRecord {
+                    request_id: Uuid::parse_str(request_id).unwrap(),
+                    question_id: "auto".to_string(),
+                    service_id: "group-judge".to_string(),
+                    revision: 1,
+                    protocol_digest: None,
+                    effective_source: "heuristic".to_string(),
+                    outcome: outcome.to_string(),
+                    failure_code: None,
+                    latency_ms: 12,
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(5),
+                    cost_micros: cost,
+                    created_at: 1_763_000_000,
+                    detail: Default::default(),
+                },
+            )
+            .unwrap();
+        }
+
+        let base_ms: i64 = 1_763_000_000 * 1000;
+        let rows = sessions(&db, base_ms - 1000, base_ms + 10_000, 10).unwrap();
+        assert_eq!(rows.len(), 1, "两个请求同会话");
+        let session = &rows[0];
+        assert_eq!(session.session_key, "s-1");
+        assert_eq!(session.requests, 2);
+        assert_eq!(session.failures, 1);
+        assert_eq!(session.tokens.input, 20);
+        assert_eq!(session.tokens.output, 10);
+        assert_eq!(session.cost_micros.answer, 200);
+        assert_eq!(session.judge_calls, 2);
+        assert_eq!(session.judge_failures, 1);
+        assert_eq!(session.judge_cost_micros, 7);
+        assert_eq!(
+            session.models,
+            vec!["glm-flash".to_string(), "glm-pro".to_string()]
+        );
+        assert_eq!(session.first_at, base_ms);
+        assert_eq!(session.last_at, base_ms + 1000);
+    }
+
+    #[test]
+    fn judge_calls_filter_by_request_and_session() {
+        let db = seed();
+        let first = "00000000-0000-0000-0000-000000000001";
+        let second = "00000000-0000-0000-0000-000000000002";
+        for (request_id, service) in [(first, "group-judge"), (second, "judge")] {
+            crate::store::judge::insert_call(
+                &db,
+                &crate::store::judge::JudgeCallRecord {
+                    request_id: Uuid::parse_str(request_id).unwrap(),
+                    question_id: "auto".to_string(),
+                    service_id: service.to_string(),
+                    revision: 1,
+                    protocol_digest: None,
+                    effective_source: "heuristic".to_string(),
+                    outcome: "ok".to_string(),
+                    failure_code: None,
+                    latency_ms: 5,
+                    prompt_tokens: Some(1),
+                    completion_tokens: Some(1),
+                    cost_micros: Some(2),
+                    created_at: 1_763_000_000,
+                    detail: if service == "group-judge" {
+                        crate::store::judge::JudgeCallDetail {
+                            request_json: Some(
+                                r#"{"task":"hi","prompt":"pick","choices":[{"id":"a","label":"A"}]}"#
+                                    .to_string(),
+                            ),
+                            response_json: Some(
+                                r#"{"kind":"choice","value":"a","confidence":0.9}"#.to_string(),
+                            ),
+                            failure_message: None,
+                        }
+                    } else {
+                        Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        }
+
+        let by_request = crate::store::judge::list_calls(
+            &db,
+            &crate::store::judge::JudgeCallFilter {
+                request_id: Some(first.to_string()),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_request.len(), 1);
+        assert_eq!(by_request[0].service_id, "group-judge");
+        assert_eq!(by_request[0].created_at, 1_763_000_000_000);
+        // 详细调用记录：输入摘要与答案以 JSON 返回。
+        assert_eq!(by_request[0].request.as_ref().unwrap()["task"], "hi");
+        assert_eq!(by_request[0].response.as_ref().unwrap()["value"], "a");
+        assert_eq!(by_request[0].effective_source, "heuristic");
+
+        let by_session = crate::store::judge::list_calls(
+            &db,
+            &crate::store::judge::JudgeCallFilter {
+                session_key: Some("s-1".to_string()),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_session.len(), 2);
+    }
+
+    /// 游标翻页不得重复行：分钟级时间窗内同一秒的多条记录靠账本 id 兜底，
+    /// 且游标里的 created_at 必须是 DB 秒（曾经写毫秒，导致第二页重复第一页）。
+    #[test]
+    fn cursor_paging_does_not_repeat_rows() {
+        let db = seed();
+        let base_ms: i64 = 1_763_000_000 * 1000;
+        let query = LedgerQuery {
+            from: Some(base_ms - 1000),
+            to: Some(base_ms + 10_000),
+            limit: 1,
+            ..Default::default()
+        };
+        let (page1, cursor1) = list_requests_page(&db, &query).unwrap();
+        assert_eq!(page1.len(), 1);
+        let cursor = cursor1.expect("满页应给出游标");
+
+        let (page2, _) = list_requests_page(
+            &db,
+            &LedgerQuery {
+                cursor: decode_cursor(&cursor),
+                ..query.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_ne!(
+            page2[0].request_id, page1[0].request_id,
+            "第二页不能重复第一页的行"
+        );
+    }
+
+    /// `judge.failed` 不能只数 outcome='failed'：unavailable / budget_exceeded 同样是
+    /// 没拿到结论；`answered` / `selected` / `no_match` 是合法答案。
+    #[test]
+    fn judge_stats_counts_unavailable_as_failure() {
+        let db = seed();
+        let request_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        for (index, outcome) in [
+            "answered",
+            "unavailable",
+            "selected",
+            "no_match",
+            "budget_exceeded",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            crate::store::judge::insert_call(
+                &db,
+                &crate::store::judge::JudgeCallRecord {
+                    request_id,
+                    question_id: format!("q{index}"),
+                    service_id: "judge".to_string(),
+                    revision: 1,
+                    protocol_digest: None,
+                    effective_source: "external_llm".to_string(),
+                    outcome: outcome.to_string(),
+                    failure_code: None,
+                    latency_ms: 1,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    cost_micros: Some(1),
+                    created_at: 1_763_000_000,
+                    detail: Default::default(),
+                },
+            )
+            .unwrap();
+        }
+
+        let base_ms: i64 = 1_763_000_000 * 1000;
+        let summary = stats_summary(&db, base_ms - 1000, base_ms + 10_000).unwrap();
+        assert_eq!(summary.judge.calls, 5);
+        assert_eq!(summary.judge.failed, 2, "unavailable + budget_exceeded");
+        assert_eq!(summary.judge.cost_micros, 5);
     }
 
     #[test]

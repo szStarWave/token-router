@@ -176,6 +176,17 @@ pub fn reset(db: &Db, candidate_id: &str) -> Result<bool, StoreError> {
     Ok(changed > 0)
 }
 
+/// 编译后清理：删除已不在候选集里的窗口，避免配额页展示已下架模型。
+pub fn retain_candidates(db: &Db, candidate_ids: &[String]) -> Result<usize, StoreError> {
+    let payload = serde_json::to_string(candidate_ids)?;
+    let removed = db.write().execute(
+        "DELETE FROM quota_windows
+          WHERE candidate_id NOT IN (SELECT value FROM json_each(?1))",
+        params![payload],
+    )?;
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +263,18 @@ mod tests {
         assert!(reset(&db, "c1").unwrap());
         assert!(snapshot(&db, "c1").unwrap().is_none());
         assert!(list(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn retain_candidates_prunes_stale_windows() {
+        let db = db();
+        ensure_mapping(&db, "keep", Some("a1"), Some("p1")).unwrap();
+        ensure_mapping(&db, "gone", Some("a1"), Some("p1")).unwrap();
+
+        let removed = retain_candidates(&db, &["keep".to_string()]).unwrap();
+        assert_eq!(removed, 1);
+        let items = list(&db).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].candidate_id, "keep");
     }
 }

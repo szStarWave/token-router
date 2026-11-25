@@ -38,6 +38,9 @@ pub struct LlmJudgeConfig {
     pub temperature: f32,
     pub max_output_tokens: u32,
     pub service_id: String,
+    /// 判官调用默认关闭思考：按 endpoint 主机注入厂商关闭开关，
+    /// 与数据面的候选/提供商配置无关（判官要快、要确定）。
+    pub disable_thinking: bool,
 }
 
 /// LLM 判官。
@@ -74,47 +77,7 @@ impl DecisionModel for LlmJudgeModel {
 
             let messages = build_messages(input);
             let url = chat_url(&self.config.endpoint);
-
-            let body = match self.config.structured_output {
-                StructuredOutput::JsonSchema => json!({
-                    "model": self.config.model,
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_output_tokens,
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "judge_answer",
-                            "strict": true,
-                            "schema": answer_schema(&input.question.choices)
-                        }
-                    }
-                }),
-                StructuredOutput::JsonMode => json!({
-                    "model": self.config.model,
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_output_tokens,
-                    "response_format": {"type": "json_object"}
-                }),
-                StructuredOutput::ToolCall => json!({
-                    "model": self.config.model,
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_output_tokens,
-                    "tools": [{
-                        "type": "function",
-                        "function": {
-                            "name": "answer_judge_question",
-                            "parameters": answer_schema(&input.question.choices)
-                        }
-                    }],
-                    "tool_choice": {
-                        "type": "function",
-                        "function": {"name": "answer_judge_question"}
-                    }
-                }),
-            };
+            let body = judge_request_body(&self.config, messages, &input.question.choices);
 
             let mut request = self.client.post(&url).json(&body);
             if let Some(secret) = &self.config.credential {
@@ -163,6 +126,88 @@ fn chat_url(endpoint: &str) -> String {
     } else {
         format!("{base}/chat/completions")
     }
+}
+
+/// 判官请求体；`disable_thinking` 时补上厂商自己的关闭开关。
+fn judge_request_body(config: &LlmJudgeConfig, messages: Vec<Value>, choices: &Choices) -> Value {
+    let mut body = match config.structured_output {
+        StructuredOutput::JsonSchema => json!({
+            "model": config.model,
+            "messages": messages,
+            "temperature": config.temperature,
+            "max_tokens": config.max_output_tokens,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "judge_answer",
+                    "strict": true,
+                    "schema": answer_schema(choices)
+                }
+            }
+        }),
+        StructuredOutput::JsonMode => json!({
+            "model": config.model,
+            "messages": messages,
+            "temperature": config.temperature,
+            "max_tokens": config.max_output_tokens,
+            "response_format": {"type": "json_object"}
+        }),
+        StructuredOutput::ToolCall => json!({
+            "model": config.model,
+            "messages": messages,
+            "temperature": config.temperature,
+            "max_tokens": config.max_output_tokens,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "answer_judge_question",
+                    "parameters": answer_schema(choices)
+                }
+            }],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "answer_judge_question"}
+            }
+        }),
+    };
+    if config.disable_thinking {
+        apply_disable_thinking(&config.endpoint, &mut body);
+    }
+    body
+}
+
+/// 按 endpoint 主机补厂商的「关闭思考」开关。
+///
+/// 只认文档/实测确认过的约定，其余厂商只靠"不携带推理参数"（有些模型默认开思考，
+/// 这种情况下无法关，属于厂商能力限制）。
+fn apply_disable_thinking(endpoint: &str, body: &mut Value) {
+    let Some(host) = endpoint_host(endpoint) else {
+        return;
+    };
+    let host = host.to_ascii_lowercase();
+    if host.ends_with("siliconflow.cn")
+        || host.ends_with("siliconflow.com")
+        || host.contains("dashscope")
+    {
+        body["enable_thinking"] = Value::Bool(false);
+    } else if host.ends_with("bigmodel.cn") || host == "z.ai" || host.ends_with(".z.ai") {
+        body["thinking"] = json!({ "type": "disabled" });
+    } else if host == "openrouter.ai" || host.ends_with(".openrouter.ai") {
+        body["reasoning"] = json!({ "enabled": false });
+    }
+}
+
+fn endpoint_host(endpoint: &str) -> Option<String> {
+    let rest = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// 提示：用户内容不可信，规则写在 system 里。
@@ -432,5 +477,75 @@ mod tests {
         };
         assert!(parse_content("{\"value\": 0.5}", &choices).is_ok());
         assert!(parse_content("{\"value\": 2.0}", &choices).is_err());
+    }
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    fn config(endpoint: &str, disable_thinking: bool) -> LlmJudgeConfig {
+        LlmJudgeConfig {
+            endpoint: endpoint.to_string(),
+            model: "judge-model".to_string(),
+            credential: None,
+            timeout: Duration::from_secs(5),
+            structured_output: StructuredOutput::JsonMode,
+            temperature: 0.0,
+            max_output_tokens: 64,
+            service_id: "judge".to_string(),
+            disable_thinking,
+        }
+    }
+
+    fn body(endpoint: &str, disable_thinking: bool) -> Value {
+        judge_request_body(
+            &config(endpoint, disable_thinking),
+            vec![json!({"role": "user", "content": "hi"})],
+            &Choices::Enum(vec![]),
+        )
+    }
+
+    #[test]
+    fn siliconflow_judge_disables_thinking_by_default() {
+        let body = body("https://api.siliconflow.cn/v1/chat/completions", true);
+        assert_eq!(body["enable_thinking"], Value::Bool(false));
+    }
+
+    #[test]
+    fn disabling_can_be_turned_off() {
+        let body = body("https://api.siliconflow.cn/v1/chat/completions", false);
+        assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn glm_and_openrouter_use_their_own_switches() {
+        let glm = body(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            true,
+        );
+        assert_eq!(glm["thinking"]["type"], "disabled");
+        let openrouter = body("https://openrouter.ai/api/v1/chat/completions", true);
+        assert_eq!(openrouter["reasoning"]["enabled"], Value::Bool(false));
+    }
+
+    #[test]
+    fn unknown_host_gets_no_vendor_flag() {
+        let body = body("https://api.example.com/v1/chat/completions", true);
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn endpoint_host_strips_scheme_and_port() {
+        assert_eq!(
+            endpoint_host("http://127.0.0.1:8080/v1").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            endpoint_host("https://api.siliconflow.cn/v1/chat/completions").as_deref(),
+            Some("api.siliconflow.cn")
+        );
     }
 }

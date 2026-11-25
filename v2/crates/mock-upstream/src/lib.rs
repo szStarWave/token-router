@@ -67,6 +67,112 @@ impl Reply {
         }
     }
 
+    /// 成功回复（Anthropic Messages 形状）。
+    pub fn anthropic_ok(content: &str) -> Self {
+        Self::Json {
+            status: 200,
+            body: json!({
+                "id": "msg_mock",
+                "type": "message",
+                "role": "assistant",
+                "model": "mock-physical",
+                "content": [{"type": "text", "text": content}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 12, "output_tokens": 4}
+            }),
+        }
+    }
+
+    /// 成功回复（Responses 形状）。
+    pub fn responses_ok(content: &str) -> Self {
+        Self::Json {
+            status: 200,
+            body: json!({
+                "id": "resp_mock",
+                "object": "response",
+                "created_at": 0,
+                "model": "mock-physical",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_mock",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": content}]
+                }],
+                "usage": {"input_tokens": 12, "output_tokens": 4}
+            }),
+        }
+    }
+
+    /// Anthropic Messages 流：message_start → text delta → message_delta → stop。
+    pub fn anthropic_stream(parts: &[&str]) -> Self {
+        let mut body = String::new();
+        body.push_str(&format!(
+            "event: message_start\ndata: {}\n\n",
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_mock",
+                    "model": "mock-physical",
+                    "usage": {"input_tokens": 12}
+                }
+            })
+        ));
+        for part in parts {
+            body.push_str(&format!(
+                "event: content_block_delta\ndata: {}\n\n",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": part}
+                })
+            ));
+        }
+        body.push_str(&format!(
+            "event: message_delta\ndata: {}\n\n",
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": parts.len() as u32}
+            })
+        ));
+        body.push_str(&format!(
+            "event: message_stop\ndata: {}\n\n",
+            json!({"type": "message_stop"})
+        ));
+        Self::RawSse { body }
+    }
+
+    /// Responses 流：response.created → text delta → response.completed。
+    pub fn responses_stream(parts: &[&str]) -> Self {
+        let mut body = String::new();
+        body.push_str(&format!(
+            "event: response.created\ndata: {}\n\n",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_mock", "model": "mock-physical"}
+            })
+        ));
+        for part in parts {
+            body.push_str(&format!(
+                "event: response.output_text.delta\ndata: {}\n\n",
+                json!({"type": "response.output_text.delta", "delta": part})
+            ));
+        }
+        body.push_str(&format!(
+            "event: response.completed\ndata: {}\n\n",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {"input_tokens": 12, "output_tokens": parts.len() as u32},
+                    "output": []
+                }
+            })
+        ));
+        Self::RawSse { body }
+    }
+
     /// Chat Completions 流：逐片 content + finish + usage + `[DONE]`。
     pub fn chat_stream(parts: &[&str]) -> Self {
         let id = "chatcmpl-mock-stream";
@@ -163,12 +269,18 @@ impl Reply {
 #[derive(Clone)]
 struct MockState {
     replies: Arc<Mutex<VecDeque<Reply>>>,
+    /// 收到的 JSON 请求体（按到达顺序），供测试断言提示词内容。
+    requests: Arc<Mutex<Vec<Value>>>,
+    /// 收到的请求路径（按到达顺序），供测试断言 wire 协议端点。
+    paths: Arc<Mutex<Vec<String>>>,
 }
 
 /// 跑在后台的 mock 上游。
 pub struct MockUpstream {
     addr: SocketAddr,
     replies: Arc<Mutex<VecDeque<Reply>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
+    paths: Arc<Mutex<Vec<String>>>,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -176,12 +288,19 @@ impl MockUpstream {
     /// 启动并绑定随机端口。
     pub async fn start(replies: Vec<Reply>) -> Self {
         let replies = Arc::new(Mutex::new(replies.into()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let paths = Arc::new(Mutex::new(Vec::new()));
         let state = MockState {
             replies: replies.clone(),
+            requests: requests.clone(),
+            paths: paths.clone(),
         };
 
         let app = Router::new()
             .route("/v1/chat/completions", post(chat))
+            .route("/v1/messages", post(chat))
+            .route("/v1/responses", post(chat))
+            .route("/v1/systemone", post(chat))
             .route("/v1/models", get(models))
             .with_state(state);
 
@@ -197,6 +316,8 @@ impl MockUpstream {
         Self {
             addr,
             replies,
+            requests,
+            paths,
             handle,
         }
     }
@@ -209,13 +330,35 @@ impl MockUpstream {
         self.replies.lock().expect("mock mutex").len()
     }
 
+    /// 收到的 JSON 请求体快照（按到达顺序）。
+    pub fn requests(&self) -> Vec<Value> {
+        self.requests.lock().expect("mock mutex").clone()
+    }
+
+    /// 收到的请求路径快照（按到达顺序）。
+    pub fn paths(&self) -> Vec<String> {
+        self.paths.lock().expect("mock mutex").clone()
+    }
+
     /// 停止服务。
     pub fn shutdown(self) {
         self.handle.abort();
     }
 }
 
-async fn chat(State(state): State<MockState>) -> impl IntoResponse {
+async fn chat(
+    State(state): State<MockState>,
+    uri: axum::http::Uri,
+    body: Bytes,
+) -> impl IntoResponse {
+    state
+        .paths
+        .lock()
+        .expect("mock mutex")
+        .push(uri.path().to_string());
+    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
+        state.requests.lock().expect("mock mutex").push(value);
+    }
     let reply = state
         .replies
         .lock()

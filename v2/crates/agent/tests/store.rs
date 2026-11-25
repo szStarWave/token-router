@@ -67,12 +67,12 @@ fn facts(session_key: &str) -> SessionFacts {
 #[test]
 fn migrate_is_idempotent_across_reopen() {
     let temp = TempDb::new("migrate");
-    assert_eq!(temp.db().schema_version().unwrap(), 10);
+    assert_eq!(temp.db().schema_version().unwrap(), 16);
 
     let path = temp.into_path();
 
     let reopened = Db::open(&path).expect("reopen");
-    assert_eq!(reopened.schema_version().unwrap(), 10);
+    assert_eq!(reopened.schema_version().unwrap(), 16);
     drop(reopened);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
@@ -98,7 +98,7 @@ fn newer_schema_refuses_to_start() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 10
+            supported: 16
         }
     ));
 
@@ -255,6 +255,7 @@ fn stats_count_rejections_and_judge_budget_denials() {
             completion_tokens: None,
             cost_micros: None,
             created_at: 1_700_000_000,
+            detail: Default::default(),
         },
     )
     .unwrap();
@@ -274,6 +275,7 @@ fn stats_count_rejections_and_judge_budget_denials() {
             completion_tokens: Some(5),
             cost_micros: Some(7),
             created_at: 1_700_000_001,
+            detail: Default::default(),
         },
     )
     .unwrap();

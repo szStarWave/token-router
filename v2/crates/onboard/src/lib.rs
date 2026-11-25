@@ -100,6 +100,8 @@ pub struct DetectReport {
     pub config_files: Vec<FileStatus>,
     /// 当前 provider 是否已指向 token-router。
     pub already_configured: bool,
+    /// 从现有配置读回的模型 id（只读展示；解析失败为 None）。
+    pub configured_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +120,9 @@ pub struct SetupRequest {
     pub credential_ref: String,
     /// 要写入的模型（虚拟模型 id）。
     pub model: String,
+    /// 显式切换入口：为 true 时覆盖已有 model 键；默认 false 保持幂等（只补缺失键）。
+    #[serde(default)]
+    pub force_model: bool,
 }
 
 /// 单文件计划条目。
@@ -230,6 +235,9 @@ pub fn detect(target: &Target, agent: AgentKind) -> Result<DetectReport, SetupEr
         installed,
         config_files,
         already_configured: installed && probe_provider_marker(&home, agent),
+        configured_model: installed
+            .then(|| probe_configured_model(&home, agent))
+            .flatten(),
     })
 }
 
@@ -389,6 +397,98 @@ fn probe_provider_marker(home: &Path, agent: AgentKind) -> bool {
     })
 }
 
+/// 从现有配置读回当前模型 id。只读、尽力而为；解析失败返回 `None`。
+///
+/// 各 Agent 的写入键由 `merge` 模块定义，这里按同一形状读取，避免读回与写入漂移。
+fn probe_configured_model(home: &Path, agent: AgentKind) -> Option<String> {
+    for relative in agent.config_paths() {
+        let path = home.join(relative);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let model = match agent {
+            AgentKind::Openclaw => json_model(&text, |root| {
+                root.pointer("/agents/defaults/model/primary")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| provider_models_first(root, "token-router"))
+            }),
+            AgentKind::ClaudeCode => json_model(&text, |root| {
+                root.pointer("/env/ANTHROPIC_MODEL")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
+            AgentKind::Opencode => {
+                json_model(&text, |root| provider_models_first(root, "token-router"))
+            }
+            AgentKind::Codebuddy | AgentKind::Workbuddy => json_model(&text, |root| {
+                root.get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|models| {
+                        models
+                            .iter()
+                            .find(|model| {
+                                model.get("provider").and_then(|value| value.as_str())
+                                    == Some("token-router")
+                            })
+                            .or_else(|| models.first())
+                    })
+                    .and_then(|model| model.get("id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
+            AgentKind::Hermes | AgentKind::HermesFlash => yaml_model(&text),
+            AgentKind::Codex => toml_model(&text),
+        };
+        if let Some(model) = model.map(|model| model.trim().to_string()) {
+            if !model.is_empty() {
+                return Some(model);
+            }
+        }
+    }
+    None
+}
+
+fn json_model(
+    text: &str,
+    extract: impl FnOnce(&serde_json::Value) -> Option<String>,
+) -> Option<String> {
+    let root = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    extract(&root)
+}
+
+fn provider_models_first(root: &serde_json::Value, provider: &str) -> Option<String> {
+    root.pointer(&format!("/models/providers/{provider}/models"))
+        .and_then(|value| value.as_object())
+        .and_then(|models| models.keys().next().cloned())
+        .or_else(|| {
+            root.pointer(&format!("/provider/{provider}/models"))
+                .and_then(|value| value.as_object())
+                .and_then(|models| models.keys().next().cloned())
+        })
+}
+
+fn yaml_model(text: &str) -> Option<String> {
+    let root = serde_yaml::from_str::<serde_yaml::Value>(text).ok()?;
+    root.get("model")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            root.get("providers")
+                .and_then(|providers| providers.get("token-router"))
+                .and_then(|provider| provider.get("default_model"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn toml_model(text: &str) -> Option<String> {
+    let root = text.parse::<toml_edit::DocumentMut>().ok()?;
+    root.get("model")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
 fn now_stamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -420,6 +520,36 @@ mod tests {
         let report = detect(&Target::Home(home.clone()), AgentKind::Openclaw).unwrap();
         assert!(!report.installed);
         assert!(!report.already_configured);
+        assert!(report.configured_model.is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn detect_reads_configured_model() {
+        let home = temp_home("configured-model");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "model = \"work\"\n[model_providers.token-router]\nbase_url = \"http://127.0.0.1:17621/v1\"\n",
+        )
+        .unwrap();
+        assert_eq!(toml_model("model = \"work\""), Some("work".to_string()));
+        assert_eq!(
+            toml_model("model = \"work\"\n[model_providers.token-router]\n"),
+            Some("work".to_string())
+        );
+        let report = detect(&Target::Home(home.clone()), AgentKind::Codex).unwrap();
+        assert!(report.already_configured);
+        assert_eq!(report.configured_model.as_deref(), Some("work"));
+
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/settings.json"),
+            r#"{"env":{"ANTHROPIC_MODEL":"auto","ANTHROPIC_BASE_URL":"http://127.0.0.1:17621/anthropic"}}"#,
+        )
+        .unwrap();
+        let report = detect(&Target::Home(home.clone()), AgentKind::ClaudeCode).unwrap();
+        assert_eq!(report.configured_model.as_deref(), Some("auto"));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -431,6 +561,7 @@ mod tests {
             gateway_url: "http://127.0.0.1:17621".to_string(),
             credential_ref: "env:TR_TOKEN".to_string(),
             model: "auto".to_string(),
+            force_model: false,
         };
         let setup_plan = plan(&target, AgentKind::ClaudeCode, &request).unwrap();
         assert_eq!(setup_plan.entries[0].action, "create");
@@ -448,6 +579,26 @@ mod tests {
     }
 
     #[test]
+    fn force_model_overrides_existing_selection() {
+        let home = temp_home("force-model");
+        std::fs::create_dir_all(home.join(".hermes")).unwrap();
+        std::fs::write(home.join(".hermes/config.yaml"), "model: old-model\n").unwrap();
+        let target = Target::Home(home.clone());
+        let request = SetupRequest {
+            gateway_url: "http://127.0.0.1:17621".to_string(),
+            credential_ref: "env:TR_TOKEN".to_string(),
+            model: "auto".to_string(),
+            force_model: true,
+        };
+        let setup_plan = plan(&target, AgentKind::Hermes, &request).unwrap();
+        apply(&target, &setup_plan).unwrap();
+        let text = std::fs::read_to_string(home.join(".hermes/config.yaml")).unwrap();
+        assert!(text.contains("model: auto"), "{text}");
+        assert!(!text.contains("model: old-model"), "{text}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn plan_merges_existing_file_with_backup() {
         let home = temp_home("merge");
         let settings = home.join(".claude");
@@ -459,6 +610,7 @@ mod tests {
             gateway_url: "http://127.0.0.1:17621".to_string(),
             credential_ref: "file:admin.token".to_string(),
             model: "auto".to_string(),
+            force_model: false,
         };
         let setup_plan = plan(&target, AgentKind::ClaudeCode, &request).unwrap();
         assert_eq!(setup_plan.entries[0].action, "merge");

@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use tr_contracts::{ApiErrorBody, ApiErrorEnvelope, ConfigIssue};
 
-/// 错误类型（契约冻结；对应 HTTP 状态见契约文档表）。
+/// 错误类型（契约 v1；对应 HTTP 状态见契约文档表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiErrorType {
     InvalidRequest,

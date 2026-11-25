@@ -716,3 +716,121 @@ fn now_secs() -> u64 {
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
 }
+
+/// 热加载：替换运行时目录后新请求立即使用新候选，不发新进程/不重启。
+#[tokio::test]
+async fn reload_swaps_catalog_for_new_requests() {
+    let mock = MockUpstream::start(vec![Reply::ok("first"), Reply::ok("second")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let before = pipeline.catalog();
+    let first = pipeline
+        .handle(chat_request("hi"), RequestContext::default())
+        .await
+        .expect("handle before reload");
+    assert_eq!(first.headers.served_model, "physical-a");
+
+    // 用只含 b 的 catalog 热替换：旧快照保留、新请求走 b。
+    let report = pipeline.reload(catalog(&mock.base_url(), &["b"]));
+    assert_ne!(report.previous_digest, report.digest);
+    assert!(before.candidate("a").is_some());
+    assert!(pipeline.catalog().candidate("a").is_none());
+
+    let second = pipeline
+        .handle(chat_request("hi again"), RequestContext::default())
+        .await
+        .expect("handle after reload");
+    assert_eq!(second.headers.served_model, "physical-b");
+    assert_eq!(second.ledger.config_digest, Some(report.digest));
+
+    mock.shutdown();
+}
+
+/// 组内成员直选：`model = "auto/physical-b"` 命中组内候选 b，并把它提到首位。
+#[tokio::test]
+async fn member_selection_pins_candidate() {
+    let mock = MockUpstream::start(vec![Reply::ok("member-b")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a", "b"]));
+
+    let mut request = chat_request("hi");
+    request.meta.virtual_model = Some("auto/physical-b".to_string());
+    let result = pipeline
+        .handle(request, RequestContext::default())
+        .await
+        .expect("handle");
+    // 默认顺序会选 a（local/低强度优先），显式成员选择应覆盖成 b。
+    assert_eq!(result.headers.served_model, "physical-b");
+    mock.shutdown();
+}
+
+/// 每轮消息落库：输入从 canonical 展平，输出是模型回复（`[recording] transcript` 默认开）。
+#[tokio::test]
+async fn success_records_transcript_turn() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello from mock")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let result = pipeline
+        .handle(chat_request("hi"), RequestContext::default())
+        .await
+        .expect("handle");
+    let request_id = result.ledger.request_id.to_string();
+    let transcript = store::transcript::get(pipeline.db(), &request_id)
+        .expect("get")
+        .expect("recorded");
+    assert!(transcript.recorded);
+    assert_eq!(transcript.session_key, result.ledger.session_key);
+    assert_eq!(transcript.input.len(), 1);
+    assert_eq!(transcript.input[0].role, "user");
+    assert_eq!(transcript.input[0].text, "hi");
+    assert_eq!(transcript.output.len(), 1);
+    assert_eq!(transcript.output[0].role, "assistant");
+    assert_eq!(transcript.output[0].text, "hello from mock");
+
+    mock.shutdown();
+}
+
+/// 流式轮次：回复在流结束后落库（正文拼接）。
+#[tokio::test]
+async fn stream_records_transcript_turn() {
+    let mock = MockUpstream::start(vec![Reply::chat_stream(&["Hello", " world"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Pipeline::from_catalog(db, catalog(&mock.base_url(), &["a"]));
+
+    let mut streaming = pipeline
+        .handle_stream(streaming_request("hi"), RequestContext::default())
+        .await
+        .expect("stream");
+    while let Some(chunk) = streaming.events.recv().await {
+        if matches!(chunk, StreamChunk::Done | StreamChunk::Error { .. }) {
+            break;
+        }
+    }
+
+    // 后台任务：先提交账本、再写消息；轮询等两条都就绪。
+    let mut transcript = None;
+    for _ in 0..100 {
+        let (rows, _) = store::admin_query::list_requests_page(
+            pipeline.db(),
+            &store::admin_query::LedgerQuery {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .expect("list");
+        if let Some(row) = rows.first() {
+            transcript = store::transcript::get(pipeline.db(), &row.request_id).expect("get");
+            if transcript.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let transcript = transcript.expect("stream transcript");
+    assert_eq!(transcript.input[0].text, "hi");
+    assert_eq!(transcript.output[0].text, "Hello world");
+
+    mock.shutdown();
+}

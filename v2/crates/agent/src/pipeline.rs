@@ -16,8 +16,9 @@ use tr_contracts::{
     AttemptRecord, BreakerState, CacheAnchor, Candidate, CandidateHealth, CandidateId,
     CanonicalRequest, CanonicalResponse, CanonicalStreamEvent, Cost, DecisionSnapshot, Dispatch,
     DispatchSource, ErrorClass, FactsCompleteness, IngressProtocol, LedgerRecord, OutcomeKind,
-    Plan, PlanMode, ReasonCode, ReasonCodeKind, RequestReason, Selection, SessionFacts,
-    SessionKeySource, Slot, SlotRef, Usage, VirtualModel,
+    Plan, PlanContribution, PlanContributionRecord, PlanMode, ReasonCode, ReasonCodeKind,
+    RequestReason, Selection, SessionFacts, SessionKeySource, Slot, SlotRef, Usage, VirtualModel,
+    VirtualModelId,
 };
 use tr_upstream::{AttemptFailure, HttpUpstream, StreamItem};
 use uuid::Uuid;
@@ -95,39 +96,67 @@ pub enum PipelineError {
     Store(#[from] StoreError),
 }
 
+/// 一次配置加载派生出的全部运行时对象（热加载整体替换）。
+pub struct PipelineRuntime {
+    pub catalog: std::sync::Arc<Catalog>,
+    pub judge: std::sync::Arc<crate::judge::JudgeRuntime>,
+    /// 组级判断运行时：每个 active 组的虚拟模型一项（构建失败跳过，保持服务可用）。
+    pub group_judges: std::collections::HashMap<
+        VirtualModelId,
+        std::sync::Arc<crate::group_judge::GroupJudgeRuntime>,
+    >,
+    pub cost_gate: crate::gate::CostGateMode,
+}
+
+/// 热加载结果（诊断/审计用）。
+#[derive(Debug, Clone)]
+pub struct ReloadReport {
+    pub previous_digest: String,
+    pub digest: String,
+}
+
 /// 编排器。内部字段用 `Arc` 以便流式任务在请求结束后继续收尾。
 pub struct Pipeline {
     db: std::sync::Arc<Db>,
-    catalog: std::sync::Arc<Catalog>,
+    /// 运行时快照：每个请求开始时读一次，热加载整体替换；在途请求保持自洽。
+    runtime: std::sync::RwLock<std::sync::Arc<PipelineRuntime>>,
     upstream: HttpUpstream,
-    judge: std::sync::Arc<crate::judge::JudgeRuntime>,
-    cost_gate: crate::gate::CostGateMode,
     /// shadow 记录异步写入队列（P1-6：不阻塞主路径）。
     shadow_tx: std::sync::mpsc::Sender<store::judge::ShadowRecord>,
     /// 会话键退化告警去重：每个键只 warn 一次（§8.1）。
     warned_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
+/// 从 catalog 构建运行时（判官构建失败降级 off，请求仍可服务）。
+fn build_runtime(catalog: Catalog) -> PipelineRuntime {
+    // 判官构建失败（TLS/配置）只可能是进程级问题：降级为 off 并记录，请求仍可服务。
+    let judge = match crate::judge::JudgeRuntime::new(catalog.judge.clone()) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("judge disabled: {error}");
+            crate::judge::JudgeRuntime::new(crate::judge::JudgeSettings::default())
+                .expect("off judge runtime")
+        }
+    };
+    let cost_gate = catalog.cost_gate;
+    let group_judges = build_group_judges(&catalog);
+    PipelineRuntime {
+        catalog: std::sync::Arc::new(catalog),
+        judge: std::sync::Arc::new(judge),
+        group_judges,
+        cost_gate,
+    }
+}
+
 impl Pipeline {
     pub fn new(db: Db, catalog: Catalog, upstream: HttpUpstream) -> Self {
-        // 判官构建失败（TLS/配置）只可能是进程级问题：降级为 off 并记录，请求仍可服务。
-        let judge = match crate::judge::JudgeRuntime::new(catalog.judge.clone()) {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                eprintln!("judge disabled: {error}");
-                crate::judge::JudgeRuntime::new(crate::judge::JudgeSettings::default())
-                    .expect("off judge runtime")
-            }
-        };
-        let cost_gate = catalog.cost_gate;
+        let runtime = std::sync::RwLock::new(std::sync::Arc::new(build_runtime(catalog)));
         let db = std::sync::Arc::new(db);
         let shadow_tx = spawn_shadow_writer(std::sync::Arc::clone(&db));
         Self {
             db,
-            catalog: std::sync::Arc::new(catalog),
+            runtime,
             upstream,
-            judge: std::sync::Arc::new(judge),
-            cost_gate,
             shadow_tx,
             warned_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
@@ -144,35 +173,50 @@ impl Pipeline {
 
     /// 共享 DB 句柄 + 显式上游。
     pub fn new_shared(db: std::sync::Arc<Db>, catalog: Catalog, upstream: HttpUpstream) -> Self {
-        // 判官构建失败（TLS/配置）只可能是进程级问题：降级为 off 并记录，请求仍可服务。
-        let judge = match crate::judge::JudgeRuntime::new(catalog.judge.clone()) {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                eprintln!("judge disabled: {error}");
-                crate::judge::JudgeRuntime::new(crate::judge::JudgeSettings::default())
-                    .expect("off judge runtime")
-            }
-        };
-        let cost_gate = catalog.cost_gate;
+        let runtime = std::sync::RwLock::new(std::sync::Arc::new(build_runtime(catalog)));
         let shadow_tx = spawn_shadow_writer(std::sync::Arc::clone(&db));
         Self {
             db,
-            catalog: std::sync::Arc::new(catalog),
+            runtime,
             upstream,
-            judge: std::sync::Arc::new(judge),
-            cost_gate,
             shadow_tx,
             warned_sessions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
-    /// 判官是否 enabled（诊断/测试）。
-    pub fn judge_mode(&self) -> crate::judge::JudgeMode {
-        self.judge.mode()
+    /// 当前运行时快照（读锁只保护 Arc 取回，不覆盖整个请求）。
+    fn runtime(&self) -> std::sync::Arc<PipelineRuntime> {
+        self.runtime
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
-    pub fn catalog(&self) -> &Catalog {
-        &self.catalog
+    /// 热加载：用新配置整体替换运行时（在途请求继续使用进入时的快照）。
+    ///
+    /// 判官/组判官/成本闸随 catalog 一起重建；`warned_sessions` 保留（不重复告警）。
+    pub fn reload(&self, catalog: Catalog) -> ReloadReport {
+        let next = std::sync::Arc::new(build_runtime(catalog));
+        let previous = {
+            let mut guard = self
+                .runtime
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::replace(&mut *guard, next)
+        };
+        ReloadReport {
+            previous_digest: previous.catalog.config_digest.clone(),
+            digest: self.catalog().config_digest.clone(),
+        }
+    }
+
+    /// 判官是否 enabled（诊断/测试）。
+    pub fn judge_mode(&self) -> crate::judge::JudgeMode {
+        self.runtime().judge.mode()
+    }
+
+    pub fn catalog(&self) -> std::sync::Arc<Catalog> {
+        self.runtime().catalog.clone()
     }
 
     pub fn db(&self) -> &Db {
@@ -180,12 +224,17 @@ impl Pipeline {
     }
 
     /// 决策准备：解析 Selection、加载状态、抽信号、跑 `core::decide`。
+    ///
+    /// `runtime` 由调用方在请求开始时取一次快照，保证"决策 + 执行"看到同一份配置。
     async fn prepare(
         &self,
-        request: CanonicalRequest,
+        mut request: CanonicalRequest,
         context: RequestContext,
+        runtime: &std::sync::Arc<PipelineRuntime>,
     ) -> Result<Prepared, PipelineError> {
         let now_unix = now_secs();
+        // 请求 id 在决策前生成：判官调用审计与账本用同一个 id 关联。
+        let request_id = Uuid::new_v4();
 
         let branch_id = context
             .branch_id
@@ -222,39 +271,54 @@ impl Pipeline {
         // 授权身份随请求更新；账本与 SessionFacts 同源（§8.5）。
         facts.authority = context.authority.clone().unwrap_or_default();
 
+        // 请求内运行时快照：热加载只影响之后的请求，本请求全程自洽。
+        let catalog = runtime.catalog.clone();
+
         // 会话恢复：未指定虚拟模型时优先沿用上次选择；存储的选择已不存在 → 回退默认并记 reason。
         let stored_selection = facts.selected_virtual_model.clone();
         let mut virtual_model_missing = false;
+        // 组内成员直选（`/v1/models` 里 `group/member` 形式）：解析成「组 + 首选候选」。
+        let mut requested_member: Option<CandidateId> = None;
         let virtual_model_id = match request.meta.virtual_model.clone() {
-            Some(id) => id,
+            Some(id) => {
+                if catalog.virtual_model_enabled(&id) {
+                    id
+                } else if let Some((vm_id, candidate_id)) = catalog.resolve_member_selection(&id) {
+                    requested_member = Some(candidate_id);
+                    vm_id
+                } else {
+                    id
+                }
+            }
             None => match stored_selection {
-                Some(id) if self.catalog.virtual_models.contains_key(&id) => id,
+                Some(id) if catalog.virtual_model_enabled(&id) => id,
                 Some(_) => {
                     virtual_model_missing = true;
-                    self.catalog.default_virtual_model.clone()
+                    catalog.default_virtual_model.clone()
                 }
-                None => self.catalog.default_virtual_model.clone(),
+                None => catalog.default_virtual_model.clone(),
             },
         };
-        let virtual_model = self
-            .catalog
+        if !catalog.virtual_model_enabled(&virtual_model_id) {
+            return Err(PipelineError::ModelNotFound(virtual_model_id));
+        }
+        let virtual_model = catalog
             .virtual_model(&virtual_model_id)
             .cloned()
             .ok_or_else(|| PipelineError::ModelNotFound(virtual_model_id.clone()))?;
         // 信任档位别名（P3-14）：只解析到配置里已有的 profile，虚拟模型本身不变。
-        let (profile_ref, trust_tier_applied) = self
-            .catalog
+        let (profile_ref, trust_tier_applied) = catalog
             .profile_for_trust(&virtual_model, request.meta.trust_tier.as_deref())
             .ok_or_else(|| {
                 PipelineError::ModelNotFound(format!("profile:{}", virtual_model.profile))
             })?;
         let profile = profile_ref.clone();
-        let thinking_level = request
-            .meta
-            .thinking_level
-            .clone()
-            .filter(|level| !level.is_empty())
-            .unwrap_or_else(|| "off".to_string());
+        // 组级「关闭思考」：把有效档位钉到 `off`。客户端原始 `reasoning.effort`
+        // 仍留在决策快照里可审计；上游按 off 剥离参数并附带厂商关闭开关。
+        let group_disabled = catalog
+            .group_config(&virtual_model.id)
+            .is_some_and(|group| group.disable_thinking);
+        let thinking_level = resolve_thinking_level(&mut request, group_disabled);
         let strategy_states = store::strategy::load_strategy_states(
             &self.db,
             &derived.key,
@@ -270,7 +334,7 @@ impl Pipeline {
         )?;
         let health = store::health::load(&self.db)?;
 
-        let candidates = self.catalog.pool(&virtual_model);
+        let candidates = catalog.pool(&virtual_model);
         let window_hint = virtual_model.context_window.or_else(|| {
             candidates
                 .iter()
@@ -323,7 +387,15 @@ impl Pipeline {
         };
 
         // 两阶段：draft 产出 Plan 与判官请求；active 模式下 refine 覆盖 Plan。
-        let group_digest = group_digest(&virtual_model, &profile);
+        let group_config = catalog.group_config(&virtual_model.id);
+        let group_active =
+            group_config.is_some_and(|group| group.judge.mode == crate::judge::JudgeMode::Active);
+        // 组 digest 纳入规则/预算变化：配置变更使 ContextHold 失效。
+        let group_digest = group_digest(
+            &virtual_model,
+            &profile,
+            group_config.map(|group| group.digest.as_str()),
+        );
         let plan_revision = plan_revision(&group_digest);
         let strategies = strategy_set(&virtual_model);
         let (mut plan, requests) = tr_core::decide_and_collect(&snapshot, &strategies);
@@ -341,10 +413,14 @@ impl Pipeline {
 
         let mut shadow: Option<ShadowInfo> = None;
         let mut routing_cost: Option<Cost> = None;
-        if !requests.is_empty() && self.judge.mode() != crate::judge::JudgeMode::Off {
-            let outcome = self
+        // 组判断 active 时跳过全局判官阶段，避免双判官成本。
+        if !group_active
+            && !requests.is_empty()
+            && runtime.judge.mode() != crate::judge::JudgeMode::Off
+        {
+            let outcome = runtime
                 .judge
-                .consult(&derived.key, &plan_id, &snapshot, &requests)
+                .consult(request_id, &derived.key, &plan_id, &snapshot, &requests)
                 .await;
 
             routing_cost = outcome.routing_cost.clone();
@@ -353,13 +429,13 @@ impl Pipeline {
                 plan.reason_codes.push(ReasonCode::new(kind));
             }
 
-            if self.judge.is_active() && !outcome.verdicts.is_empty() {
+            if runtime.judge.is_active() && !outcome.verdicts.is_empty() {
                 plan = tr_core::decide_with_verdicts(&snapshot, &strategies, &outcome.verdicts);
             }
 
             if let Some(trace) = outcome.traces.first().cloned() {
                 plan.judge = trace.clone();
-                if self.judge.is_shadow() {
+                if runtime.judge.is_shadow() {
                     let kernel = plan.preference.first();
                     let max_strength = candidates
                         .iter()
@@ -398,6 +474,55 @@ impl Pipeline {
                 .push(ReasonCode::new(ReasonCodeKind::VirtualModelMissing));
         }
 
+        // 组级判断（M1）：在 Sticky/ContextHold 之前决定组内首选。
+        //
+        // fail-open：失败/超时/非法答案/`none` 都不改顺序，只留理由码与审计行。
+        let mut group_decided = false;
+        if group_active {
+            // active 即视为已决策：后续 Sticky/成本闸不得覆盖判官结论。
+            group_decided = true;
+            if let Some(group) = group_config {
+                match runtime.group_judges.get(&virtual_model.id) {
+                    Some(runtime) => {
+                        let outcome = runtime
+                            .select(
+                                request_id,
+                                &derived.key,
+                                &plan_id,
+                                &virtual_model.id,
+                                &candidates,
+                                &group.rules,
+                                &request,
+                                now_unix,
+                            )
+                            .await;
+                        if let Err(error) = store::judge::insert_call(&self.db, &outcome.call) {
+                            eprintln!("group judge_calls insert failed: {error}");
+                        }
+                        if let Some(cost) = outcome.cost {
+                            routing_cost = Some(accumulate_cost(routing_cost, cost));
+                        }
+                        if let Some(failure) = &outcome.failure {
+                            eprintln!(
+                                "group judge fail-open vm={} session={}: {failure}",
+                                virtual_model.id, derived.key
+                            );
+                        }
+                        apply_group_outcome(&mut plan, outcome.selection, outcome.no_match);
+                    }
+                    None => {
+                        // 构建失败已在启动日志记录；这里保持 fail-open。
+                        eprintln!(
+                            "group judge runtime missing for {}; fail-open",
+                            virtual_model.id
+                        );
+                        plan.reason_codes
+                            .push(ReasonCode::new(ReasonCodeKind::GroupJudgeUnavailable));
+                    }
+                }
+            }
+        }
+
         // Sticky / ContextHold：硬复用（Retry/Continuation）与软亲和（User）。
         //
         // 例外：Escalation latch 与 CompetenceGuard 低分保护都是权威状态。
@@ -411,7 +536,8 @@ impl Pipeline {
             .reason_codes
             .iter()
             .any(|reason| reason.code == ReasonCodeKind::CompetenceProtected);
-        if !latched && !protected {
+        // 组判断已决策时跳过 Sticky/ContextHold，避免把判官选择拉回旧候选。
+        if !group_decided && !latched && !protected {
             let resolution = crate::dispatch::resolve(&crate::dispatch::DispatchContext {
                 reason: request_reason,
                 previous: snapshot.previous.as_ref(),
@@ -434,11 +560,26 @@ impl Pipeline {
         }
 
         // 成本闸：P2 默认 shadow（只记录）；active 时拒绝无收益的切换。
-        self.apply_cost_gate(&mut plan, &facts, &profile, &snapshot);
+        // 组判断已决策时只记录结论、不回搬（判官选择优先于缓存成本）。
+        self.apply_cost_gate(
+            &mut plan,
+            &facts,
+            &profile,
+            &snapshot,
+            !group_decided,
+            runtime,
+        );
+
+        // 客户端显式选了组内成员（`group/member`）：最后一步把该候选提到队首，
+        // 覆盖策略与组判断的顺序（失败仍可按 failover 接力到同组其它成员）。
+        if let Some(member) = &requested_member {
+            promote_candidate(&mut plan, member);
+        }
 
         if plan.preference.is_empty() {
             let ledger = build_ledger(
                 &LedgerInput {
+                    request_id,
                     plan_id: plan_id.clone(),
                     session_key: derived.key.clone(),
                     branch_id: branch_id.clone(),
@@ -460,7 +601,7 @@ impl Pipeline {
                     dispatch_source: plan.dispatch_source,
                     reason_codes: plan.reason_codes.clone(),
                     profile_revision: profile.revision.clone(),
-                    config_digest: self.catalog.config_digest.clone(),
+                    config_digest: catalog.config_digest.clone(),
                     now_unix,
                     judge: Some(plan.judge.clone()),
                     routing_cost: routing_cost.clone(),
@@ -480,6 +621,7 @@ impl Pipeline {
         }
 
         Ok(Prepared {
+            request_id,
             canonical: request,
             virtual_model,
             profile,
@@ -516,8 +658,11 @@ impl Pipeline {
         facts: &SessionFacts,
         profile: &tr_contracts::ProfileConfig,
         snapshot: &DecisionSnapshot,
+        allow_reorder: bool,
+        runtime: &PipelineRuntime,
     ) {
-        if self.cost_gate == crate::gate::CostGateMode::Off {
+        let catalog = runtime.catalog.clone();
+        if runtime.cost_gate == crate::gate::CostGateMode::Off {
             return;
         }
         let Some(previous_ref) = facts.last_served_slot.as_ref() else {
@@ -530,8 +675,8 @@ impl Pipeline {
             return;
         }
         let (Some(previous), Some(next)) = (
-            self.catalog.candidate(&previous_ref.candidate_id),
-            self.catalog.candidate(&next_slot.candidate_id),
+            catalog.candidate(&previous_ref.candidate_id),
+            catalog.candidate(&next_slot.candidate_id),
         ) else {
             return;
         };
@@ -570,7 +715,7 @@ impl Pipeline {
                 plan.expected_cache_loss = expected_cache_loss;
                 plan.reason_codes.extend(reasons);
 
-                if self.cost_gate == crate::gate::CostGateMode::Active {
+                if allow_reorder && runtime.cost_gate == crate::gate::CostGateMode::Active {
                     if let Some(position) = plan
                         .preference
                         .iter()
@@ -599,7 +744,9 @@ impl Pipeline {
         context: RequestContext,
     ) -> Result<PipelineResponse, PipelineError> {
         let started = Instant::now();
-        let prepared = self.prepare(request, context).await?;
+        let runtime = self.runtime();
+        let catalog = runtime.catalog.clone();
+        let mut prepared = self.prepare(request, context, &runtime).await?;
         let span = decision_span(&prepared);
         tracing::info!(parent: &span, "plan");
 
@@ -607,10 +754,11 @@ impl Pipeline {
         let mut breakers: BTreeMap<CandidateId, BreakerState> = BTreeMap::new();
         let mut last_failure: Option<AttemptFailure> = None;
         let mut success: Option<(usize, Candidate, Slot, CanonicalResponse)> = None;
+        let mut served_clamped = false;
         let health = store::health::load(&self.db)?;
 
         for (index, slot) in prepared.plan.preference.iter().enumerate() {
-            let Some(candidate) = self.catalog.candidate(&slot.candidate_id).cloned() else {
+            let Some(candidate) = catalog.candidate(&slot.candidate_id).cloned() else {
                 continue;
             };
             if !probe_allowed(&self.db, &health, &candidate.id, prepared.now_unix)? {
@@ -630,6 +778,7 @@ impl Pipeline {
             });
 
             if let Some(response) = outcome.response {
+                served_clamped = output_clamped(&candidate, &prepared.canonical);
                 breakers.insert(
                     candidate.id.clone(),
                     reset_breaker(health.state_of(&candidate.id), prepared.now_unix),
@@ -653,7 +802,7 @@ impl Pipeline {
         let Some((index, candidate, slot, response)) = success else {
             let failure = last_failure.unwrap_or(no_attempt_failure());
             let failed_facts = build_failed_facts(
-                &self.catalog,
+                &catalog,
                 &prepared,
                 Some(failure.class),
                 failure.status,
@@ -672,6 +821,14 @@ impl Pipeline {
             let request_id = ledger.request_id;
             store::commit(&self.db, failed_facts.as_ref(), &breakers, &ledger, None)?;
             persist_state_updates(&self.db, &prepared);
+            // 失败轮次也记输入消息（没有回复），便于在会话里定位"这一轮发的是什么"。
+            record_transcript(
+                &self.db,
+                catalog.recording.transcript,
+                &prepared,
+                Vec::new(),
+                false,
+            );
             tracing::info!(
                 parent: &span,
                 outcome = "upstream_error",
@@ -687,6 +844,13 @@ impl Pipeline {
         };
 
         let usage = response.usage;
+        // 候选级输出上限截断了客户端请求：记账（响应头/账本的 reason codes 都能看到）。
+        if served_clamped {
+            prepared
+                .plan
+                .reason_codes
+                .push(ReasonCode::new(ReasonCodeKind::OutputClamped));
+        }
         let ledger = build_ledger(
             &prepared.ledger_input(prepared.plan.dispatch_source),
             attempts,
@@ -724,6 +888,15 @@ impl Pipeline {
         persist_protocol_state(&self.db, &prepared, &response);
         persist_state_updates(&self.db, &prepared);
         enqueue_shadow(&self.shadow_tx, &prepared, ledger.request_id);
+        // 消息正文落库（`[recording] transcript` 控制；失败不影响请求）。
+        let (output, output_truncated) = crate::transcript::response_messages(&response);
+        record_transcript(
+            &self.db,
+            catalog.recording.transcript,
+            &prepared,
+            output,
+            output_truncated,
+        );
         tracing::info!(
             parent: &span,
             outcome = "success",
@@ -750,7 +923,9 @@ impl Pipeline {
         context: RequestContext,
     ) -> Result<StreamingResponse, PipelineError> {
         let started = Instant::now();
-        let prepared = self.prepare(request, context).await?;
+        let runtime = self.runtime();
+        let catalog = runtime.catalog.clone();
+        let mut prepared = self.prepare(request, context, &runtime).await?;
         let span = decision_span(&prepared);
         tracing::info!(parent: &span, "plan");
         let health = store::health::load(&self.db)?;
@@ -762,7 +937,7 @@ impl Pipeline {
         // 克隆偏好顺序：成功分支会把 `prepared` 移交给后台收尾任务。
         let preference = prepared.plan.preference.clone();
         for (index, slot) in preference.iter().enumerate() {
-            let Some(candidate) = self.catalog.candidate(&slot.candidate_id).cloned() else {
+            let Some(candidate) = catalog.candidate(&slot.candidate_id).cloned() else {
                 continue;
             };
             if !probe_allowed(&self.db, &health, &candidate.id, prepared.now_unix)? {
@@ -818,6 +993,12 @@ impl Pipeline {
                         usage: None,
                     });
 
+                    if output_clamped(&candidate, &prepared.canonical) {
+                        prepared
+                            .plan
+                            .reason_codes
+                            .push(ReasonCode::new(ReasonCodeKind::OutputClamped));
+                    }
                     let headers = prepared.headers(
                         &candidate,
                         slot,
@@ -836,7 +1017,7 @@ impl Pipeline {
                     );
 
                     let db = self.db.clone();
-                    let task_catalog = self.catalog.clone();
+                    let task_catalog = catalog.clone();
                     let task_prepared = prepared;
                     let task_candidate = candidate;
                     let task_slot = slot.clone();
@@ -918,7 +1099,7 @@ impl Pipeline {
 
         let failure = last_failure.unwrap_or(no_attempt_failure());
         let failed_facts = build_failed_facts(
-            &self.catalog,
+            &catalog,
             &prepared,
             Some(failure.class),
             failure.status,
@@ -954,6 +1135,7 @@ impl Pipeline {
 
 /// 决策准备结果。
 struct Prepared {
+    request_id: Uuid,
     canonical: CanonicalRequest,
     virtual_model: VirtualModel,
     profile: tr_contracts::ProfileConfig,
@@ -996,6 +1178,7 @@ struct ShadowInfo {
 impl Prepared {
     fn ledger_input(&self, dispatch_source: DispatchSource) -> LedgerInput {
         LedgerInput {
+            request_id: self.request_id,
             plan_id: self.plan_id.clone(),
             session_key: self.session_key.clone(),
             branch_id: self.branch_id.clone(),
@@ -1186,6 +1369,7 @@ async fn forward_stream(
     let mut outcome = OutcomeKind::Success;
     let mut error_message: Option<String> = None;
     let mut text = String::new();
+    let mut tool_calls: BTreeMap<u32, crate::transcript::StreamToolCall> = BTreeMap::new();
     let mut response_id = String::new();
     let mut response_model = String::new();
     let mut finish_reason = tr_contracts::FinishReason::Stop;
@@ -1203,6 +1387,18 @@ async fn forward_stream(
                         }
                         CanonicalStreamEvent::ContentDelta { text: delta } => {
                             text.push_str(delta);
+                        }
+                        CanonicalStreamEvent::ToolCallDelta {
+                            index,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            let call = tool_calls.entry(*index).or_default();
+                            if let Some(name) = name {
+                                call.name.push_str(name);
+                            }
+                            call.arguments.push_str(arguments);
                         }
                         CanonicalStreamEvent::Finished { reason } => {
                             finish_reason = reason.clone();
@@ -1315,6 +1511,17 @@ async fn forward_stream(
     persist_state_updates(&db, &prepared);
     enqueue_shadow(&shadow_tx, &prepared, ledger.request_id);
 
+    // 流式轮次的回复（正文 + 工具调用）；取消/失败时记录已有部分。
+    let calls: Vec<crate::transcript::StreamToolCall> = tool_calls.into_values().collect();
+    let (output, output_truncated) = crate::transcript::stream_reply(&text, &calls);
+    record_transcript(
+        &db,
+        catalog.recording.transcript,
+        &prepared,
+        output,
+        output_truncated,
+    );
+
     if outcome != OutcomeKind::Success
         && let Some(message) = error_message
     {
@@ -1341,6 +1548,59 @@ async fn forward_stream(
         };
         persist_protocol_state(&db, &prepared, &response);
     }
+}
+
+/// 把这一轮消息写入本地库（`request_transcripts`）。
+///
+/// 尽力而为：关闭记录（`[recording] transcript = false`）或写库失败都不影响请求结果。
+fn record_transcript(
+    db: &Db,
+    enabled: bool,
+    prepared: &Prepared,
+    output: Vec<tr_contracts::admin::TranscriptMessage>,
+    output_truncated: bool,
+) {
+    if !enabled {
+        return;
+    }
+    let (input, input_truncated) = crate::transcript::request_messages(&prepared.canonical);
+    let transcript = tr_contracts::admin::RequestTranscript {
+        request_id: prepared.request_id.to_string(),
+        session_key: prepared.session_key.clone(),
+        created_at: (prepared.now_unix as i64) * 1000,
+        input,
+        output,
+        truncated: input_truncated || output_truncated,
+        recorded: true,
+    };
+    if let Err(error) = store::transcript::insert(db, &transcript) {
+        tracing::warn!(request_id = %prepared.request_id, "transcript insert failed: {error}");
+    }
+}
+
+/// 有效推理档位：`meta.thinking_level` 优先，其次客户端的 `reasoning.effort`，缺省 `off`。
+///
+/// 结果**写回** `meta.thinking_level`：上游只按这个字段判断要不要注入厂商的
+/// 「关闭思考」开关（`enable_thinking: false` 等）。只算本地变量不写回时，缺省 `off`
+/// 在账本上显示为关闭，上游却按缺省行为继续思考（Qwen 等默认开思考的模型会白烧 token）。
+fn resolve_thinking_level(request: &mut CanonicalRequest, group_disabled: bool) -> String {
+    if group_disabled {
+        request.meta.thinking_level = Some("off".to_string());
+    }
+    let level = request
+        .meta
+        .thinking_level
+        .clone()
+        .or_else(|| {
+            request
+                .reasoning
+                .as_ref()
+                .and_then(|params| params.effort.clone())
+        })
+        .filter(|level| !level.trim().is_empty())
+        .unwrap_or_else(|| "off".to_string());
+    request.meta.thinking_level = Some(level.clone());
+    level
 }
 
 fn persist_protocol_state(db: &Db, prepared: &Prepared, response: &CanonicalResponse) {
@@ -1473,7 +1733,30 @@ fn spawn_shadow_writer(
     tx
 }
 
+/// 为每个 `judge.mode = active` 的组构建判官运行时。
+///
+/// 构建失败（TLS/配置）只打印并跳过该组：组判断不进入用户错误路径。
+fn build_group_judges(
+    catalog: &Catalog,
+) -> std::collections::HashMap<VirtualModelId, std::sync::Arc<crate::group_judge::GroupJudgeRuntime>>
+{
+    let mut runtimes = std::collections::HashMap::new();
+    for (id, group) in &catalog.group_configs {
+        if group.judge.mode != crate::judge::JudgeMode::Active {
+            continue;
+        }
+        match crate::group_judge::GroupJudgeRuntime::new(group.judge.clone()) {
+            Ok(runtime) => {
+                runtimes.insert(id.clone(), std::sync::Arc::new(runtime));
+            }
+            Err(error) => eprintln!("group judge disabled for {id}: {error}"),
+        }
+    }
+    runtimes
+}
+
 struct LedgerInput {
+    request_id: Uuid,
     plan_id: String,
     session_key: String,
     branch_id: String,
@@ -1549,7 +1832,7 @@ fn build_ledger(
     };
 
     LedgerRecord {
-        request_id: Uuid::new_v4(),
+        request_id: input.request_id,
         plan_id: input.plan_id.clone(),
         session_key: input.session_key.clone(),
         branch_id: input.branch_id.clone(),
@@ -1635,6 +1918,13 @@ fn build_failed_facts(
 }
 
 /// 是否允许本次请求尝试该候选（P0a-10 half-open 单探针）。
+/// 客户端请求的输出上限大于候选上限 → 上游会被截断（账本记 `OUTPUT_CLAMPED`）。
+fn output_clamped(candidate: &Candidate, request: &CanonicalRequest) -> bool {
+    tr_upstream::http::candidate_max_tokens(candidate)
+        .zip(request.output.max_tokens)
+        .is_some_and(|(limit, requested)| requested > limit)
+}
+
 fn probe_allowed(
     db: &Db,
     health: &CandidateHealth,
@@ -1814,14 +2104,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 候选组指纹：池 + profile 版本。ContextHold 只认这个，不认价格变化。
-fn group_digest(virtual_model: &VirtualModel, profile: &tr_contracts::ProfileConfig) -> String {
+/// 候选组指纹：池 + profile 版本 + 组判断配置。ContextHold 只认这个，不认价格变化。
+///
+/// 组 digest 包含规则/预算（由配置层计算），配置变化会使 ContextHold 失效。
+fn group_digest(
+    virtual_model: &VirtualModel,
+    profile: &tr_contracts::ProfileConfig,
+    judgment_digest: Option<&str>,
+) -> String {
     use sha2::{Digest, Sha256};
     let material = format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
         virtual_model.id,
         profile.revision,
-        virtual_model.candidate_pool.join(",")
+        virtual_model.candidate_pool.join(","),
+        judgment_digest.unwrap_or("")
     );
     let digest = Sha256::digest(material.as_bytes());
     let mut out = String::with_capacity(32);
@@ -1892,24 +2189,32 @@ fn strategy_set(virtual_model: &VirtualModel) -> Vec<Box<dyn tr_core::strategy::
     }
 }
 
+/// 把候选移到 `preference` / `failover` 首位；不在计划里时返回 `false`。
+fn promote_candidate(plan: &mut Plan, candidate: &str) -> bool {
+    let Some(position) = plan
+        .preference
+        .iter()
+        .position(|slot| slot.candidate_id == candidate)
+    else {
+        return false;
+    };
+    let slot = plan.preference.remove(position);
+    plan.preference.insert(0, slot);
+    if let Some(position) = plan
+        .failover
+        .iter()
+        .position(|slot| slot.candidate_id == candidate)
+    {
+        let slot = plan.failover.remove(position);
+        plan.failover.insert(0, slot);
+    }
+    true
+}
+
 /// 把 Sticky/ContextHold 的结论落到 Plan 顺序上。
 fn apply_dispatch(plan: &mut Plan, resolution: crate::dispatch::Resolution) {
     if let Some(candidate) = resolution.candidate {
-        if let Some(position) = plan
-            .preference
-            .iter()
-            .position(|slot| slot.candidate_id == candidate)
-        {
-            let slot = plan.preference.remove(position);
-            plan.preference.insert(0, slot);
-            if let Some(position) = plan
-                .failover
-                .iter()
-                .position(|slot| slot.candidate_id == candidate)
-            {
-                let slot = plan.failover.remove(position);
-                plan.failover.insert(0, slot);
-            }
+        if promote_candidate(plan, &candidate) {
             plan.dispatch_source = resolution.source;
         } else {
             plan.reason_codes.push(ReasonCode::with_detail(
@@ -1919,4 +2224,113 @@ fn apply_dispatch(plan: &mut Plan, resolution: crate::dispatch::Resolution) {
         }
     }
     plan.reason_codes.extend(resolution.reasons);
+}
+
+/// 组判断结论落到 Plan：命中则置首，否则只留理由码（fail-open）。
+fn apply_group_outcome(
+    plan: &mut Plan,
+    selection: Option<crate::group_judge::GroupSelection>,
+    no_match: bool,
+) {
+    let Some(selection) = selection else {
+        plan.reason_codes.push(ReasonCode::new(if no_match {
+            ReasonCodeKind::GroupJudgeNoMatch
+        } else {
+            ReasonCodeKind::GroupJudgeUnavailable
+        }));
+        return;
+    };
+
+    let (candidate, detail) = match selection {
+        crate::group_judge::GroupSelection::Rule { id, prefer } => {
+            let detail = format!("rule:{id} -> {prefer}");
+            (prefer, detail)
+        }
+        crate::group_judge::GroupSelection::Candidate(id) => {
+            let detail = format!("capability -> {id}");
+            (id, detail)
+        }
+    };
+
+    if promote_candidate(plan, &candidate) {
+        let reason = ReasonCode::with_detail(ReasonCodeKind::GroupJudgeSelected, detail);
+        plan.contributions.push(PlanContributionRecord {
+            strategy_id: "group_judge".to_string(),
+            priority: 5,
+            contribution: PlanContribution::Pin {
+                candidate,
+                reason: reason.clone(),
+            },
+        });
+        plan.reason_codes.push(reason);
+    } else {
+        plan.reason_codes.push(ReasonCode::with_detail(
+            ReasonCodeKind::GroupJudgeUnavailable,
+            format!("candidate `{candidate}` not in plan"),
+        ));
+    }
+}
+
+fn accumulate_cost(current: Option<Cost>, next: Cost) -> Cost {
+    match current {
+        Some(current) if current.currency == next.currency => Cost {
+            micros: current.micros.saturating_add(next.micros),
+            currency: current.currency,
+        },
+        _ => next,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tr_contracts::ReasoningParams;
+
+    fn request(level: Option<&str>, effort: Option<&str>) -> CanonicalRequest {
+        CanonicalRequest {
+            meta: tr_contracts::RequestMeta {
+                thinking_level: level.map(str::to_string),
+                ..Default::default()
+            },
+            reasoning: effort.map(|effort| ReasoningParams {
+                effort: Some(effort.to_string()),
+                ..ReasoningParams::default()
+            }),
+            ..CanonicalRequest::default()
+        }
+    }
+
+    #[test]
+    fn default_level_is_off_and_written_back_for_the_wire() {
+        let mut request = request(None, None);
+        assert_eq!(resolve_thinking_level(&mut request, false), "off");
+        // 必须写回：上游靠 meta 判断是否注入厂商的关闭开关。
+        assert_eq!(request.meta.thinking_level.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn reasoning_effort_becomes_the_effective_level() {
+        let mut request = request(None, Some("high"));
+        assert_eq!(resolve_thinking_level(&mut request, false), "high");
+        assert_eq!(request.meta.thinking_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn meta_level_wins_over_reasoning_effort() {
+        let mut request = request(Some("low"), Some("high"));
+        assert_eq!(resolve_thinking_level(&mut request, false), "low");
+    }
+
+    #[test]
+    fn group_disable_overrides_client_level() {
+        let mut request = request(Some("high"), Some("high"));
+        assert_eq!(resolve_thinking_level(&mut request, true), "off");
+        assert_eq!(request.meta.thinking_level.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn empty_values_fall_back_to_off() {
+        let mut request = request(Some("  "), Some(""));
+        assert_eq!(resolve_thinking_level(&mut request, false), "off");
+    }
 }

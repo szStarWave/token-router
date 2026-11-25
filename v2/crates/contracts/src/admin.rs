@@ -1,7 +1,7 @@
-//! 管理 API 契约 DTO（P4-001，契约冻结 v1）。
+//! 管理 API 契约 DTO（P4-001，契约 v1）。
 //!
 //! 规则（docs/contracts/admin-api.zh.md）：
-//! - 字段只增不改；删除/重命名需要 `api_version + 1`；
+//! - 端点/字段可增、可删、可改语义；破坏性变更记入契约 §5.1；
 //! - 客户端必须忽略未知字段（所有类型 `#[serde(default)]` 兼容读取）；
 //! - `ts-rs` 导出 TS 类型，`cargo xtask contract-check` 校验生成物无 diff。
 //!
@@ -199,6 +199,106 @@ pub struct AttemptSummary {
     pub error_class: Option<String>,
 }
 
+/// 一次判官（决策模型）调用。审计表只存结构化字段，不含 prompt 正文。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct JudgeCallSummary {
+    /// 触发这次判官的客户端请求。
+    pub request_id: String,
+    /// 路由组 id（组判断）或判官问题 id（全局判官）。
+    pub question_id: String,
+    /// 判官模型 / 服务标识。
+    pub service_id: String,
+    pub outcome: String,
+    #[ts(as = "Option<String>")]
+    pub failure_code: Option<String>,
+    /// 本次调用的输出版本/来源（例如 `external_jev` 表示 JEV 决策模型）。
+    #[serde(default)]
+    pub effective_source: String,
+    /// 调用耗时（毫秒）。
+    pub latency_ms: i64,
+    #[ts(as = "Option<i64>")]
+    pub prompt_tokens: Option<i64>,
+    #[ts(as = "Option<i64>")]
+    pub completion_tokens: Option<i64>,
+    #[ts(as = "Option<i64>")]
+    pub cost_micros: Option<i64>,
+    /// 调用输入摘要：`{task, prompt, choices}`（任务与提示词截断；不含 system/工具正文）。
+    #[ts(as = "Option<serde_json::Value>")]
+    #[serde(default)]
+    pub request: Option<serde_json::Value>,
+    /// 调用输出：`{kind, value, confidence, reason}`（失败时为 `None`）。
+    #[ts(as = "Option<serde_json::Value>")]
+    #[serde(default)]
+    pub response: Option<serde_json::Value>,
+    /// 失败详情（失败码之外的错误消息）。
+    #[serde(default)]
+    pub failure_message: Option<String>,
+    /// Unix 毫秒。
+    pub created_at: i64,
+}
+
+/// `GET /v2/admin/sessions` 列表项：一个会话的完整调用汇总（服务端聚合，不受列表分页影响）。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct SessionSummary {
+    pub session_key: String,
+    pub requests: i64,
+    pub failures: i64,
+    pub tokens: TokenUsage,
+    pub cost_micros: CostUsage,
+    /// 判官调用次数。
+    pub judge_calls: i64,
+    /// 其中没拿到结论的次数（`failed` / `unavailable` / `budget_exceeded`；`no_match` 是合法答案）。
+    pub judge_failures: i64,
+    /// 判官成本（已包含在 `cost_micros.routing` 里，单独给出便于观测，不要重复相加）。
+    pub judge_cost_micros: i64,
+    /// 会话涉及的路由组/模型（去重）。
+    pub models: Vec<String>,
+    /// Unix 毫秒。
+    pub first_at: i64,
+    /// Unix 毫秒。
+    pub last_at: i64,
+}
+
+/// `GET /v2/admin/requests/{id}/transcript` 里的一条消息。
+///
+/// 正文是**展平后的文本**：图片/音频只留占位符（不存 base64），
+/// 工具调用/工具结果以可读文本展开。
+#[derive(Debug, Clone, PartialEq, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct TranscriptMessage {
+    /// `system` / `user` / `assistant` / `tool`。
+    pub role: String,
+    /// 工具名或消息名（有则带上）。
+    #[ts(as = "Option<String>")]
+    pub name: Option<String>,
+    pub text: String,
+}
+
+/// `GET /v2/admin/requests/{id}/transcript`：一轮请求的消息与模型回复。
+///
+/// 消息记录由配置 `[recording] transcript`（默认 `true`）控制；关闭后新请求不再记录，
+/// 但历史记录保留。`recorded = false` 表示这次请求没有消息（关闭记录或早于该能力）。
+#[derive(Debug, Clone, PartialEq, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct RequestTranscript {
+    pub request_id: String,
+    pub session_key: String,
+    /// Unix 毫秒。
+    pub created_at: i64,
+    /// 这一轮发给上游的消息（system 在最前）。
+    pub input: Vec<TranscriptMessage>,
+    /// 上游回复（通常一条 assistant；失败/取消时可能为空或只有部分文本）。
+    pub output: Vec<TranscriptMessage>,
+    /// 有内容因单条/单轮上限被截断。
+    #[serde(default)]
+    pub truncated: bool,
+    /// 这次请求是否有消息记录。
+    #[serde(default)]
+    pub recorded: bool,
+}
+
 /// `GET /v2/admin/requests/{id}`：列表字段 + 决策详情。
 #[derive(Debug, Clone, TS, Serialize, Deserialize)]
 #[ts(export, export_to = "admin.ts")]
@@ -220,6 +320,9 @@ pub struct RequestDetail {
     #[ts(as = "serde_json::Value")]
     pub failover: serde_json::Value,
     pub attempts: Vec<AttemptSummary>,
+    /// 这次请求触发的判官调用（组判断与全局判官）。
+    #[serde(default)]
+    pub judge_calls: Vec<JudgeCallSummary>,
     pub switches: i64,
     pub cache_write_tokens: i64,
     pub facts_completeness: String,
@@ -391,10 +494,23 @@ pub struct ApplyRequest {
 #[ts(export, export_to = "admin.ts")]
 pub struct ApplyResponse {
     pub revision: String,
-    /// P4 恒为 true（不做热加载）。
+    /// 仅在 `[server]` 段变化时为 true（其余段落写盘后热加载，立即生效）。
     pub restart_required: bool,
     #[ts(as = "Option<String>")]
     pub backup_path: Option<String>,
+}
+
+/// `POST /v2/admin/config/reload` 响应。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct ConfigReloadResponse {
+    /// 重读后磁盘配置的 revision（与 GET /config 同源）。
+    pub revision: String,
+    /// 运行时目录是否已替换（非法配置时为 false，运行时保持原样）。
+    pub reloaded: bool,
+    /// 磁盘 `[server]` 段与进程启动时不同 → 需要重启才能生效。
+    pub restart_required: bool,
+    pub issues: Vec<ConfigIssue>,
 }
 
 /// token 列表项（脱敏：只有 prefix）。

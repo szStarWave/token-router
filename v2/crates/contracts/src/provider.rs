@@ -95,6 +95,8 @@ pub struct ProviderInfo {
     pub account_count: u32,
     /// 该 provider 编译出的候选数。
     pub candidate_count: u32,
+    /// provider 级启停；停用后下次编译的候选为 disabled，账号/目录保留。
+    pub enabled: bool,
     pub created_at: i64,
 }
 
@@ -122,6 +124,10 @@ pub struct ProviderUpsertRequest {
     #[serde(default)]
     #[ts(optional)]
     pub catalog_url: Option<String>,
+    /// provider 级启停；`None` = 创建默认启用 / 更新不变。
+    #[serde(default)]
+    #[ts(optional)]
+    pub enabled: Option<bool>,
 }
 
 /// 静态自定义 header 键值对（值非敏感；敏感值走凭据引用）。
@@ -223,6 +229,19 @@ pub struct AccountUpdateRequest {
     pub enabled: Option<bool>,
 }
 
+/// 目录模型的用途（选择器分组元数据；不参与候选编译）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TS, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "admin.ts")]
+pub enum ModelPurposeDto {
+    /// 回答（普通对话/补全）。
+    Chat,
+    /// 判断 LLM（组判断等 LLM 后端）。
+    JudgeLlm,
+    /// 判断 JEV（JEV 判官）。
+    Jev,
+}
+
 /// 目录中的模型条目（provider 的模型勾选池）。
 #[derive(Debug, Clone, TS, Serialize, Deserialize)]
 #[ts(export, export_to = "admin.ts")]
@@ -232,6 +251,13 @@ pub struct CatalogModel {
     pub display_name: String,
     /// 用户是否勾选为候选。
     pub selected: bool,
+    /// 用途（选择器分组元数据；不参与候选编译）。
+    pub purpose: ModelPurposeDto,
+    /// 能力标签（编译时写入候选 `capability.tags["caps"]`，供组判断参考）。
+    pub caps: Vec<String>,
+    /// 模型支持的推理档位（models.dev `reasoning_options.effort` 派生；编译时作为候选默认）。
+    #[serde(default)]
+    pub thinking_levels: Vec<String>,
     /// 编译出的候选 id（`{provider}~{model}@{account}`）；未勾选为空。
     #[ts(as = "Option<String>")]
     pub candidate_id: Option<String>,
@@ -244,6 +270,8 @@ pub struct CatalogModel {
     pub price: Option<PriceDto>,
     /// 元数据来源：`catalog` / `models.dev` / `manual`。
     pub source: String,
+    /// 已被用户移除（持久隐藏）；刷新目录不会带回。
+    pub hidden: bool,
 }
 
 /// 目录响应（`GET /v2/admin/providers/{id}/catalog`）。
@@ -271,6 +299,26 @@ pub struct CatalogRefreshRequest {
 pub struct CatalogSelectRequest {
     pub model_id: String,
     pub selected: bool,
+    /// 更新用途元数据（`None` = 不变；不影响 selected 行为）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub purpose: Option<ModelPurposeDto>,
+    /// 更新能力标签（`None` = 不变；不影响 selected 行为）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub caps: Option<Vec<String>>,
+    /// 上下文窗口（token）：`None` = 不变；`Some(0)` = 清除（未设置）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub context_window: Option<u32>,
+    /// 最大输出（token）：`None` = 不变；`Some(0)` = 清除（未设置）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_output: Option<u32>,
+    /// 价格（micros / MTok）：`None` = 不变；全 0 = 清除（未定价）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub price: Option<PriceDto>,
     /// 覆盖默认档位标签（默认用 provider 的 suggested_tier）。
     #[serde(default)]
     #[ts(optional)]
@@ -288,6 +336,10 @@ pub struct CatalogSelectRequest {
     #[serde(default)]
     #[ts(optional)]
     pub clear_deprecated: Option<bool>,
+    /// 持久隐藏/恢复目录条目（删除/还原）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub hidden: Option<bool>,
 }
 
 /// 候选编译结果（`POST /v2/admin/providers/compile`）。
@@ -308,11 +360,6 @@ pub struct CompileResponse {
 #[derive(Debug, Clone, TS, Serialize, Deserialize)]
 #[ts(export, export_to = "admin.ts")]
 pub struct CompileRequest {
-    /// 编译后是否为每个 provider 生成/更新一个聚合虚拟模型
-    /// （`auto-{provider}`，含其全部候选）。默认 true。
-    #[serde(default = "default_some_true")]
-    #[ts(optional)]
-    pub create_virtual_models: Option<bool>,
     /// If-Match（config CAS）。
     #[serde(default)]
     #[ts(optional)]
@@ -350,4 +397,119 @@ pub struct ImportedProviderDraft {
 #[ts(export, export_to = "admin.ts")]
 pub struct ImportScanResponse {
     pub drafts: Vec<ImportedProviderDraft>,
+}
+
+// ── 账户用量（供应商 usage API，v3 余额页）────────────────────────────────
+
+/// `GET /v2/admin/provider-usage` 响应。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct ProviderUsageResponse {
+    pub accounts: Vec<AccountUsageInfo>,
+}
+
+/// 单个账号的余额/订阅查询结果（每次查询独立，失败不伪造数值）。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct AccountUsageInfo {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub account_id: String,
+    pub account_label: String,
+    /// 凭据指纹后 4 位；明文永不出现。
+    pub fingerprint: String,
+    pub enabled: bool,
+    pub status: UsageStatus,
+    /// 计划/计费模式（API 返回时才有，例如 OpenRouter 的免费层/按量）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub plan: Option<String>,
+    /// 多币种余额条目（不跨条目求和）。
+    pub balances: Vec<BalanceInfo>,
+    /// 订阅窗口用量（OpenCode Go 等按窗口计费的厂商）。
+    #[serde(default)]
+    pub windows: Vec<UsageWindowInfo>,
+    /// 键级限额（API 返回时才有）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub limits: Option<UsageLimitInfo>,
+    /// 本次查询时间（Unix 毫秒）；0 = 未查询。
+    pub fetched_at: i64,
+    /// 失败原因（`status = error`）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// 用量查询状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TS, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "admin.ts")]
+pub enum UsageStatus {
+    /// 查询成功（至少拿到一个余额/计划字段）。
+    Ok,
+    /// 该厂商没有公开的 usage/余额接口。
+    Unsupported,
+    /// 请求或解析失败；`error` 给原因。
+    Error,
+}
+
+/// 一个币种的余额。金额保留 API 原始字符串，避免浮点误差。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct BalanceInfo {
+    pub currency: String,
+    /// 可用余额（API 直接给或有明确派生）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub available: Option<String>,
+    /// 已用（如 OpenRouter 的 total_usage）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub used: Option<String>,
+    /// 总额/已购（如 OpenRouter 的 total_credits）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub total: Option<String>,
+    /// 赠送/代金券部分。
+    #[serde(default)]
+    #[ts(optional)]
+    pub granted: Option<String>,
+    /// 充值/现金部分。
+    #[serde(default)]
+    #[ts(optional)]
+    pub topped_up: Option<String>,
+}
+
+/// 键级限额（如 OpenRouter key 的 limit / limit_remaining / usage）。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct UsageLimitInfo {
+    /// 限额币种（OpenRouter 为 USD）。
+    pub currency: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub remaining: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub used: Option<String>,
+}
+
+/// 订阅窗口用量（如 OpenCode Go 的 rolling / weekly / monthly）。
+#[derive(Debug, Clone, TS, Serialize, Deserialize)]
+#[ts(export, export_to = "admin.ts")]
+pub struct UsageWindowInfo {
+    /// 窗口标识（`rolling` / `weekly` / `monthly`）。
+    pub label: String,
+    /// 已用百分比（厂商原始口径，通常 0–100）。
+    pub percent: f64,
+    /// 厂商标记为已限流。
+    pub limited: bool,
+    /// 窗口重置时间（Unix 毫秒）。
+    #[serde(default)]
+    #[ts(optional)]
+    pub resets_at: Option<i64>,
 }

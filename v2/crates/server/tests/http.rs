@@ -689,3 +689,411 @@ async fn key_limit_exceeded_returns_429_with_retry_after() {
 
     mock.shutdown();
 }
+
+/// 指定候选 wire provider 与推理档位声明的目录。
+fn catalog_protocol(base: &str, provider: &str, thinking: &[&str]) -> Catalog {
+    let thinking = if thinking.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "thinking_levels = [{}]",
+            thinking
+                .iter()
+                .map(|level| format!("\"{level}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let toml = format!(
+        r#"
+schema_version = 1
+
+[profiles.default]
+mode = "single"
+
+[[candidates]]
+id = "a"
+tier = "local"
+strength = 10
+provider = "{provider}"
+base_url = "{base}"
+model = "physical-a"
+window = 32768
+input = ["text"]
+{thinking}
+price = {{ currency = "USD", input_micros_per_mtok = 1000000, output_micros_per_mtok = 2000000 }}
+
+[[virtual_models]]
+provider = "router"
+id = "auto"
+name = "Auto"
+profile = "default"
+candidate_pool = ["a"]
+"#
+    );
+    ConfigFile::parse(&toml)
+        .expect("parse")
+        .into_catalog()
+        .expect("catalog")
+}
+
+#[tokio::test]
+async fn anthropic_candidate_uses_anthropic_wire() {
+    let mock = MockUpstream::start(vec![Reply::anthropic_ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_protocol(&mock.base_url(), "anthropic", &[]),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/messages",
+            serde_json::json!({
+                "model": "auto",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(value["type"], "message");
+    assert_eq!(value["content"][0]["text"], "hello");
+
+    assert_eq!(mock.paths(), vec!["/v1/messages".to_string()]);
+    let upstream = &mock.requests()[0];
+    assert_eq!(upstream["model"], "physical-a");
+    assert_eq!(upstream["max_tokens"], 64);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn responses_candidate_uses_responses_wire() {
+    let mock = MockUpstream::start(vec![Reply::responses_ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_protocol(&mock.base_url(), "responses", &[]),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/responses",
+            serde_json::json!({
+                "model": "auto",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }]
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(value["output"][0]["content"][0]["text"], "hello");
+
+    assert_eq!(mock.paths(), vec!["/v1/responses".to_string()]);
+    let upstream = &mock.requests()[0];
+    assert_eq!(upstream["model"], "physical-a");
+    assert!(upstream["input"].is_array(), "上游应收到 Responses wire");
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn thinking_level_is_clamped_by_candidate_and_stripped_on_wire() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello"), Reply::ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_protocol(&mock.base_url(), "openai", &["high"]),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let request = |level: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("x-token-router-thinking-level", level)
+            .body(Body::from(
+                serde_json::json!({
+                    "model": "auto",
+                    "reasoning_effort": level,
+                    "messages": [{"role": "user", "content": "hi"}]
+                })
+                .to_string(),
+            ))
+            .expect("request")
+    };
+
+    // 已声明档位：决策与上游保持一致。
+    let response = app
+        .clone()
+        .oneshot(request("high"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-token-router-thinking-level"], "high");
+
+    // 未声明档位：dispatch 降为 off，且不把 reasoning 发给上游。
+    let response = app.oneshot(request("low")).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-token-router-thinking-level"], "off");
+
+    let upstream = mock.requests();
+    assert_eq!(upstream.len(), 2);
+    assert_eq!(upstream[0]["reasoning_effort"], "high");
+    assert!(
+        upstream[1].get("reasoning_effort").is_none(),
+        "未声明档位不应透传 reasoning_effort：{upstream:?}"
+    );
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn anthropic_candidate_streams_anthropic_events() {
+    let mock = MockUpstream::start(vec![Reply::anthropic_stream(&["Hi", " there"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_protocol(&mock.base_url(), "anthropic", &[]),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/messages",
+            serde_json::json!({
+                "model": "auto",
+                "stream": true,
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    assert!(body.contains("message_start"), "body: {body}");
+    assert!(body.contains("text_delta"), "body: {body}");
+    assert!(body.contains("Hi"), "body: {body}");
+    assert_eq!(mock.paths(), vec!["/v1/messages".to_string()]);
+
+    mock.shutdown();
+}
+
+#[tokio::test]
+async fn responses_candidate_streams_responses_events() {
+    let mock = MockUpstream::start(vec![Reply::responses_stream(&["Hi"])]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_protocol(&mock.base_url(), "responses", &[]),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/responses",
+            serde_json::json!({
+                "model": "auto",
+                "stream": true,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }]
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    assert!(body.contains("response.created"), "body: {body}");
+    assert!(body.contains("output_text.delta"), "body: {body}");
+    assert_eq!(mock.paths(), vec!["/v1/responses".to_string()]);
+
+    mock.shutdown();
+}
+
+/// `list_members = true` 时 `/v1/models` 额外列出组内成员（`group/member`）。
+#[tokio::test]
+async fn models_lists_members_when_enabled() {
+    let mock = MockUpstream::start(vec![]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_with(&mock.base_url(), "list_members = true"),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let ids: Vec<&str> = value["data"]
+        .as_array()
+        .expect("data")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"auto"), "group itself: {ids:?}");
+    assert!(
+        ids.contains(&"auto/physical-a"),
+        "member listed as group/member: {ids:?}"
+    );
+}
+
+/// 组级「关闭思考」：本组请求不发推理参数，决策档位记 `off`。
+#[tokio::test]
+async fn group_disable_thinking_strips_reasoning_on_wire() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(
+        db,
+        catalog_with(&mock.base_url(), "disable_thinking = true"),
+    ));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "high"
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-token-router-thinking-level"], "off");
+
+    let wire = mock.requests();
+    assert_eq!(wire.len(), 1);
+    assert!(
+        wire[0].get("reasoning_effort").is_none(),
+        "组级关闭思考不应把 effort 发给上游: {}",
+        wire[0]
+    );
+    mock.shutdown();
+}
+
+/// 对照：未开启关闭思考时，客户端 effort 原样到上游（证明上一条断言有区分度）。
+#[tokio::test]
+async fn reasoning_effort_reaches_wire_without_group_disable() {
+    let mock = MockUpstream::start(vec![Reply::ok("hello")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog(&mock.base_url())));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "high"
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let wire = mock.requests();
+    assert_eq!(wire[0]["reasoning_effort"], "high");
+    mock.shutdown();
+}
+
+/// 候选级执行策略：关闭思考剥离 reasoning；输出上限截断客户端 max_tokens 并记账。
+#[tokio::test]
+async fn candidate_disable_thinking_and_max_tokens_reach_wire() {
+    let mock = MockUpstream::start(vec![Reply::ok("hi")]).await;
+    let db = Db::open_in_memory().expect("db");
+    let toml = format!(
+        r#"
+schema_version = 1
+
+[profiles.default]
+mode = "single"
+
+[[candidates]]
+id = "a"
+tier = "local"
+strength = 10
+provider = "openai"
+base_url = "{}"
+model = "physical-a"
+window = 32768
+input = ["text"]
+disable_thinking = true
+max_tokens = 64
+
+[[virtual_models]]
+provider = "router"
+id = "auto"
+name = "Auto"
+profile = "default"
+candidate_pool = ["a"]
+"#,
+        mock.base_url()
+    );
+    let catalog = ConfigFile::parse(&toml)
+        .expect("parse")
+        .into_catalog()
+        .expect("catalog");
+    let pipeline = Arc::new(Pipeline::from_catalog(db, catalog));
+    let app = router(AppState::new_shared(pipeline, AuthMode::Disabled));
+
+    let response = app
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            serde_json::json!({
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "high",
+                "max_tokens": 1024
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["x-token-router-reason-codes"]
+            .to_str()
+            .unwrap_or_default()
+            .contains("OUTPUT_CLAMPED"),
+        "截断应记 OUTPUT_CLAMPED"
+    );
+
+    let wire = mock.requests();
+    assert!(wire[0].get("reasoning_effort").is_none(), "{}", wire[0]);
+    assert_eq!(wire[0]["max_tokens"], 64);
+    mock.shutdown();
+}

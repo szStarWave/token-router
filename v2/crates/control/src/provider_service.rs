@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use tr_agent::store::{self, Db};
 use tr_contracts::{
     AccountCreateRequest, AccountInfo, AccountUpdateRequest, CatalogModel, CatalogRefreshRequest,
-    CatalogResponse, CatalogSelectRequest, CompileRequest, CompileResponse, ProviderInfo,
-    ProviderKindDto, ProviderStatus, ProviderTemplateInfo, ProviderUpsertRequest,
+    CatalogResponse, CatalogSelectRequest, CompileRequest, CompileResponse, ModelPurposeDto,
+    ProviderInfo, ProviderKindDto, ProviderStatus, ProviderTemplateInfo, ProviderUpsertRequest,
 };
 use tr_onboard::import;
 
@@ -33,6 +33,25 @@ fn now_millis() -> i64 {
 
 fn db(state: &ControlState) -> Result<&Db, AdminApiError> {
     Ok(state.pipeline.db())
+}
+
+/// 供应商 / 账号 / 目录变更后立即重建候选（尽力而为）。
+///
+/// 组页「添加模型」的可选列表来自编译后的 [[candidates]]；不自动编译就会出现
+/// "供应商页已勾选、组页看不到"的错位。编译失败只记录日志：选择已落库，
+/// 下一次变更会重试，不应让一次目录编辑整体失败。
+fn compile_after_provider_change(state: &ControlState) {
+    if state.config_path.is_none() {
+        return; // 无配置文件（单元测试等）：没有编译目标
+    }
+    if let Err(error) = compile_candidates(
+        state,
+        CompileRequest {
+            expected_revision: None,
+        },
+    ) {
+        eprintln!("provider change applied but candidate compile failed: {error:?}");
+    }
 }
 
 // ── 凭据文件 ─────────────────────────────────────────────────────────────
@@ -159,6 +178,10 @@ pub fn create_provider(
         catalog_url.as_deref(),
         request.template_id.as_deref(),
     )?;
+    if request.enabled == Some(false) {
+        store::providers::set_provider_enabled(db(state)?, &id, false)?;
+    }
+    compile_after_provider_change(state);
     find_provider(state, &id)
 }
 
@@ -169,6 +192,8 @@ pub fn update_provider(
 ) -> Result<ProviderInfo, AdminApiError> {
     let existing = store::providers::find_provider(db(state)?, id)?
         .ok_or_else(|| AdminApiError::not_found(format!("provider {id} not found")))?;
+    let enabled = request.enabled;
+    let kind = request.kind.unwrap_or(existing.kind);
     let display_name = request
         .display_name
         .filter(|name| !name.is_empty())
@@ -182,10 +207,20 @@ pub fn update_provider(
         db(state)?,
         id,
         &display_name,
+        kind,
         &base_url,
         catalog_url.as_deref(),
     )? {
         return Err(AdminApiError::not_found(format!("provider {id} not found")));
+    }
+    if let Some(enabled) = enabled {
+        store::providers::set_provider_enabled(db(state)?, id, enabled)?;
+    }
+    if kind != existing.kind {
+        // 类型变了：重建候选，并把仍是旧默认协议的候选迁到新协议。
+        compile_after_provider_kind_change(state, id, existing.kind, kind);
+    } else {
+        compile_after_provider_change(state);
     }
     find_provider(state, id)
 }
@@ -198,6 +233,7 @@ pub fn delete_provider(state: &ControlState, id: &str) -> Result<(), AdminApiErr
     if !store::providers::delete_provider(db(state)?, id)? {
         return Err(AdminApiError::not_found(format!("provider {id} not found")));
     }
+    compile_after_provider_change(state);
     Ok(())
 }
 
@@ -260,6 +296,7 @@ pub fn create_account(
     store::providers::insert_account(db(state)?, &account)?;
     // 第一个账号就位 → awaiting_catalog。
     set_provider_status_if_unconfigured(state, provider_id)?;
+    compile_after_provider_change(state);
     Ok(account)
 }
 
@@ -311,6 +348,7 @@ pub fn update_account(
             "account {account_id} not found"
         )));
     }
+    compile_after_provider_change(state);
     Ok(account)
 }
 
@@ -323,6 +361,7 @@ pub fn delete_account(state: &ControlState, account_id: &str) -> Result<(), Admi
             "account {account_id} not found"
         )));
     }
+    compile_after_provider_change(state);
     Ok(())
 }
 
@@ -414,6 +453,16 @@ pub async fn refresh_catalog(
         )
     })?;
 
+    // 非对话模型（embedding / rerank / 语音 / 图像生成）不出现在目录里：
+    // 先用命名规则，再用 models.dev 的类型与输出模态兜底（缓存命中时几乎零成本）。
+    let remote_non_chat = crate::modelsdev::non_chat_models(state, provider_id)
+        .await
+        .unwrap_or_default();
+    let models: Vec<(String, String)> = models
+        .into_iter()
+        .filter(|(model_id, _)| !is_non_chat_model(model_id) && !remote_non_chat.contains(model_id))
+        .collect();
+
     let fresh_ids: Vec<String> = models.iter().map(|(id, _)| id.clone()).collect();
     // 先取出已勾选集合与既有覆盖，再覆盖写目录。
     let existing = store::providers::list_catalog_models(db(state)?, provider_id)?;
@@ -425,6 +474,9 @@ pub async fn refresh_catalog(
         .into_iter()
         .map(|(model_id, display_name)| CatalogModel {
             selected: *selected.get(&model_id).unwrap_or(&false),
+            purpose: ModelPurposeDto::Chat,
+            caps: Vec::new(),
+            thinking_levels: Vec::new(),
             display_name,
             model_id: model_id.clone(),
             candidate_id: None,
@@ -432,9 +484,18 @@ pub async fn refresh_catalog(
             max_output: None,
             price: None,
             source: "catalog".to_string(),
+            hidden: false,
         })
         .collect();
     store::providers::upsert_catalog_models(db(state)?, provider_id, &rows)?;
+
+    // 历史刷新留下的 embedding / rerank 行：隐藏并取消勾选（数据保留，可恢复）。
+    for model in &existing {
+        if is_non_chat_model(&model.model_id) && !model.hidden {
+            let _ =
+                store::providers::set_model_hidden(db(state)?, provider_id, &model.model_id, true);
+        }
+    }
 
     // v3 P5-A 吸收项（roadmap §0.3）：auto-include 通配符自动勾选新模型；
     // 上游目录里消失的模型标记 deprecated（自动下架，不再编译出候选）。
@@ -442,7 +503,42 @@ pub async fn refresh_catalog(
     mark_deprecated_models(db(state)?, provider_id, &fresh_ids);
 
     let _ = store::providers::set_catalog_status(db(state)?, provider_id, true, None);
+    // models.dev 元数据补全（尽力而为）：窗口 / 输出 / 价格 / 推理档位只填空。
+    crate::modelsdev::enrich_after_refresh(state, provider_id).await;
+    // 已存在的非对话模型（历史刷新留下的语音/图像模型）：隐藏并取消勾选，可手动恢复。
+    let _ = hide_non_chat_models(state, provider_id).await;
+    // 目录刷新会改变「哪些模型是对话模型」（例如新过滤掉的 embedding / rerank、
+    // 上游下架模型），立即重建候选，避免目录与路由组长时间不一致。
+    compile_after_provider_change(state);
     catalog(state, provider_id)
+}
+
+/// 隐藏目录里的非对话模型（命名规则 + models.dev 类型/模态），返回隐藏数量。
+async fn hide_non_chat_models(
+    state: &ControlState,
+    provider_id: &str,
+) -> Result<u32, AdminApiError> {
+    let remote_non_chat = crate::modelsdev::non_chat_models(state, provider_id).await?;
+    let mut hidden = 0;
+    for model in store::providers::list_catalog_models(db(state)?, provider_id)? {
+        if model.hidden {
+            continue;
+        }
+        if is_non_chat_model(&model.model_id) || remote_non_chat.contains(&model.model_id) {
+            let _ = store::providers::set_model_selected(
+                db(state)?,
+                provider_id,
+                &model.model_id,
+                false,
+                None,
+                None,
+            );
+            let _ =
+                store::providers::set_model_hidden(db(state)?, provider_id, &model.model_id, true);
+            hidden += 1;
+        }
+    }
+    Ok(hidden)
 }
 
 /// 按 provider 目录里配置的 auto-include 通配符（`gpt-*`）勾选新模型。
@@ -454,7 +550,7 @@ fn apply_auto_include(db: &tr_agent::store::Db, provider_id: &str) -> Result<(),
         return Ok(());
     }
     for model in store::providers::list_catalog_models(db, provider_id)? {
-        if model.selected {
+        if model.selected || model.hidden {
             continue;
         }
         let hit = patterns
@@ -513,6 +609,7 @@ pub fn set_auto_include(
     store::providers::set_provider_auto_include(db(state)?, provider_id, Some(pattern))
         .map_err(|error| AdminApiError::internal(error.to_string()))?;
     apply_auto_include(db(state)?, provider_id)?;
+    compile_after_provider_change(state);
     let provider = find_provider(state, provider_id)?;
     let mut response = catalog(state, provider_id)?;
     // 附带当前 pattern 供 UI 回显。
@@ -527,6 +624,8 @@ pub fn catalog(state: &ControlState, provider_id: &str) -> Result<CatalogRespons
     let models = store::providers::list_catalog_models(db(state)?, provider_id)?
         .into_iter()
         .filter(|model| model.model_id != store::providers::AUTO_INCLUDE_SENTINEL)
+        // embedding / rerank 不进入对话模型目录（含历史刷新留下的行）。
+        .filter(|model| !is_non_chat_model(&model.model_id))
         .map(|mut model| {
             // candidate_id = 第一个启用账号下的展开 id（展示用）。
             model.candidate_id = accounts
@@ -549,18 +648,23 @@ pub fn select_model(
     request: CatalogSelectRequest,
 ) -> Result<CatalogResponse, AdminApiError> {
     find_provider(state, provider_id)?;
-    // 手工目录：条目不存在时隐式创建（本地推理等无在线目录场景）。
-    let created = store::providers::upsert_manual_model(
-        db(state)?,
-        provider_id,
-        &request.model_id,
-        request.selected,
-    )?;
-    if !created && !request.selected {
+    // 手工目录：勾选一个不存在的条目时隐式创建（本地推理等无在线目录场景）。
+    // 取消勾选只更新已有条目；不存在的条目返回 404。
+    let exists =
+        store::providers::catalog_model_exists(db(state)?, provider_id, &request.model_id)?;
+    if !exists && !request.selected {
         return Err(AdminApiError::not_found(format!(
             "model {} not found in catalog",
             request.model_id
         )));
+    }
+    if !exists {
+        store::providers::upsert_manual_model(
+            db(state)?,
+            provider_id,
+            &request.model_id,
+            request.selected,
+        )?;
     }
     let _ = store::providers::set_model_selected(
         db(state)?,
@@ -570,6 +674,27 @@ pub fn select_model(
         request.tier.as_deref(),
         request.strength,
     )?;
+    // 用途 / 能力标签 / 窗口 / 最大输出 / 价格是目录元数据（selected 行为不变）。
+    if request.purpose.is_some()
+        || request.caps.is_some()
+        || request.context_window.is_some()
+        || request.max_output.is_some()
+        || request.price.is_some()
+    {
+        let patch = store::providers::ModelMetadataPatch {
+            purpose: request.purpose,
+            caps: request.caps.clone(),
+            context_window: request.context_window,
+            max_output: request.max_output,
+            price: request.price.clone(),
+        };
+        let _ = store::providers::update_model_metadata(
+            db(state)?,
+            provider_id,
+            &request.model_id,
+            &patch,
+        )?;
+    }
     // auto-include 通配符挂在该条目上（空串 = 清除）。
     if let Some(pattern) = &request.auto_include_pattern {
         let pattern = pattern.trim();
@@ -589,7 +714,87 @@ pub fn select_model(
     if request.clear_deprecated.unwrap_or(false) {
         let _ = store::providers::clear_deprecated(db(state)?, provider_id, &request.model_id);
     }
+    if let Some(hidden) = request.hidden {
+        store::providers::set_model_hidden(db(state)?, provider_id, &request.model_id, hidden)?;
+    }
+    compile_after_provider_change(state);
     catalog(state, provider_id)
+}
+
+/// 持久删除目录条目：隐藏且取消勾选；仍被配置中的组/规则引用时拒绝。
+pub fn delete_catalog_model(
+    state: &ControlState,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<CatalogResponse, AdminApiError> {
+    find_provider(state, provider_id)?;
+    if !store::providers::catalog_model_exists(db(state)?, provider_id, model_id)? {
+        return Err(AdminApiError::not_found(format!(
+            "model {model_id} not found in catalog"
+        )));
+    }
+    let references = catalog_model_references(state, provider_id, model_id)?;
+    if !references.is_empty() {
+        return Err(AdminApiError::with_issues(
+            ApiErrorType::ConfigConflict,
+            format!(
+                "模型 {model_id} 仍被以下位置引用，不能删除：{}",
+                references.join("；")
+            ),
+            references
+                .iter()
+                .map(|reference| tr_contracts::ConfigIssue {
+                    path: reference.clone(),
+                    code: "catalog_model_referenced".to_string(),
+                    message: "请先在虚拟模型中移除引用".to_string(),
+                })
+                .collect(),
+        ));
+    }
+    store::providers::set_model_hidden(db(state)?, provider_id, model_id, true)?;
+    compile_after_provider_change(state);
+    catalog(state, provider_id)
+}
+
+/// 目录模型的候选 id 在配置中的引用（组候选池 / 规则 prefer）。
+fn catalog_model_references(
+    state: &ControlState,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<Vec<String>, AdminApiError> {
+    let Some(path) = state.config_path.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| AdminApiError::internal(format!("read config: {error}")))?;
+    let file = tr_agent::config::ConfigFile::parse(&text)
+        .map_err(|error| AdminApiError::internal(format!("parse config: {error}")))?;
+    let candidate_ids: std::collections::BTreeSet<String> =
+        store::providers::list_accounts(db(state)?, provider_id)?
+            .into_iter()
+            .map(|account| candidate_id(provider_id, model_id, &account.id))
+            .collect();
+    let mut references = Vec::new();
+    for virtual_model in &file.virtual_models {
+        if virtual_model
+            .candidate_pool
+            .iter()
+            .any(|candidate| candidate_ids.contains(candidate))
+        {
+            references.push(format!(
+                "virtual_models.{}.candidate_pool",
+                virtual_model.id
+            ));
+        }
+        if virtual_model
+            .rules
+            .iter()
+            .any(|rule| candidate_ids.contains(&rule.prefer))
+        {
+            references.push(format!("virtual_models.{}.rules", virtual_model.id));
+        }
+    }
+    Ok(references)
 }
 
 /// 探测目录端点。返回 (model_id, display_name) 列表。
@@ -652,7 +857,7 @@ async fn probe_catalog(
     Ok(models)
 }
 
-fn read_credential(
+pub(crate) fn read_credential(
     base_url: &str,
     data_dir: Option<&std::path::Path>,
     account: &AccountInfo,
@@ -661,7 +866,22 @@ fn read_credential(
     if base_url.starts_with("http://127.0.0.1") || base_url.starts_with("http://localhost") {
         return Ok(String::new());
     }
-    let reference = tr_contracts::CredentialRef(account.credential_ref.clone());
+    read_credential_ref(&account.credential_ref, data_dir)
+}
+
+/// 严格读取凭据：不看 base_url 是否本地（usage 接口即使是本机代理也需要 key）。
+pub(crate) fn read_credential_required(
+    data_dir: Option<&std::path::Path>,
+    account: &AccountInfo,
+) -> Result<String, String> {
+    read_credential_ref(&account.credential_ref, data_dir)
+}
+
+fn read_credential_ref(
+    reference_ref: &str,
+    data_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let reference = tr_contracts::CredentialRef(reference_ref.to_string());
     match reference.kind() {
         "file" => {
             let path = reference
@@ -758,16 +978,66 @@ fn uuid_v4() -> String {
 /// 规则：
 /// - 手选 tier/strength 覆盖默认（provider.suggested_tier / 目录默认 50）；
 /// - 价格未目录化时省略（内核按 unknown_price_policy 处理）；
-/// - `create_virtual_models`：每个 provider 生成 `auto-{provider}` 虚拟模型（pool=其全部新候选）；
-///   已存在的同名虚拟模型更新 pool，不覆盖用户自定义 profile/strategies。
+/// - **只写候选，不建路由组**：虚拟模型（路由组）一律由用户手动创建与维护，
+///   编译不会新增、改写或删除 `[[virtual_models]]`。
+///
+/// 可靠性：读盘 → 改 → 写全程持有 [`ControlState::config_write_lock`]，
+/// 与 config apply/rollback 串行；CAS 基准是当前磁盘 revision（If-Match 语义，
+/// 请求缺省时用磁盘当前值兜底，仍会被校验）。
 pub fn compile_candidates(
     state: &ControlState,
     request: CompileRequest,
 ) -> Result<CompileResponse, AdminApiError> {
+    let guard = state.config_write_lock();
+    compile_candidates_locked(state, request, &guard)
+}
+
+/// [`compile_candidates`] 的无锁版本：调用方必须已持有 `config_write_lock` 守卫。
+pub fn compile_candidates_locked(
+    state: &ControlState,
+    request: CompileRequest,
+    guard: &std::sync::MutexGuard<'_, ()>,
+) -> Result<CompileResponse, AdminApiError> {
+    compile_candidates_inner(state, request, guard, None)
+}
+
+/// provider 类型变更后的编译：把该 provider 下仍是「旧类型默认协议」的候选迁到新协议。
+///
+/// 只迁移等于旧类型默认值的候选；用户显式改成别的协议（例如在 OpenAI 供应商下
+/// 单独把某个模型设为 `responses`）保持不变。手工候选也按 id 前缀识别。
+fn compile_after_provider_kind_change(
+    state: &ControlState,
+    provider_id: &str,
+    old_kind: ProviderKindDto,
+    new_kind: ProviderKindDto,
+) {
+    if state.config_path.is_none() {
+        return; // 无配置文件（单元测试等）：没有编译目标
+    }
+    let guard = state.config_write_lock();
+    let result = compile_candidates_inner(
+        state,
+        CompileRequest {
+            expected_revision: None,
+        },
+        &guard,
+        Some((provider_id, old_kind, new_kind)),
+    );
+    drop(guard);
+    if let Err(error) = result {
+        eprintln!("provider kind changed but candidate compile failed: {error:?}");
+    }
+}
+
+fn compile_candidates_inner(
+    state: &ControlState,
+    request: CompileRequest,
+    _guard: &std::sync::MutexGuard<'_, ()>,
+    protocol_migration: Option<(&str, ProviderKindDto, ProviderKindDto)>,
+) -> Result<CompileResponse, AdminApiError> {
     let db_handle = db(state)?;
     let providers = store::providers::list_providers(db_handle)?;
     let mut candidate_rows: Vec<CandidateRow> = Vec::new();
-    let mut vm_pools: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for provider in &providers {
         let accounts = store::providers::list_accounts(db_handle, &provider.id)?;
@@ -777,7 +1047,21 @@ pub fn compile_candidates(
         }
         let overrides = store::providers::model_route_overrides(db_handle, &provider.id)?;
         for model in store::providers::list_catalog_models(db_handle, &provider.id)? {
-            if !model.selected {
+            // embedding / rerank 不是对话模型：不编译成候选（防御历史勾选）。
+            if is_non_chat_model(&model.model_id) {
+                continue;
+            }
+            // 判断模型（judge_llm / jev）由供应商页的用途标记驱动：
+            // 不再要求“勾选供应用使用”，但也不进入对话候选池。
+            let judge_tag = match model.purpose {
+                ModelPurposeDto::Chat => None,
+                ModelPurposeDto::JudgeLlm => Some("judge:llm"),
+                ModelPurposeDto::Jev => Some("judge:jev"),
+            };
+            if judge_tag.is_none() && !model.selected {
+                continue;
+            }
+            if model.hidden {
                 continue;
             }
             // deprecated（上游已下架）不编译出新候选。
@@ -796,18 +1080,33 @@ pub fn compile_candidates(
                 tier.unwrap_or_else(|| provider_templates::find_template_id_default(&provider.id));
             for account in &enabled_accounts {
                 let candidate = candidate_id(&provider.id, &model.model_id, &account.id);
+                let base_url = account
+                    .base_url_override
+                    .clone()
+                    .unwrap_or_else(|| provider.base_url.clone());
+                // JEV 走 SystemOne：候选 base_url 归一化为完整 /v1/systemone，
+                // 组判断选中该模型时可直接作为 endpoint。
+                let base_url = if model.purpose == ModelPurposeDto::Jev {
+                    systemone_endpoint(&base_url)
+                } else {
+                    base_url
+                };
+                let mut caps = model.caps.clone();
+                if let Some(tag) = judge_tag {
+                    caps.push(tag.to_string());
+                }
                 candidate_rows.push(CandidateRow {
                     id: candidate.clone(),
                     tier: tier.clone(),
                     strength: strength.unwrap_or(50),
                     provider: provider_kind_text(provider.kind),
-                    base_url: account
-                        .base_url_override
-                        .clone()
-                        .unwrap_or_else(|| provider.base_url.clone()),
+                    base_url,
                     model: model.model_id.clone(),
                     credential: account.credential_ref.clone(),
-                    window: default_window_for(&provider.id),
+                    window: model
+                        .context_window
+                        .filter(|value| *value > 0)
+                        .unwrap_or_else(|| default_window_for(&provider.id)),
                     provider_id: provider.id.clone(),
                     account_id: account.id.clone(),
                     proxy: account.proxy_url.clone(),
@@ -818,11 +1117,22 @@ pub fn compile_candidates(
                         .into_iter()
                         .map(|header| (header.name, header.value))
                         .collect(),
+                    caps,
+                    enabled: provider.enabled,
+                    thinking_levels: model.thinking_levels.clone(),
+                    max_output: model.max_output,
+                    price: model
+                        .price
+                        .as_ref()
+                        .map(|price| tr_agent::config::PriceFile {
+                            currency: price.currency.clone(),
+                            input_micros_per_mtok: price.input_micros_per_mtok,
+                            output_micros_per_mtok: price.output_micros_per_mtok,
+                            cache_read_micros_per_mtok: price.cache_read_micros_per_mtok,
+                            cache_write_micros_per_mtok: price.cache_write_micros_per_mtok,
+                            request_micros: price.request_micros,
+                        }),
                 });
-                vm_pools
-                    .entry(provider.id.clone())
-                    .or_default()
-                    .push(candidate);
             }
         }
     }
@@ -837,7 +1147,21 @@ pub fn compile_candidates(
     let mut file = tr_agent::config::ConfigFile::parse(&text)
         .map_err(|error| AdminApiError::internal(format!("parse config: {error}")))?;
 
-    let previous_revision = state.pipeline.catalog().config_digest.clone();
+    // provider 类型刚变更：把仍是旧类型默认协议的候选迁到新协议，再走正常编译。
+    if let Some((provider_id, old_kind, new_kind)) = protocol_migration {
+        let prefix = format!("{}-", sanitize(provider_id));
+        let new_protocol = provider_kind_text(new_kind).to_string();
+        for candidate in &mut file.candidates {
+            if candidate.id.starts_with(&prefix)
+                && protocol_is_default(&candidate.provider, old_kind)
+            {
+                candidate.provider = new_protocol.clone();
+            }
+        }
+    }
+
+    // CAS 基准：当前磁盘 revision（与 GET /config 同源），不是运行 catalog 的旧 digest。
+    let disk_revision = crate::config_service::disk_revision(state)?;
     let new_ids: Vec<String> = candidate_rows.iter().map(|row| row.id.clone()).collect();
 
     // 本次编译全量替换「上次编译写进去的候选」，用户手写的原样保留。
@@ -848,6 +1172,13 @@ pub fn compile_candidates(
         .into_iter()
         .collect();
     let new_id_set: BTreeSet<&str> = new_ids.iter().map(String::as_str).collect();
+    // 候选级用户设置（上游模型 / 协议 / 输入模态 / 思考档 / 请求头）不在 DB 里，
+    // 重新编译时必须从上一版同 id 候选继承，否则勾选/取消别的模型会把这些设置一起抹掉。
+    let previous_candidates: BTreeMap<String, tr_agent::config::CandidateFile> = file
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.id.clone(), candidate.clone()))
+        .collect();
     let manual_candidates: Vec<_> = file
         .candidates
         .iter()
@@ -858,22 +1189,78 @@ pub fn compile_candidates(
         .cloned()
         .collect();
     file.candidates = manual_candidates;
+    // 仍被组/规则引用、但已不再编译的旧候选：保留为 **enabled = false**，而不是直接删掉。
+    // 直接删会让 `virtual_models.*.candidate_pool` 悬空、整份配置校验失败（编译永远失败，
+    // 前端表现为"供应商页改了勾选、组页候选纹丝不动"）。停用候选不参与路由，等引用清掉后
+    // 下次编译会自然移除。
+    let referenced: BTreeSet<&str> = file
+        .virtual_models
+        .iter()
+        .flat_map(|virtual_model| {
+            virtual_model
+                .candidate_pool
+                .iter()
+                .map(String::as_str)
+                .chain(virtual_model.rules.iter().map(|rule| rule.prefer.as_str()))
+        })
+        .collect();
+    let mut retained_disabled: Vec<String> = Vec::new();
+    for previous in previous_candidates.values() {
+        if new_id_set.contains(previous.id.as_str()) {
+            continue;
+        }
+        if !previous_ids.contains(previous.id.as_str()) {
+            continue; // 手写候选已在 manual_candidates 里
+        }
+        if !referenced.contains(previous.id.as_str()) {
+            continue; // 没人引用：随编译一起消失
+        }
+        let mut kept = previous.clone();
+        kept.enabled = false;
+        retained_disabled.push(kept.id.clone());
+        file.candidates.push(kept);
+    }
     for row in &candidate_rows {
+        let previous = previous_candidates.get(&row.id);
+        // 请求头：账号级为底，候选级覆盖（用户手填的优先）。
+        let mut extra_headers = row.extra_headers.clone();
+        if let Some(previous) = previous {
+            extra_headers.extend(previous.extra_headers.clone());
+        }
         file.candidates.push(tr_agent::config::CandidateFile {
             id: row.id.clone(),
             tier: row.tier.clone(),
             strength: row.strength,
-            provider: row.provider.clone(),
+            provider: previous
+                .map(|candidate| candidate.provider.clone())
+                .unwrap_or_else(|| row.provider.clone()),
             base_url: row.base_url.clone(),
-            model: row.model.clone(),
+            model: previous
+                .map(|candidate| candidate.model.clone())
+                .unwrap_or_else(|| row.model.clone()),
             credential: Some(row.credential.clone()),
             proxy: row.proxy.clone(),
-            extra_headers: row.extra_headers.clone(),
+            extra_headers,
+            caps: row.caps.clone(),
             window: row.window,
-            input: Vec::new(),
-            thinking_levels: Vec::new(),
-            price: None,
-            enabled: true,
+            input: previous
+                .map(|candidate| candidate.input.clone())
+                .unwrap_or_default(),
+            // 候选级推理档位优先；没有则用目录（models.dev）派生的默认档位。
+            thinking_levels: previous
+                .map(|candidate| candidate.thinking_levels.clone())
+                .filter(|levels| !levels.is_empty())
+                .unwrap_or_else(|| row.thinking_levels.clone()),
+            // 候选级执行开关：关闭思考随候选保留；输出上限取目录值，目录没有时沿用旧值。
+            disable_thinking: previous
+                .map(|candidate| candidate.disable_thinking)
+                .unwrap_or(false),
+            max_tokens: row
+                .max_output
+                .filter(|value| *value > 0)
+                .or_else(|| previous.and_then(|candidate| candidate.max_tokens)),
+            price: row.price.clone(),
+            enabled: row.enabled,
         });
         // 配额窗口的账号/厂商映射（P5-B 管理面分组用）。
         let _ = store::quota::ensure_mapping(
@@ -884,49 +1271,36 @@ pub fn compile_candidates(
         );
     }
 
-    if request.create_virtual_models.unwrap_or(true) {
-        for (provider_id, pool) in &vm_pools {
-            let vm_id = format!("auto-{}", sanitize(provider_id));
-            if let Some(existing) = file.virtual_models.iter_mut().find(|vm| vm.id == vm_id) {
-                existing.candidate_pool = pool.clone();
-            } else {
-                file.virtual_models
-                    .push(tr_agent::config::VirtualModelFile {
-                        provider: "token-router".to_string(),
-                        id: vm_id.clone(),
-                        name: format!("Auto ({provider_id})"),
-                        thinking_levels: Vec::new(),
-                        context_window: None,
-                        max_tokens: None,
-                        input: Vec::new(),
-                        profile: "default".to_string(),
-                        strategies: Vec::new(),
-                        candidate_pool: pool.clone(),
-                    });
-            }
-        }
-    }
-
     let document_toml = toml::to_string_pretty(&file)
         .map_err(|error| AdminApiError::internal(format!("serialize config: {error}")))?;
     let candidates_total = file.candidates.len() as u32;
     let virtual_models_total = file.virtual_models.len() as u32;
-    let outcome = crate::config_service::apply(
-        state.pipeline.catalog(),
+    let outcome = crate::config_service::apply_locked(
         state,
         &document_toml,
         request
             .expected_revision
             .as_deref()
-            .or(Some(&previous_revision)),
+            .unwrap_or(&disk_revision),
+        _guard,
     )?;
 
     // 写盘成功后才登记产物 id；失败时保留上次记录，重试仍能正确替换。
-    store::providers::replace_compiled_candidates(db_handle, &new_ids)?;
+    // 保留的停用候选也登记为"编译产物"：引用清掉后下次编译能把它们移除。
+    let mut registry_ids = new_ids.clone();
+    registry_ids.extend(retained_disabled.iter().cloned());
+    store::providers::replace_compiled_candidates(db_handle, &registry_ids)?;
+    // 配额页只展示仍可路由的候选：下架/取消勾选的模型窗口一并清掉。
+    let _ = store::quota::retain_candidates(db_handle, &registry_ids);
+
+    // 候选即时生效：热替换运行时目录（持锁版本，不能嵌套 config_write_lock）。
+    if let Err(error) = crate::config_service::reload_locked(state, _guard) {
+        eprintln!("config compiled but runtime reload failed: {error:?}");
+    }
 
     Ok(CompileResponse {
         revision: outcome.revision,
-        previous_revision: outcome.previous_revision.unwrap_or(previous_revision),
+        previous_revision: outcome.previous_revision.unwrap_or(disk_revision),
         candidate_ids: new_ids,
         candidates_total,
         virtual_models_total,
@@ -945,16 +1319,122 @@ struct CandidateRow {
     window: u32,
     proxy: Option<String>,
     extra_headers: BTreeMap<String, String>,
+    /// 能力标签（目录元数据；编译后写入候选 capability.tags）。
+    caps: Vec<String>,
     provider_id: String,
     account_id: String,
+    /// provider 级启停投影到候选；停用后保留引用但不再派发。
+    enabled: bool,
+    /// 目录里手填的价格（micros / MTok）；未定价 = None。
+    price: Option<tr_agent::config::PriceFile>,
+    /// 目录里记录的推理档位（models.dev 派生）；作为候选默认值。
+    thinking_levels: Vec<String>,
+    /// 目录里记录的最大输出（models.dev / 手填）；编译为候选 `max_tokens` 上限。
+    max_output: Option<u32>,
 }
 
 fn provider_kind_text(kind: ProviderKindDto) -> String {
     match kind {
         ProviderKindDto::OpenAiCompatible => "openai".to_string(),
         ProviderKindDto::Anthropic => "anthropic".to_string(),
-        ProviderKindDto::Responses => "openai".to_string(),
+        ProviderKindDto::Responses => "responses".to_string(),
     }
+}
+
+/// 候选 `provider` 是否等于该供应商类型的默认协议（含 `openai_compatible` 别名）。
+fn protocol_is_default(protocol: &str, kind: ProviderKindDto) -> bool {
+    match kind {
+        ProviderKindDto::OpenAiCompatible => {
+            protocol == "openai" || protocol == "openai_compatible"
+        }
+        ProviderKindDto::Anthropic => protocol == "anthropic",
+        ProviderKindDto::Responses => protocol == "responses",
+    }
+}
+
+/// 非对话模型（embedding / rerank）不进对话候选。
+///
+/// 上游 `/models` 目录没有声明的模态，只能按模型 id 的通行命名过滤；
+/// 误判可手动把行恢复（目录页的 hidden 状态可逆）。
+fn is_non_chat_model(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase();
+    const NEEDLES: [&str; 56] = [
+        // embedding / rerank
+        "embed",
+        "rerank",
+        "bge-",
+        "bge_",
+        "gte-",
+        "e5-",
+        "bce-",
+        "m3e",
+        "text2vec",
+        "voyage-",
+        "sentence-transformers",
+        // 语音（TTS / ASR / 实时语音）：网关只处理文本对话
+        "cosyvoice",
+        "sensevoice",
+        "funaudiollm",
+        "whisper",
+        "paraformer",
+        "sambert",
+        "chattts",
+        "fish-audio",
+        "step-audio",
+        "qwen-audio",
+        "glm-4-voice",
+        "-tts",
+        "tts-",
+        "text-to-speech",
+        "speech-",
+        "speech_",
+        "-audio",
+        "audio-",
+        "realtime",
+        // 图像 / 视频生成
+        "kolors",
+        "stable-diffusion",
+        "stable_diffusion",
+        "sdxl",
+        "flux",
+        "imagen",
+        "seedream",
+        "seededit",
+        "cogview",
+        "dall-e",
+        "gpt-image",
+        "wanx",
+        "ideogram",
+        "recraft",
+        "kandinsky",
+        "midjourney",
+        "image",
+        "video",
+        "veo-",
+        "kling",
+        "hailuo",
+        "t2v",
+        "i2v",
+        "vidu",
+        "cogvideo",
+        "seedance",
+    ];
+    NEEDLES.iter().any(|needle| id.contains(needle))
+}
+
+/// JEV 候选的 base_url 归一化为完整 SystemOne 路径。
+///
+/// 供应商页通常填 OpenAI 兼容 base（`https://host/v1`）；JEV 的 SystemOne
+/// 端点在同源下是 `/v1/systemone`。已填完整路径时保持不变。
+fn systemone_endpoint(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1/systemone") {
+        return trimmed.to_string();
+    }
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/systemone");
+    }
+    format!("{trimmed}/v1/systemone")
 }
 
 fn default_window_for(provider_id: &str) -> u32 {
@@ -974,5 +1454,75 @@ mod wildcard_tests {
         assert!(wildcard_match("qwen*instruct", "qwen2.5-instruct"));
         assert!(!wildcard_match("gpt-*", "claude-3"));
         assert!(!wildcard_match("gpt-", "gpt"));
+    }
+}
+
+#[cfg(test)]
+mod non_chat_model_tests {
+    use super::is_non_chat_model;
+
+    #[test]
+    fn embedding_and_rerank_are_filtered() {
+        for id in [
+            "BAAI/bge-large-en-v1.5",
+            "BAAI/bge-m3",
+            "BAAI/bge-reranker-v2-m3",
+            "text-embedding-3-small",
+            "text-embedding-ada-002",
+            "embed-english-v3.0",
+            "rerank-v3.5",
+            "gte-large",
+            "e5-mistral-7b-instruct",
+            "nomic-embed-text",
+            "netease-youdao/bce-embedding-base_v1",
+            "Pro/BAAI/bge-m3",
+            "voyage-3-large",
+            "text2vec-large-chinese",
+            "gte-Qwen2-7B-instruct",
+        ] {
+            assert!(is_non_chat_model(id), "{id} 应被判定为非对话模型");
+        }
+    }
+
+    #[test]
+    fn chat_models_are_kept() {
+        for id in [
+            "gpt-4o",
+            "gpt-5-codex",
+            "claude-sonnet-4-5",
+            "deepseek-v3",
+            "qwen3-coder-plus",
+            "glm-5",
+            "kimi-k2",
+            "gemini-2.5-pro",
+        ] {
+            assert!(!is_non_chat_model(id), "{id} 不应被过滤");
+        }
+    }
+
+    #[test]
+    fn filters_audio_and_image_families_by_name() {
+        for id in [
+            "FunAudioLLM/CosyVoice2-0.5B",
+            "FunAudioLLM/SenseVoiceSmall",
+            "Kwai-Kolors/Kolors",
+            "black-forest-labs/FLUX.1-schnell",
+            "openai/whisper-large-v3",
+            "gpt-4o-audio-preview",
+            "Qwen/Qwen-Image-Edit",
+            "Tongyi-MAI/Z-Image-Turbo",
+            "Wan-AI/Wan2.1-T2V-14B",
+            "BAAI/bge-m3",
+        ] {
+            assert!(is_non_chat_model(id), "should filter: {id}");
+        }
+        for id in [
+            "Qwen/Qwen3.6-27B",
+            "deepseek-ai/DeepSeek-V3.1-Terminus",
+            "gpt-4o",
+            "Pro/moonshotai/Kimi-K2",
+        ] {
+            assert!(!is_non_chat_model(id), "should keep: {id}");
+        }
     }
 }

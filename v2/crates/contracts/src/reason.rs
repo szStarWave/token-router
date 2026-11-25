@@ -58,6 +58,10 @@ reason_kinds! {
     SwitchAllowedQualityPriceUnknown => "SWITCH_ALLOWED_QUALITY_PRICE_UNKNOWN",
     // 判官/棘轮
     JudgeUnavailable => "JUDGE_UNAVAILABLE",
+    // 组级判断（agent 层扩展）
+    GroupJudgeSelected => "GROUP_JUDGE_SELECTED",
+    GroupJudgeNoMatch => "GROUP_JUDGE_NO_MATCH",
+    GroupJudgeUnavailable => "GROUP_JUDGE_UNAVAILABLE",
     LatchTargetUnavailable => "LATCH_TARGET_UNAVAILABLE",
     EscalationConfirming => "ESCALATION_CONFIRMING",
     EscalationLatched => "ESCALATION_LATCHED",
@@ -78,6 +82,8 @@ reason_kinds! {
     ProtocolStateMissing => "PROTOCOL_STATE_MISSING",
     CollisionSuspect => "COLLISION_SUSPECT",
     FieldDropped => "FIELD_DROPPED",
+    // 候选级 max_tokens 上限低于客户端请求值，已截断
+    OutputClamped => "OUTPUT_CLAMPED",
     Cancelled => "CANCELLED",
 }
 

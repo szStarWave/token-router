@@ -192,18 +192,33 @@ async fn health() -> Json<Value> {
 
 async fn models(State(state): State<AppState>) -> Json<Value> {
     let catalog = state.pipeline.catalog();
-    let data: Vec<Value> = catalog
-        .virtual_models
-        .values()
-        .map(|model| {
-            json!({
-                "id": model.id,
-                "object": "model",
-                "owned_by": model.provider,
-                "name": model.name,
-            })
-        })
-        .collect();
+    let mut data: Vec<Value> = Vec::new();
+    for model in catalog.enabled_virtual_models() {
+        data.push(json!({
+            "id": model.id,
+            "object": "model",
+            "owned_by": model.provider,
+            "name": model.name,
+        }));
+        // 组开启 list_members 时，额外列出池内成员（`group/member`），客户端可直接选成员。
+        if catalog.list_members.contains(&model.id) {
+            let mut seen = std::collections::BTreeSet::new();
+            for candidate_id in &model.candidate_pool {
+                let Some(candidate) = catalog.candidate(candidate_id) else {
+                    continue;
+                };
+                if !candidate.enabled || !seen.insert(candidate.upstream.model.clone()) {
+                    continue;
+                }
+                data.push(json!({
+                    "id": format!("{}/{}", model.id, candidate.upstream.model),
+                    "object": "model",
+                    "owned_by": model.provider,
+                    "name": candidate.upstream.model,
+                }));
+            }
+        }
+    }
     Json(json!({"object": "list", "data": data}))
 }
 
@@ -339,6 +354,18 @@ async fn handle_ingress(
     };
     // 信任档位别名（P3-14）：header → meta，只影响 profile 解析。
     request.meta.trust_tier = header_string(&headers, "x-token-router-trust");
+    // 推理档位：显式 header 优先，否则取客户端 reasoning_effort（Chat / Responses）。
+    // Anthropic 的 thinking budget 不是档位，不在此推断。
+    if request.meta.thinking_level.is_none() {
+        request.meta.thinking_level = header_string(&headers, "x-token-router-thinking-level")
+            .filter(|level| !level.trim().is_empty())
+            .or_else(|| {
+                request
+                    .reasoning
+                    .as_ref()
+                    .and_then(|reasoning| reasoning.effort.clone())
+            });
+    }
 
     if request.output.stream {
         return stream_ingress(state, request, context).await;
