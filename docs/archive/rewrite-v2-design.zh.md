@@ -1451,6 +1451,161 @@ pub struct LlmJudgeConfig {
 - v2 默认 `off`/shadow；不采用 inner-Agent structured output 的 forced retry。
 - 不引入 Python/TS 的类型级 `AnswerOf`；Rust 用 serde 枚举 + 运行时校验。
 
+#### 7.6.9 判官默认关闭思考（2026-11-24）
+
+判官要快、要确定：模型思考带来的数十秒延迟和 reasoning token 成本对判官没有价值。因此
+`JudgeServiceFile.disable_thinking` 默认 `true`，`LlmJudgeConfig` 按 endpoint 主机注入厂商
+关闭开关（硅基流动 / DashScope `enable_thinking:false`；智谱 / Z.ai `thinking:{type:"disabled"}`；
+OpenRouter `reasoning:{enabled:false}`；其他厂商不注入，仅靠"不携带推理参数"，模型默认开思考时
+属于厂商能力限制）。该开关独立于候选/提供商配置与客户端思考档位——判官服务只读自己的配置。
+
+### 7.7 组级判断与规则（agent 层扩展）
+
+> 本节描述 **agent 层**的路由组判断扩展。它是 §7.5/§7.6 全局判官之外的可选能力；`core` / `proto` 的语义与源码 diff 保持不变。JEV 适配器作为 `decide` 的新增后端文件（`decide::system_one`）落地：只新增实现与导出，不修改 `DecisionModel` / `consult` / `to_verdict` 的语义；这是对 `decide` 冻结的**范围有限豁免**，见 §7.7.7。
+
+#### 7.7.1 组与判断模型
+
+- **路由组 = 现有 `VirtualModel`**：不新增 group 实体，不允许组嵌套。组级判断配置挂在 `[[virtual_models]]` 上（`judge` / `rules`）。
+- 组可配置**判断模型**。支持 `judge.service.kind = "llm"`（OpenAI 兼容 chat）与 `judge.service.kind = "jev"`（SystemOne 决策服务）。两者回答同一个选择问题，并归一化为同一个内部答案契约：**选项 id + 可选概率/置信度**；规则模式与能力模式的后续处理完全一致。
+- **判断模型在供应商页配置**：把目录模型的 `purpose` 设为 `judge_llm` 或 `jev`，编译时生成带 `judge:llm` / `judge:jev` 标签的候选；这些候选不进入厂商 auto 对话组，组工作台只需选择模型。选中后由前端预填 endpoint / model / credential（JEV 的 endpoint 归一化为 `/v1/systemone`），用户不再手写连接与预算字段。
+- JEV 不是 chat 模型：它通过 SystemOne 的 `POST /v1/systemone` 接收 choice 问题，返回 `choice` + `probabilities`；LLM 通过 chat completions + 结构化 JSON 返回同一个选项 id。两者只在传输/解码层不同，策略层相同。参考 Switchyard `llm_classifier` 的 `CapabilityJudgeConfig::Llm` 与 `Decision` 两种判官：二者都进入同一套阈值/选择策略。
+- 判断模型可以**不在组内**，也**不会成为回答模型**：它只输出“优先候选”，实际回答仍由组内 `candidate_pool` 的物理候选完成。判断模型不进入 Plan、不计入用户回答成本。
+
+#### 7.7.2 两种输入模式
+
+| 模式 | 条件 | 判断模型输入 | 输出 |
+|---|---|---|---|
+| 规则模式 | `rules.len() > 0` | 规则列表（按配置顺序，含 `id` + `intent`）+ **最后一条 user 消息** | 一个命中的规则 `id` 或 `none` |
+| 能力选择模式 | `rules.len() == 0` 且 `judge.mode = "active"` | 组内回答模型的**能力信息** + **最后一条 user 消息** | 一个优先候选 `id` 或 `none` |
+
+- 规则模式命中后，规则指定的 `prefer` 候选作为组内优先候选，进入后续 Plan 校验。
+- 规则按配置顺序展示；`none` 或空答案按“无命中”处理，未知规则 id/候选、非法 JSON 按“判断不可用”处理；两者都 fail-open。
+- 只发送**最后一条 user 消息**，不发送 system / tool 内容；输入受上下文预算约束。
+- 规则存在时 `judge.mode` 必须为 `active` 且服务可用；无规则时允许 `off` 或 `active`。
+
+#### 7.7.3 优先级与失败语义
+
+- 组判断生效时，**跳过全局 judge 咨询**，并跳过 StickyDispatch / ContextHold 的软硬复用与成本闸回搬；组判断给出的优先候选直接进入 Plan 校验。这些机制不叠加、不反向改写组判断结论。
+- 判断失败、超时、非法答案、未知规则/候选 → **fail-open**：回退到默认配置顺序，HTTP 请求仍成功。判断错误不进入用户错误路径（与 §7.1 一致）。
+- 组判断只影响“优先候选”，不绕过 Plan 校验、不越过上游执行与 failover。
+
+#### 7.7.4 预算与时限
+
+- 复用判官预算语义：`max_calls_per_turn`（默认 1）、`max_calls_per_minute`（默认 30）、`max_calls_per_session`（默认 200）、`deadline_ms`（默认 300）。
+- 超限或超时按“判断不可用”处理，fail-open 到默认顺序，不重试。
+
+#### 7.7.5 可回放性与审计
+
+- 组判断**不可被 `cli replay` / `core::decide` 回放**：其输入包含非决策快照的原始消息与服务调用，且不进入 `core` 纯函数。
+- 审计落在 `contributions` 与账本（`routing_cost` 单列）：记录组判断输入摘要、命中的规则/候选、失败码、耗时与服务标识；不记录明文凭据。
+- `GroupConfig.digest` 由原始 `judge` + `rules` 规范化 JSON 取 SHA-256，供 ContextHold 失效判断；不序列化含凭据的运行时 `JudgeSettings`。
+
+#### 7.7.6 配置形状
+
+```toml
+[[virtual_models]]
+id = "auto"
+profile = "default"
+candidate_pool = ["qwen-local", "deepseek-chat", "claude-sonnet"]
+
+[virtual_models.judge]
+mode = "active"                 # off | active（本批不接受 shadow）
+max_calls_per_turn = 1
+max_calls_per_minute = 30
+max_calls_per_session = 200
+deadline_ms = 300
+
+[virtual_models.judge.service]
+kind = "llm"                    # llm | jev
+endpoint = "http://127.0.0.1:11435/v1"
+model = "gemma-2b"
+credential = "env:GROUP_JUDGE_TOKEN"   # 引用；mode = off 时不解析
+structured_output = "json_mode"        # 仅 llm 使用
+temperature = 0.0                      # 仅 llm 使用
+max_output_tokens = 256                # 仅 llm 使用
+timeout_ms = 300
+
+# JEV / SystemOne 写法（与 llm 二选一）：
+# [virtual_models.judge.service]
+# kind = "jev"
+# endpoint = "https://api.typesafe.ai/v1/systemone"   # 必须是完整 SystemOne 路径
+# model = "jev-1.13"
+# credential = "env:JEV_API_KEY"
+# timeout_ms = 300
+# input_micros_per_mtok / output_micros_per_mtok / request_micros 仍用于成本记账
+
+[[virtual_models.rules]]
+id = "coding"
+intent = "代码实现、调试或重构"
+prefer = "deepseek-chat"
+
+[[virtual_models.rules]]
+id = "long-context"
+intent = "长文档阅读与跨文件分析"
+prefer = "claude-sonnet"
+```
+
+校验规则（配置错误直接拒绝，不运行期降级）：
+
+- `judge.mode` 只允许 `off` / `active`；有规则时必须 `active`，否则报“配置了 N 条规则，必须启用 judge”。
+- `active` 时 `service.kind` 只允许 `llm` / `jev`：
+  - `llm`：`endpoint` / `model` 必填；`structured_output` 只允许 `json_schema` / `json_mode` / `tool_call`。
+  - `jev`：`endpoint` / `model` 必填；`endpoint` 必须指向完整的 SystemOne 路径（通常以 `/v1/systemone` 结尾）；`structured_output` / `temperature` / `max_output_tokens` 被忽略。
+  - 两种后端都按引用解析凭据；解析失败是配置错误。
+- `off` 时不解析凭据、不要求 `endpoint` / `model`。
+- 规则 `id` 非空且组内唯一；`intent` 非空；`prefer` 必须在该虚拟模型的 `candidate_pool` 中。
+- 无规则 + `active` 合法（能力选择模式）；`deny_unknown_fields` 对组级配置同样生效。
+
+#### 7.7.7 JEV（SystemOne 决策服务）
+
+JEV 是**决策模型**，不是 chat 模型。它使用 SystemOne 协议，与 LLM 判官共享同一个“选择”语义与内部答案契约。
+
+**请求**（`POST {endpoint}`，`Authorization: Bearer <credential>`）：
+
+```json
+{
+  "model": "jev-1.13",
+  "state": { "task": "<最后一条 user 消息>" },
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "<规则/候选能力说明，来自 Question.prompt>",
+      "criteria": { "r1": "规则意图", "candidate-x": "候选能力摘要", "none": "无匹配" }
+    }
+  }
+}
+```
+
+**响应**：
+
+```json
+{
+  "id": "…",
+  "model": "jev-1.13",
+  "answers": {
+    "route": {
+      "type": "choice",
+      "choice": "candidate-x",
+      "probabilities": { "candidate-x": 0.82, "candidate-y": 0.11, "none": 0.07 },
+      "confidence": 0.9
+    }
+  },
+  "usage": { "input_tokens": 120, "output_tokens": 3 }
+}
+```
+
+映射规则（与 LLM 完全相同）：
+
+- `answers.route.choice` → `JudgeAnswer.value = JudgeValue::Choice(id)`；未知 id / 空 choice / 非 choice 类型 → `MalformedOutput`。
+- 置信度优先取 `probabilities[selected]`，缺失时取 `confidence`，都没有则为 `None`。
+- `usage.input_tokens` / `output_tokens` 映射到 `JudgeUsage.prompt_tokens` / `completion_tokens`；缺失按 0。
+- HTTP 401/403 → `AuthenticationRejected`，429 → `RateLimited`，其它 4xx → `InputRejected`，5xx/传输失败 → `TransportUnavailable`，解析失败 → `MalformedOutput`。
+- 不重试；超时由 `consult` 的 deadline 与 `timeout_ms` 共同约束，失败一律 fail-open。
+
+**与 LLM 的共同契约**：两者都只返回一个选项 id（规则 id / 候选 id / `none`）和可选置信度；agent 层的 `interpret_answer`、规则 `prefer` 展开、候选可用性校验、审计与成本记账**不分后端**。这正是 Switchyard `llm_classifier` 的做法：`CapabilityJudgeConfig::Llm` 与 `Decision` 两种判官最终都进入同一套选择/阈值策略（`DecisionJudgeConfig` 的 `choice` 问题，`apply_cutoff_to` 只读取配置选项的概率）。
+
+**实现落点与冻结豁免**：新增 `decide::system_one::SystemOneJudgeModel`，与 `decide::llm::LlmJudgeModel` 并列实现 `DecisionModel`。该改动只新增后端文件与导出，不修改 `DecisionModel` / `consult` / `to_verdict` 的语义；`core` / `proto` 仍保持 diff = 0。这是对 `decide` 冻结的范围有限豁免，必须在提交说明中单独标注。
+
 ---
 
 ## 8. 会话状态与持久化
@@ -2185,6 +2340,30 @@ input = ["text", "image"]
 profile = "default"
 strategies = ["baseline", "failover", "classify", "escalation"]
 candidate_pool = ["qwen-local", "deepseek-chat", "claude-sonnet"]
+
+# 组级判断（agent 层扩展，§7.7）：可与全局 [judge] 并存，但生效时跳过全局判官。
+[virtual_models.judge]
+mode = "active"                 # off | active（本批不接受 shadow）
+max_calls_per_turn = 1
+max_calls_per_minute = 30
+max_calls_per_session = 200
+deadline_ms = 300
+
+[virtual_models.judge.service]
+kind = "llm"                    # llm | jev（jev 用 SystemOne: /v1/systemone）
+endpoint = "http://127.0.0.1:11435/v1"
+model = "gemma-2b"
+credential = "env:GROUP_JUDGE_TOKEN"
+structured_output = "json_mode"
+temperature = 0.0
+max_output_tokens = 256
+timeout_ms = 300
+
+# 规则可选；有规则时 judge.mode 必须为 active，prefer 必须在本组 candidate_pool 中。
+[[virtual_models.rules]]
+id = "coding"
+intent = "代码实现、调试或重构"
+prefer = "deepseek-chat"
 
 [[virtual_models]]
 provider = "router"

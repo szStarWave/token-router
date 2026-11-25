@@ -8,9 +8,13 @@ Token Router 是一个本地 LLM 网关：把多个 coding agent 的模型请求
 
 ### 了解产品
 
+产品文档描述定位与能力**现状**；[以应用为中心的桌面设计](./frontend-design-magpie.zh.md)是下一版桌面交互的评审稿，[原桌面设计](./product-design.zh.md)保留为 D1/D2 的设计基线。两者均不改变内核语义，内核语义仍以 [archive/rewrite-v2-design.zh.md](./archive/rewrite-v2-design.zh.md) 为准。
+
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| [product.zh.md](./product.zh.md) | 产品定位、与 magpie/OmniRoute 对标、核心能力、已知限制 | 现行 |
+| [product.zh.md](./product.zh.md) | 产品定位、用户任务、能力现状与边界 | 现行 |
+| [product-design.zh.md](./product-design.zh.md) | D1/D2 桌面端信息架构与交互设计基线 | 基线 |
+| [frontend-design-magpie.zh.md](./frontend-design-magpie.zh.md) | 参考 Magpie 工作流的应用工作台、路由组与桌面前端评审稿 | 评审稿 |
 | [roadmap.zh.md](./roadmap.zh.md) | v3 路线图：Provider 层、配额、分析、Playground（P5-A~D） | 草案 |
 | [research/competitor-omniroute-magpie.zh.md](./research/competitor-omniroute-magpie.zh.md) | 竞品深度调研（2026-11-17 一手来源快照，逐模块逐功能带来源 URL） | 快照 |
 
@@ -39,7 +43,12 @@ Token Router 是一个本地 LLM 网关：把多个 coding agent 的模型请求
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [architecture.zh.md](./architecture.zh.md) | v2 架构精编：crate 边界、协议漏斗、路由语义、安全模型 | 现行 |
-| [contracts/admin-api.zh.md](./contracts/admin-api.zh.md) | 管理 API 契约 v1（`/v2/admin`） | 冻结，只增不改 |
+| [design/routing-behavior.zh.md](./design/routing-behavior.zh.md) | 模型路由行为：一次请求的实际链路（入口/计划/判官/sticky/failover/wire/账本） | 现行 |
+| [design/config-autosave.zh.md](./design/config-autosave.zh.md) | 配置自动保存 + 热加载：提交边界、409 rebase、运行时目录交换、备份节流 | 实施中 |
+| [design/model-metadata-enrich.zh.md](./design/model-metadata-enrich.zh.md) | 模型元数据自动补全：models.dev 映射、只填空、供应商匹配、档位编译默认值 | 现行 |
+| [design/session-judge-recording.zh.md](./design/session-judge-recording.zh.md) | 决策模型调用与会话调用的记录：request_id 关联、sessions/judge-calls 端点、游标修复 | 现行 |
+| [design/session-messages.zh.md](./design/session-messages.zh.md) | 每轮消息正文的本地记录：request_transcripts、展平与截断、`[recording] transcript` 开关 | 现行 |
+| [contracts/admin-api.zh.md](./contracts/admin-api.zh.md) | 管理 API 契约 v1（`/v2/admin`） | 现行 |
 | [s0-gap-report.md](./s0-gap-report.md) | 协议覆盖报告（`cargo xtask fixtures-check` 自动生成，勿手改） | 生成物 |
 
 ### 开发者（dev/）
@@ -73,5 +82,5 @@ Token Router 是一个本地 LLM 网关：把多个 coding agent 的模型请求
 
 - 事实以代码为准；文档与代码冲突时改文档。
 - 内核语义（路由/协议/配置契约）变更必须先改 [内核设计](./archive/rewrite-v2-design.zh.md) 或其后继契约，再改精编版。
-- 管理 API 变更遵循 [契约](./contracts/admin-api.zh.md) 的只增不改规则，`contract-check` 门禁保证生成物一致。
+- 管理 API 变更按 [契约](./contracts/admin-api.zh.md) 执行：`contract-check` 门禁保证绑定与 DTO 一致；破坏性变更记入 [§5.1 变更记录](./contracts/admin-api.zh.md)。
 - 过程性报告（评测/冒烟/交付）产出后归档，不回填修改。

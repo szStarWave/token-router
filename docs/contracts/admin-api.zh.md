@@ -1,8 +1,8 @@
 # 管理 API 契约 v1
 
-> 状态：**契约冻结 v1（2026-11-16）**。历史背景见 [P4 客户端技术方案（已归档）](../archive/p4-client-refactor-plan.zh.md) §4。
-> v3 将新增 providers/accounts/catalog/quotas/usage/playground 等资源（见 [路线图](../roadmap.zh.md)），遵循同样的只增不改规则。
-> 规则：契约冻结后端点/字段**只增不改**；删除/重命名需要 `api_version + 1` 与弃用期。
+> 状态：**契约 v1（2026-11-16 起）**。历史背景见 [P4 客户端技术方案（已归档）](../archive/p4-client-refactor-plan.zh.md) §4。
+> 资源范围：providers/accounts/catalog/quotas/usage/playground 等（见 [路线图](../roadmap.zh.md)）。
+> 规则：端点/字段可新增、可修改；**破坏性变更（删除/重命名/改语义）必须记入 §5.1**。
 > 类型生成：Rust DTO 用 `ts-rs` 导出 TS 类型到 `apps/desktop/frontend/src/api/types.ts`；
 > `cargo xtask contract-check` 校验生成物无 diff（P4-003）。
 
@@ -52,23 +52,28 @@
 | GET | `/v2/admin/doctor` | 配置/DB/判官/磁盘/日志自检 | read |
 | GET | `/v2/admin/config` | 可编辑配置文档（脱敏）+ revision + warnings | read |
 | POST | `/v2/admin/config/validate` | 纯校验，返回规范化 TOML、digest、diff、issues | read |
-| POST | `/v2/admin/config/apply` | CAS 写配置 + 备份，返回 `restart_required` | write |
-| POST | `/v2/admin/config/rollback` | 回滚到上一份可用备份 | write |
+| POST | `/v2/admin/config/apply` | CAS 写配置 + 备份 + 热加载，返回 `restart_required` | write |
+| POST | `/v2/admin/config/reload` | 重读磁盘配置并热替换运行中目录（不写盘） | write |
+| POST | `/v2/admin/config/rollback` | 回滚到上一份可用备份（并热加载） | write |
 | GET | `/v2/admin/config/audit` | 配置变更审计（脱敏） | read |
 | GET | `/v2/admin/candidates` | 候选只读投影（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/virtual-models` | 虚拟模型只读投影（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/profiles` | profile 只读投影（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/trust-tiers` | 别名 → profile（**未实现**，见 §2.1） | read |
 | GET | `/v2/admin/requests` | 账本列表：时间/会话/模型/outcome/协议/原因码过滤 | read |
-| GET | `/v2/admin/requests/{id}` | 单请求详情 | read |
+| GET | `/v2/admin/requests/{id}` | 单请求详情（含 `judge_calls`：本次请求触发的判官调用） | read |
+| GET | `/v2/admin/requests/{id}/transcript` | 这一轮的消息与模型回复（受 `[recording] transcript` 控制；无记录时 `recorded:false`） | read |
+| GET | `/v2/admin/sessions` | 会话级完整汇总（`session_key/requests/failures/tokens/cost_micros/judge_calls/judge_failures/judge_cost_micros/models/first_at/last_at`） | read |
 | GET | `/v2/admin/stats/summary` | 时间窗汇总（`/v2/admin/stats` 为兼容别名） | read |
 | GET | `/v2/admin/stats/series` | 时间序列 | read |
 | GET | `/v2/admin/stats/models` | 模型维度汇总 | read |
 | GET | `/v2/admin/shadow` | shadow 一致率/延迟/成本 | read |
-| GET | `/v2/admin/judge/calls` | 判官调用审计（**未实现**，见 §2.1） | read |
+| GET | `/v2/admin/judge/calls` | 判官（决策模型）调用审计：`request_id`/`session`/`from`/`to`/`limit` | read |
 | GET | `/v2/admin/tokens` | token 列表（脱敏） | read |
 | POST | `/v2/admin/tokens` | 创建 token（明文只返回一次） | write |
 | DELETE | `/v2/admin/tokens/{id}` | 撤销 token | write |
+| POST | `/v2/admin/tokens/{id}/rotate` | 重新签发 token 明文（同 id/名称/作用域，明文只返回一次） | write |
+| POST | `/v2/admin/tokens/{id}/purge` | 硬删除已撤销的 token 记录 | write |
 | GET | `/v2/admin/logs` | 服务端日志尾（ring buffer） | read |
 | POST | `/v2/admin/shutdown` | 优雅关闭 | write |
 
@@ -100,6 +105,12 @@ p95_latency_ms, total_cost_micros}`。
 - token 随机 32 字节；库中只存 `sha256`；列表只返回 `prefix`（前 8 字符）与 `last_used_at`。
 - 首次启动且 `tokens` 表为空时，生成全 scope admin token，明文写入 `<data_dir>/admin.token`（0600）。
 - 撤销立即生效；比较常数时间；`last_used_at` 每分钟最多回写一次。
+- **明文只返回一次**：创建与重新签发都在响应里给出明文，之后任何端点都不再返回。
+  `POST /v2/admin/tokens/{id}/rotate` 换新的明文与前缀（id/名称/作用域/限额不变），
+  旧明文立即失效；bootstrap token 因明文另有文件副本（`admin.token`）而被拒绝 rotate。
+- **撤销与删除分两步**：`DELETE /v2/admin/tokens/{id}` 是软删除（写 `revoked_at`，保留审计）；
+  `POST /v2/admin/tokens/{id}/purge` 才真正删记录，且只允许对已撤销的 token 调用。
+  账本里的 `authority_id` 是字符串而非外键，删记录不影响历史请求。
 
 ## 4. DTO（`tr-contracts::admin` 生成 TS）
 
@@ -136,7 +147,26 @@ p95_latency_ms, total_cost_micros}`。
 ### RequestDetail
 
 在列表字段外增加：`task_id/session_key_source/collision_suspect/selection_level/dispatch_provider/dispatch_level/plan_mode/preference/failover/attempts/switches/cache_write_tokens/facts_completeness/profile_revision/config_digest/judge/contributions/authority`。
-不返回会话内容/消息正文。
+不返回会话内容/消息正文（消息走 `/transcript`）。
+
+### JudgeCallSummary
+
+`request_id/question_id/service_id/outcome/failure_code/effective_source/latency_ms/prompt_tokens/completion_tokens/cost_micros/request/response/failure_message/created_at`。
+
+- `effective_source`：`external_jev`（JEV）、`external_llm`、`fallback`、`heuristic`、`disabled`（预算/未配置，没真正调用）。
+- `request`：调用输入摘要 `{task, prompt, choices}`；任务/提示词截断，选项为 `{id,label}`。
+- `response`：`{kind, value, confidence, reason}`（`kind ∈ bool/choice/score/uncertain`）；失败时 `null`。
+- `failure_message`：失败码之外的错误消息。旧行这三个字段为 `null`（migration 16 之前）。
+
+### RequestTranscript
+
+`GET /v2/admin/requests/{id}/transcript`：`request_id/session_key/created_at/input[]/output[]/truncated/recorded`。
+
+- `input`/`output` 的元素是 `TranscriptMessage {role, name, text}`：文本已**展平**——图片/音频只留
+  `[图片]`/`[音频]` 占位符（不存 base64），工具调用/结果与思考块展开为文本；
+  单条上限 20,000 字符、单轮上限 200,000 字符，超出截断并置 `truncated`。
+- 写入由配置 `[recording] transcript`（默认 `true`）控制；关闭后新请求不再记录，历史记录保留。
+- 没有记录时返回 `200` + `recorded:false`（不是 404）。
 
 ### StatsSummary
 
@@ -159,7 +189,20 @@ p95_latency_ms, total_cost_micros}`。
 ### ApplyRequest / ApplyResponse
 
 `apply` 必须带 `If-Match: <revision>` 头；body `{document_toml: string, restart: "manual"|"auto"}`；
-响应 `{revision, restart_required: true, backup_path}`。不匹配 → `409 config_conflict`。
+响应 `{revision, restart_required, backup_path}`。不匹配 → `409 config_conflict`。
+
+`restart_required` 语义（2026-11-23 起）：仅在 `[server]` 段变化时为 `true`（监听/鉴权/TLS
+在进程启动时固化）；其余改动由服务端在写盘后热替换运行时目录，立即生效。
+备份节流：距上一份备份不足 5 分钟时复用最近一份（表示本次编辑会话之前的状态），
+上限 20 份。
+
+### ConfigReloadResponse
+
+`POST /v2/admin/config/reload` 响应：`{revision, reloaded, restart_required, issues[]}`。
+
+- 重读磁盘配置并替换 `Pipeline` 的运行时目录（catalog / judge / group_judges / cost_gate）；
+- 磁盘配置非法 → `422 config_invalid` + `issues[]`，运行时保持原样（服务不中断）；
+- `restart_required` 由调用方比对 `[server]` 段得出（reload 本身不改监听）。
 
 ### TokenInfo / CreatedToken
 
@@ -172,12 +215,14 @@ p95_latency_ms, total_cost_micros}`。
 
 ## 5. 兼容规则
 
-- `GET /v2/admin/status` 的 `api_version: 1`；新字段只增不改；客户端忽略未知字段。
-- 配置 schema 独立演进：DB `schema_version`（当前迁移 10）与配置文件 `schema_version` 分开计数。配置文件当前为 `1`（代码严格校验，见 `tr-agent::config::SCHEMA_VERSION`；勘误 2026-11-17：原文误写"P4 起 2"）。
+- `GET /v2/admin/status` 的 `api_version: 1`；客户端必须忽略未知字段（所有 DTO 字段 `#[serde(default)]`）。
+- 端点/字段可增、可删、可改语义；破坏性变更记入 §5.1，`api_version` 在有外部消费者之前保持 `1`。
+- 配置 schema 独立演进：DB `schema_version`（当前迁移 16）与配置文件 `schema_version` 分开计数。配置文件当前为 `1`（代码严格校验，见 `tr-agent::config::SCHEMA_VERSION`；勘误 2026-11-17：原文误写"P4 起 2"）。
 
-### 5.1 不兼容变更记录
+### 5.1 变更记录
 
-产品尚未发布，「只增不改」的舍入在 2026-11-18 由维护者放弃，允许删除端点/字段。
+破坏性变更（删除/重命名端点或字段、改语义）必须逐条记在这里；新增端点也记一笔便于追溯。
+产品尚未发布、无外部消费者，因此不引入 `api_version` 递增与弃用期。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
@@ -185,5 +230,12 @@ p95_latency_ms, total_cost_micros}`。
 | 2026-11-18 | `ModeSummary` 去掉 `approvals` 字段 | `GET /v2/admin/status` 响应少一个键 |
 | 2026-11-18 | `AdminScope` 去掉 `admin_approve` | 已存 token 里的该 scope 在读取时被静默丢弃 |
 | 2026-11-18 | DB migration 10 `DROP TABLE approvals` | 审批审计记录永久删除 |
+| 2026-11-23 | 新增 `POST /v2/admin/tokens/{id}/rotate` | 重新签发 token 明文；响应复用 `CreatedToken` 形状 |
+| 2026-11-23 | 新增 `POST /v2/admin/tokens/{id}/purge` | 硬删除已撤销的 token 记录（撤销仍是软删除） |
+| 2026-11-23 | 新增 `POST /v2/admin/config/reload`、`POST /v2/admin/providers/{id}/catalog/enrich` | 热加载与模型元数据补全 |
+| 2026-11-23 | 新增 `GET /v2/admin/sessions`、`GET /v2/admin/judge/calls`；`RequestDetail` 增加 `judge_calls` | 记录完整会话调用与决策模型调用 |
+| 2026-11-24 | 删除 `CompileRequest.create_virtual_models`；编译不再创建/改写 `auto-{provider}` 路由组 | 路由组一律手动创建；配置里已有的组原样保留（不迁移、不删除） |
+| 2026-11-24 | 新增 `GET /v2/admin/requests/{id}/transcript`；DB migration 15（`request_transcripts`） | 记录每轮消息正文（可关）；活动 → 会话 可查看轮次消息 |
+| 2026-11-24 | `JudgeCallSummary` 增加 `effective_source/request/response/failure_message`；DB migration 16 | 判官（含 JEV）调用的输入/答案详情可查 |
 
 `api_version` 保持 `1`：没有外部消费者，不引入版本协商成本。

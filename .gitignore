@@ -2,6 +2,7 @@
 /v2/target
 **/*.pid
 .tmp
+.zcode
 /dist
 /node_modules
 /desktop/dist

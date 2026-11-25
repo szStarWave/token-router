@@ -164,7 +164,7 @@ Provider(厂商模板)  1──N  Account(账号=key+代理+自定义header+备�
 
 | 页面 | 现状 | v3 |
 |---|---|---|
-| Providers（新） | 无 | 模板画廊 → 实例化 → 账号管理（添加 key/验证/代理/header）→ 模型目录勾选（auto-include/deprecated 下架）→ 一键生成候选并挂到虚拟模型；支持从本机 agent 配置反向导入 |
+| Providers（新） | 无 | 模板画廊 → 实例化 → 账号管理（添加 key/验证/代理/header）→ 模型目录勾选（auto-include/deprecated 下架）→ 一键生成候选（路由组由用户手动创建与维护）；支持从本机 agent 配置反向导入 |
 | Overview | 状态卡 | + 今日成本/请求数、配额临近耗尽的账号提醒条 |
 | VirtualModels | 手填池 | 候选选择器按 Provider/账号分组树形展示 |
 | Stats | 3 窗口序列 | + 成本分解（agent/模型/账号/会话）、热力图、缓存命中分解（含 5m/1h 两档） |

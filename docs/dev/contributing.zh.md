@@ -46,7 +46,7 @@ npm run check:uno  # UnoCSS token/类名命中率检查
 ## 改东西的规矩
 
 - **内核语义**（路由/协议/配置契约）：先改 [内核设计文档](../archive/rewrite-v2-design.zh.md) 或其后继契约，再动代码；`core` 纯函数零 IO，`decide` 是唯一判官入口，`upstream` 是唯一 HTTP 边界。
-- **管理 API**：只增不改；删除/重命名需 `api_version + 1` 与弃用期（[契约](../contracts/admin-api.zh.md)）。DTO 改完跑 `contract-check` 更新绑定。
+- **管理 API**：DTO 改完跑 `contract-check` 更新绑定；删除/重命名端点或字段等破坏性变更记入契约 §5.1（[契约](../contracts/admin-api.zh.md)）。
 - **新增候选/虚拟模型**：只改 TOML（`config-only-check` 强制）。
 - **新增路由能力**：走 SignalBag extractor / Strategy trait 注册（[架构 §5](../architecture.zh.md)），不改内核。
 - **前端**：不写手写 CSS，一律 UnoCSS token；规范见 [前端设计系统](./frontend-design-system.zh.md)。

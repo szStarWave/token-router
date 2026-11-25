@@ -90,7 +90,11 @@ SessionFacts/StrategyState/Health 加载
   → upstream 执行 → Outcome 单事务写账本 + 状态
 ```
 
+逐段的实现口径（入口归一化、判官提示词与结构化输出、组级判断、Sticky/ContextHold、熔断、上游 wire、账本与响应头）见 [模型路由行为](./design/routing-behavior.zh.md)。
+
 策略 panic 或产出非法 Plan 时回退 Baseline 并记 `CORE_FALLBACK`；判官失败绝不进用户错误路径（fail-open）。
+
+**组级判断（agent 层）**：在 Selection/RequestReason 之后、`core::draft` 之前，agent 可按虚拟模型的 `judge`/`rules` 选出组内优先候选（判断模型可不在组内，不会成为回答模型）；失败/超时/非法答案 fail-open 到默认顺序。该阶段只在 agent 层，`core`/`decide`/`proto` diff = 0。
 
 ### 4.3 PlanMode（§4.4、§10.6）
 
@@ -128,6 +132,7 @@ SessionFacts/StrategyState/Health 加载
 
 - **SignalBag**：`Signals = CoreSignals + BTreeMap<SignalId, SignalValue>`。新信号源实现 `SignalExtractor` 注册写 extras，不改 core。v3 配额信号即走此插拔位（见 [路线图](./roadmap.zh.md)）。
 - **Strategy trait**：三段式 `draft/refine/on_outcome` 全只读，状态经 `StateUpdate` 由 agent 原子提交；外部 crate 可注册。
+- **组级判断（agent 层）**：`VirtualModel.judge` + `VirtualModel.rules` 是 agent 层的路由扩展，复用 `JudgeSettings` 画布但不改 `decide` 语义；新增组规则只改 TOML，`core`/`decide`/`proto` diff = 0。
 - 五个许可扩展面：candidate / profile / strategy / judge service / protocol adapter。只有 contracts 语义变更才许动内核。
 
 ## 6. 账本与统计（§9.2、§8.3、§11.4）

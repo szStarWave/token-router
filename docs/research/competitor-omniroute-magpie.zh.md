@@ -500,7 +500,7 @@ dashboard 内直接选 provider/model/endpoint 测试任意模型，Monaco 编�
 
 - **决策确定性回放**：两家都没有"决策快照逐字段回放一致"的契约（magpie 有 trace 展示，OmniRoute 有 X-OmniRoute-Decision 头，但都不保证可回放）。我们的 DecisionSnapshot + core 纯函数是独有的可解释性深度。
 - **判官参与路由**：magpie 意图路由用分类器小模型选规则（每 turn 一次、fail-open），OmniRoute fusion 用 judge 合成面板答案、jev 用外部决策 API——思路与我们的判官同族，但我们的判官有预算/deadline/确认闩锁的完整语义，且与级联/sticky 的仲裁顺序是明文契约。
-- **内核冻结的工程纪律**：两家都是快速迭代的大泥球（OmniRoute 13.5k commits、文档数字长期漂移需 CI 门禁抓；magpie 8.5k commits、日更 release）。我们的 diff=0 门 + 契约冻结是长期可维护性卖点，但对外宣传要转译成用户价值（"行为可预期、升级不破坏"）。
+- **内核冻结的工程纪律**：两家都是快速迭代的大泥球（OmniRoute 13.5k commits、文档数字长期漂移需 CI 门禁抓；magpie 8.5k commits、日更 release）。我们的 diff=0 门 + 契约绑定一致性门是长期可维护性卖点，但对外宣传要转译成用户价值（"行为可预期、升级不破坏"）。
 
 ### 需要警惕的差距
 
