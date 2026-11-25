@@ -1,421 +1,395 @@
 /**
- * Stats（§7.3）：summary + series + models；时间窗/分组/指标切换。
- * 窗口过大（413）→ 缩窗提示。
+ * 用量（§7.3）：观测视角的用量看板。
+ *
+ * 结构参照 Magpie 的「观测 / 用量 / 会话」页：
+ *   1. 时间范围（今天 / 7 天 / 30 天 / 90 天 / 全部）+ 粒度
+ *   2. 六个指标格（会话数 / Token / 费用 / 缓存读取 / 活跃时长 / 参与身份）
+ *   3. 每日趋势（Token / 输出 Token / 请求 / 费用）
+ *   4. 两个排行（维度 + 模型）
+ *   5. 按时段热力 + 最耗会话
+ *   6. 会话形态 + 常用授权身份
+ *
+ * 口径：全部来自 admin 契约（统计 / 用量聚合 / 热力 / 请求账本）。
+ * Magpie 里的「项目」「消息」「工具调用」「SKILLS」我们没有对应字段，
+ * 用会话、请求数、授权身份顶替，并按真实口径标注，不硬套名字。
  */
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   useHeatmapQuery,
-  useStatsModelsQuery,
+  useRequestsQuery,
   useStatsSeriesQuery,
   useStatsSummaryQuery,
   useUsageQuery,
 } from '../queries/admin'
 import { QueryState, errorMessage } from '../components/common/QueryState'
+import { formatCompactNum } from '../lib/format-number'
+import {
+  RankList,
+  SessionShape,
+  TopSessions,
+  TrendChart,
+  WeekdayHeatmap,
+  aggregateSessions,
+  rankRowsFromUsage,
+  type SessionMetric,
+  type TrendMetric,
+  TREND_METRICS,
+} from './usage/panels'
+import { fmtCost } from './activity/shared'
+import { formatModelLabel } from './activity/shared'
+import { usePrefsStore } from '../stores/prefsStore'
 
+type RangeKey = 'today' | '7d' | '30d' | '90d' | 'all'
 type Bucket = 'hour' | 'day'
-type GroupBy = 'dispatch_model' | 'outcome' | 'protocol'
-type Metric = 'requests' | 'successes' | 'cost' | 'input_tokens' | 'output_tokens'
+type Dimension = 'session' | 'candidate' | 'account' | 'agent'
+type SessionTab = SessionMetric
 
-const RANGES = [
-  { label: '最近 24 小时', short: '24 小时', hours: 24 },
-  { label: '最近 3 天', short: '3 天', hours: 72 },
-  { label: '最近 7 天', short: '7 天', hours: 168 },
-  { label: '最近 30 天', short: '30 天', hours: 720 },
-] as const
+const RANGES: Array<{ key: RangeKey; label: string }> = [
+  { key: 'today', label: '今天' },
+  { key: '7d', label: '7 天' },
+  { key: '30d', label: '30 天' },
+  { key: '90d', label: '90 天' },
+  { key: 'all', label: '全部' },
+]
 
-function windowFor(hours: number): { from: number; to: number } {
-  const to = Date.now()
-  return { from: to - hours * 3600 * 1000, to }
+const DIMENSIONS: Array<{ key: Dimension; label: string }> = [
+  { key: 'session', label: '会话' },
+  { key: 'candidate', label: '候选' },
+  { key: 'account', label: '账号' },
+  { key: 'agent', label: '授权身份' },
+]
+
+const SESSION_TABS: Array<{ key: SessionTab; label: string }> = [
+  { key: 'token', label: 'Token' },
+  { key: 'cost', label: '费用' },
+  { key: 'active', label: '活跃' },
+]
+
+/**
+ * 时间窗必须稳定：`to` 若在渲染期取 `Date.now()`，查询键每次都变，
+ * 每个响应都会触发一组全新查询（无限重取）。这里由调用方传入按分钟刷新的 now。
+ */
+function windowFor(range: RangeKey, to: number): { from: number; to: number } {
+  const day = 86_400_000
+  if (range === 'today') {
+    const start = new Date(to)
+    start.setHours(0, 0, 0, 0)
+    return { from: start.getTime(), to }
+  }
+  if (range === '7d') return { from: to - 7 * day, to }
+  if (range === '30d') return { from: to - 30 * day, to }
+  if (range === '90d') return { from: to - 90 * day, to }
+  return { from: 0, to }
+}
+
+function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))
+  return sorted[index] ?? null
 }
 
 export function StatsPage() {
-  const [hours, setHours] = useState<number>(24)
-  const [bucket] = useState<Bucket>(`hour` as Bucket)
-  const [groupBy, setGroupBy] = useState<GroupBy>('dispatch_model')
-  const [metric, setMetric] = useState<Metric>('requests')
+  const [range, setRange] = useState<RangeKey>('30d')
+  const [bucket, setBucket] = useState<Bucket>('day')
+  const [dimension, setDimension] = useState<Dimension>('session')
+  const [trendMetric, setTrendMetric] = useState<TrendMetric>('token')
+  const [sessionTab, setSessionTab] = useState<SessionTab>('token')
+  const modelNamePref = usePrefsStore((s) => s.modelName)
+  // 每分钟走一格：窗口只在分钟边界变化，避免每次渲染都生成新查询键。
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const timeWindow = useMemo(() => windowFor(range, nowMs), [range, nowMs])
+  const summaryQuery = useStatsSummaryQuery(timeWindow)
+  const usageQuery = useUsageQuery(dimension, timeWindow.from, timeWindow.to)
+  const modelUsageQuery = useUsageQuery('model', timeWindow.from, timeWindow.to)
+  const agentUsageQuery = useUsageQuery('agent', timeWindow.from, timeWindow.to)
+  const heatmapQuery = useHeatmapQuery(timeWindow.from, timeWindow.to)
+  const requestsQuery = useRequestsQuery({ limit: 200 })
 
-  const window = windowFor(hours)
-  const summaryQuery = useStatsSummaryQuery(window)
-  const seriesQuery = useStatsSeriesQuery({
-    from: window.from,
-    to: window.to,
-    bucket: hours >= 168 ? 'day' : 'hour',
-    group_by: groupBy,
-    metric,
+  const inputSeries = useStatsSeriesQuery({
+    from: timeWindow.from,
+    to: timeWindow.to,
+    bucket,
+    group_by: 'dispatch_model',
+    metric: 'input_tokens',
   })
-  const modelsQuery = useStatsModelsQuery(window)
+  const outputSeries = useStatsSeriesQuery({
+    from: timeWindow.from,
+    to: timeWindow.to,
+    bucket,
+    group_by: 'dispatch_model',
+    metric: 'output_tokens',
+  })
+  const requestSeries = useStatsSeriesQuery({
+    from: timeWindow.from,
+    to: timeWindow.to,
+    bucket,
+    group_by: 'dispatch_model',
+    metric: 'requests',
+  })
+  const costSeries = useStatsSeriesQuery({
+    from: timeWindow.from,
+    to: timeWindow.to,
+    bucket,
+    group_by: 'dispatch_model',
+    metric: 'cost',
+  })
 
   const summary = summaryQuery.data
-  const series = seriesQuery.data
-  const maxPoint = series
-    ? Math.max(1, ...series.series.flatMap((group) => group.points.map((point) => point.value)))
-    : 1
+  const totals = usageQuery.data?.totals
+  const requests = requestsQuery.data?.items ?? []
+
+  const sessions = useMemo(() => aggregateSessions(requests), [requests])
+
+  const sessionTokens = useMemo(
+    () => sessions.map((session) => session.tokens).filter((value) => value > 0),
+    [sessions],
+  )
+  const medianSession = percentile(sessionTokens, 50)
+  const p90Session = percentile(sessionTokens, 90)
+
+  const inputTokens = totals?.input_tokens ?? summary?.tokens.input ?? 0
+  const outputTokens = totals?.output_tokens ?? summary?.tokens.output ?? 0
+  const cacheRead = totals?.cache_read_tokens ?? summary?.tokens.cache_read ?? 0
+  const cacheWrite = totals?.cache_write_tokens ?? summary?.tokens.cache_write ?? 0
+  const cost = (totals?.answer_cost_micros ?? summary?.cost_micros.answer ?? 0) +
+    (totals?.routing_cost_micros ?? summary?.cost_micros.routing ?? 0)
+  const cacheRatio =
+    inputTokens + cacheRead > 0 ? cacheRead / (inputTokens + cacheRead) : null
+
+  // 活跃时长：窗口内已加载请求的耗时合计（账本没做更细的活跃区间）。
+  const activeMs = requests.reduce((sum, row) => sum + row.duration_ms, 0)
+  const activeHours = activeMs / 3_600_000
+
+  const trendParts = (() => {
+    if (trendMetric === 'token') {
+      return [
+        { label: '输入', series: inputSeries.data },
+        { label: '输出', series: outputSeries.data },
+      ]
+    }
+    if (trendMetric === 'output_token') return [{ label: '输出', series: outputSeries.data }]
+    if (trendMetric === 'requests') return [{ label: '请求', series: requestSeries.data }]
+    return [{ label: '费用', series: costSeries.data }]
+  })()
+
+  const windowTooLarge = [summaryQuery, inputSeries, requestSeries].some(
+    (query) => query.error !== null && errorMessage(query.error).includes('window_too_large'),
+  )
+
+  const refreshAll = () => {
+    void summaryQuery.refetch()
+    void usageQuery.refetch()
+    void modelUsageQuery.refetch()
+    void agentUsageQuery.refetch()
+    void heatmapQuery.refetch()
+    void requestsQuery.refetch()
+    void inputSeries.refetch()
+    void outputSeries.refetch()
+    void requestSeries.refetch()
+    void costSeries.refetch()
+  }
 
   return (
     <div className="app-page">
-      <section className="app-card" aria-label="统计汇总">
-        <h2 className="app-card-title">汇总</h2>
-        <div className="app-filter-bar">
-          <div className="oc-seg" role="group" aria-label="时间窗">
-            {RANGES.map((range) => (
-              <button
-                key={range.hours}
-                type="button"
-                className={hours === range.hours ? 'oc-seg-item-active' : 'oc-seg-item'}
-                aria-pressed={hours === range.hours}
-                title={range.label}
-                onClick={() => setHours(range.hours)}
+      {/* 头部：范围 + 粒度 */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="ml-auto flex items-center gap-2">
+            <button type="button" className="oc-btn-default oc-btn-sm" onClick={refreshAll}>
+              更新
+            </button>
+            <label className="app-filter-label">
+              粒度
+              <select
+                className="app-select-sm"
+                value={bucket}
+                onChange={(e) => setBucket(e.target.value as Bucket)}
               >
-                {range.short}
+                <option value="hour">小时</option>
+                <option value="day">天</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div className="app-filter-bar">
+          {RANGES.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={range === item.key ? 'app-chip app-chip-active' : 'app-chip'}
+              onClick={() => setRange(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+          <label className="app-filter-label ml-auto">
+            排行维度
+            <select
+              className="app-select-sm"
+              value={dimension}
+              onChange={(e) => setDimension(e.target.value as Dimension)}
+            >
+              {DIMENSIONS.map((item) => (
+                <option key={item.key} value={item.key}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {windowTooLarge && (
+          <div className="app-banner app-banner-warn">
+            窗口过大，趋势接口拒绝了这个范围——缩小时间范围或改用「天」粒度。
+          </div>
+        )}
+      </section>
+
+      {/* 指标格 */}
+      <section className="app-usage-metrics" aria-label="指标">
+        <div className="app-usage-metric">
+          <span className="app-metric-value">{formatCompactNum(sessions.length)}</span>
+          <span className="app-metric-key">会话数</span>
+          <span className="app-metric-note">
+            最近 200 条请求 · 中位{' '}
+            {medianSession === null ? '—' : formatCompactNum(medianSession)} · p90{' '}
+            {p90Session === null ? '—' : formatCompactNum(p90Session)}
+          </span>
+        </div>
+        <div className="app-usage-metric">
+          <span className="app-metric-value">{formatCompactNum(inputTokens + outputTokens)}</span>
+          <span className="app-metric-key">Token</span>
+          <span className="app-metric-note">
+            输入 {formatCompactNum(inputTokens)} · 输出 {formatCompactNum(outputTokens)}
+          </span>
+        </div>
+        <div className="app-usage-metric">
+          <span className="app-metric-value">{fmtCost(cost)}</span>
+          <span className="app-metric-key">费用</span>
+        </div>
+        <div className="app-usage-metric">
+          <span className="app-metric-value">{formatCompactNum(cacheRead + cacheWrite)}</span>
+          <span className="app-metric-key">缓存读取</span>
+          <span className="app-metric-note">
+            命中率 {cacheRatio === null ? '—' : `${(cacheRatio * 100).toFixed(2)}%`}
+          </span>
+        </div>
+        <div className="app-usage-metric">
+          <span className="app-metric-value">
+            {activeHours < 1
+              ? `${Math.round(activeMs / 1000)} 秒`
+              : `${activeHours.toFixed(1)} 小时`}
+          </span>
+          <span className="app-metric-key">活跃时长</span>
+        </div>
+        <div className="app-usage-metric">
+          <span className="app-metric-value">
+            {formatCompactNum(agentUsageQuery.data?.rows.length ?? 0)}
+          </span>
+          <span className="app-metric-key">授权身份</span>
+          <span className="app-metric-note">
+            模型 {formatCompactNum(modelUsageQuery.data?.rows.length ?? 0)} 个
+          </span>
+        </div>
+      </section>
+
+      {/* 每日趋势 */}
+      <section className="app-card" aria-label="每日趋势">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h2 className="app-card-title">每日趋势</h2>
+          <div className="oc-seg ml-auto" role="group" aria-label="趋势指标">
+            {TREND_METRICS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className={trendMetric === item.key ? 'oc-seg-item-active' : 'oc-seg-item'}
+                aria-pressed={trendMetric === item.key}
+                onClick={() => setTrendMetric(item.key)}
+              >
+                {item.label}
               </button>
             ))}
           </div>
         </div>
         <QueryState
-          loading={summaryQuery.isLoading}
-          error={summaryQuery.error}
-          onRetry={() => void summaryQuery.refetch()}
+          loading={inputSeries.isLoading && outputSeries.isLoading}
+          error={inputSeries.error}
+          onRetry={() => void inputSeries.refetch()}
         >
-          {summary && (
-            <dl className="app-kv">
-              <div className="app-kv-item">
-                <dt className="app-kv-key">请求</dt>
-                <dd className="app-kv-value">{summary.requests}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">成功</dt>
-                <dd className="app-kv-value">{summary.successes}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">成功率</dt>
-                <dd className="app-kv-value">{(summary.success_rate * 100).toFixed(1)}%</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">上游错误</dt>
-                <dd className="app-kv-value">{summary.upstream_errors}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">质量失败</dt>
-                <dd className="app-kv-value">{summary.quality_fails}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">取消</dt>
-                <dd className="app-kv-value">{summary.cancelled}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">拒绝</dt>
-                <dd className="app-kv-value">{summary.rejected}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">切换</dt>
-                <dd className="app-kv-value">{summary.switches}</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">TTFT p95</dt>
-                <dd className="app-kv-value">{summary.latency.ttft_p95 ?? '—'}ms</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">耗时 p95</dt>
-                <dd className="app-kv-value">{summary.latency.duration_p95 ?? '—'}ms</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">tokens (in/out)</dt>
-                <dd className="app-kv-value">
-                  {summary.tokens.input} / {summary.tokens.output}
-                </dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">cache (read/write)</dt>
-                <dd className="app-kv-value">
-                  {summary.tokens.cache_read} / {summary.tokens.cache_write}
-                </dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">成本 answer</dt>
-                <dd className="app-kv-value">{summary.cost_micros.answer} micros</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">成本 routing</dt>
-                <dd className="app-kv-value">{summary.cost_micros.routing} micros</dd>
-              </div>
-              <div className="app-kv-item">
-                <dt className="app-kv-key">判官调用</dt>
-                <dd className="app-kv-value">
-                  {summary.judge.calls} (失败 {summary.judge.failed})
-                </dd>
-              </div>
-            </dl>
-          )}
+          <TrendChart parts={trendParts} metric={trendMetric} />
         </QueryState>
       </section>
 
-      <section className="app-card" aria-label="时间序列">
-        <h2 className="app-card-title">时间序列</h2>
-        <div className="app-filter-bar">
-          <label className="app-filter-label">
-            分组
-            <select
-              className="app-select-sm"
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-            >
-              <option value="dispatch_model">派发模型</option>
-              <option value="outcome">结果</option>
-              <option value="protocol">协议</option>
-            </select>
-          </label>
-          <label className="app-filter-label">
-            指标
-            <select
-              className="app-select-sm"
-              value={metric}
-              onChange={(e) => setMetric(e.target.value as Metric)}
-            >
-              <option value="requests">请求数</option>
-              <option value="successes">成功数</option>
-              <option value="cost">成本</option>
-              <option value="input_tokens">输入 token</option>
-              <option value="output_tokens">输出 token</option>
-            </select>
-          </label>
+      {/* 两个排行 */}
+      <section className="app-two-col" aria-label="排行">
+        <div className="app-card">
+          <RankList
+            title={`按${
+              DIMENSIONS.find((item) => item.key === dimension)?.label ?? '维度'
+            }排行`}
+            rows={rankRowsFromUsage(usageQuery.data?.rows)}
+          />
         </div>
-        <QueryState
-          loading={seriesQuery.isLoading}
-          error={seriesQuery.error}
-          empty={(series?.series.length ?? 0) === 0}
-          onRetry={() => void seriesQuery.refetch()}
-        >
-          {seriesQuery.error !== null &&
-            errorMessage(seriesQuery.error).includes('window_too_large') && (
-              <div className="app-banner app-banner-warn">窗口过大，请缩小时间范围。</div>
-            )}
-          {series && (
-            <div className="app-series" role="img" aria-label={`${groupBy} 按 ${bucket} 的${metric}序列`}>
-              {series.series.map((group) => (
-                <div key={group.key} className="app-series-row">
-                  <div className="app-series-key font-mono">{group.key}</div>
-                  <div className="app-series-bars">
-                    {group.points.map((point) => (
-                      <div
-                        key={point.t}
-                        className="app-series-bar"
-                        style={{
-                          height: `${Math.max(2, (point.value / maxPoint) * 64)}px`,
-                          opacity: point.value === 0 ? 0.15 : 1,
-                        }}
-                        title={`${new Date(point.t).toLocaleString()} = ${point.value}`}
-                      />
-                    ))}
-                  </div>
-                </div>
+        <div className="app-card">
+          <RankList
+            title="按模型排行"
+            rows={rankRowsFromUsage(modelUsageQuery.data?.rows)}
+            labelOf={(key) => formatModelLabel(key, modelNamePref)}
+          />
+        </div>
+      </section>
+
+      {/* 按时段 + 最耗会话 */}
+      <section className="app-two-col" aria-label="时段与会话">
+        <div className="app-card">
+          <h2 className="app-card-title">按时段</h2>
+          <QueryState
+            loading={heatmapQuery.isLoading}
+            error={heatmapQuery.error}
+            onRetry={() => void heatmapQuery.refetch()}
+          >
+            <WeekdayHeatmap data={heatmapQuery.data} />
+          </QueryState>
+        </div>
+        <div className="app-card">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="app-card-title">最耗会话</h2>
+            <div className="oc-seg ml-auto" role="group" aria-label="会话排序">
+              {SESSION_TABS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={sessionTab === item.key ? 'oc-seg-item-active' : 'oc-seg-item'}
+                  aria-pressed={sessionTab === item.key}
+                  onClick={() => setSessionTab(item.key)}
+                >
+                  {item.label}
+                </button>
               ))}
             </div>
-          )}
-          {series && (
-            <details className="text-meta text-muted-foreground">
-              <summary className="cursor-pointer py-1">表格替代视图（无障碍）</summary>
-              <table className="app-table">
-                <thead>
-                  <tr>
-                    <th>{groupBy}</th>
-                    <th>时间</th>
-                    <th>{metric}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {series.series.flatMap((group) =>
-                    group.points
-                      .filter((point) => point.value > 0)
-                      .map((point) => (
-                        <tr key={`${group.key}-${point.t}`}>
-                          <td className="font-mono">{group.key}</td>
-                          <td>{new Date(point.t).toLocaleString()}</td>
-                          <td>{point.value}</td>
-                        </tr>
-                      )),
-                  )}
-                </tbody>
-              </table>
-            </details>
-          )}
-        </QueryState>
+          </div>
+          <TopSessions sessions={sessions} metric={sessionTab} />
+        </div>
       </section>
 
-      <section className="app-card" aria-label="模型维度">
-        <h2 className="app-card-title">模型维度</h2>
-        <QueryState
-          loading={modelsQuery.isLoading}
-          error={modelsQuery.error}
-          empty={(modelsQuery.data?.items.length ?? 0) === 0}
-          onRetry={() => void modelsQuery.refetch()}
-        >
-          <table className="app-table">
-            <thead>
-              <tr>
-                <th>模型</th>
-                <th>请求</th>
-                <th>成功</th>
-                <th>输入</th>
-                <th>输出</th>
-                <th>成本</th>
-              </tr>
-            </thead>
-            <tbody>
-              {modelsQuery.data?.items.map((item) => (
-                <tr key={String(item.model)}>
-                  <td className="font-mono">{String(item.model)}</td>
-                  <td>{String(item.requests)}</td>
-                  <td>{String(item.successes)}</td>
-                  <td>{String(item.input_tokens)}</td>
-                  <td>{String(item.output_tokens)}</td>
-                  <td>{String(item.cost_micros)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </QueryState>
+      {/* 会话形态 + 常用授权身份 */}
+      <section className="app-two-col" aria-label="会话形态">
+        <div className="app-card">
+          <h2 className="app-card-title">会话形态</h2>
+          <SessionShape sessions={sessions} />
+        </div>
+        <div className="app-card">
+          <h2 className="app-card-title">常用授权身份</h2>
+          <RankList
+            title="按请求数"
+            rows={rankRowsFromUsage(agentUsageQuery.data?.rows)}
+          />
+        </div>
       </section>
-
-      <UsageBreakdown window={window} />
-      <UsageHeatmap window={window} />
     </div>
-  )
-}
-
-/** 成本分解（v3 P5-C）：按 agent/model/candidate/account/session 五维出账。 */
-function UsageBreakdown({ window }: { window: { from: number; to: number } }) {
-  const [by, setBy] = useState('agent')
-  const usageQuery = useUsageQuery(by, window.from, window.to)
-  const totals = usageQuery.data?.totals
-
-  return (
-    <section className="app-card" aria-label="成本分解">
-      <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="app-card-title flex-1">成本分解</h2>
-        <label className="app-filter-label">
-          维度
-          <select className="app-select-sm" value={by} onChange={(e) => setBy(e.target.value)}>
-            <option value="agent">agent</option>
-            <option value="model">虚拟模型</option>
-            <option value="candidate">物理候选</option>
-            <option value="account">账号</option>
-            <option value="session">会话</option>
-          </select>
-        </label>
-      </div>
-      <QueryState
-        loading={usageQuery.isLoading}
-        error={usageQuery.error}
-        empty={usageQuery.data?.rows.length === 0}
-        onRetry={() => void usageQuery.refetch()}
-      >
-        <table className="app-table">
-          <thead>
-            <tr>
-              <th>{by}</th>
-              <th>请求</th>
-              <th>输入 / 输出</th>
-              <th>cache 读 / 写</th>
-              <th>命中率</th>
-              <th>TTFT 均值</th>
-              <th>成本（answer / routing）</th>
-            </tr>
-          </thead>
-          <tbody>
-            {usageQuery.data?.rows.map((row) => (
-              <tr key={row.key}>
-                <td className="font-mono">{row.key}</td>
-                <td>{row.requests}</td>
-                <td>
-                  {row.input_tokens} / {row.output_tokens}
-                </td>
-                <td>
-                  {row.cache_read_tokens} / {row.cache_write_tokens}
-                </td>
-                <td>
-                  {row.cache_hit_ratio === null
-                    ? '—'
-                    : `${(row.cache_hit_ratio * 100).toFixed(0)}%`}
-                </td>
-                <td>{row.avg_ttft_ms === null ? '—' : `${row.avg_ttft_ms.toFixed(0)}ms`}</td>
-                <td>
-                  {row.answer_cost_micros} / {row.routing_cost_micros}
-                </td>
-              </tr>
-            ))}
-            {totals && (
-              <tr className="font-semibold">
-                <td>合计</td>
-                <td>{totals.requests}</td>
-                <td>
-                  {totals.input_tokens} / {totals.output_tokens}
-                </td>
-                <td>
-                  {totals.cache_read_tokens} / {totals.cache_write_tokens}
-                </td>
-                <td>
-                  {totals.cache_hit_ratio === null
-                    ? '—'
-                    : `${(totals.cache_hit_ratio * 100).toFixed(0)}%`}
-                </td>
-                <td>{totals.avg_ttft_ms === null ? '—' : `${totals.avg_ttft_ms.toFixed(0)}ms`}</td>
-                <td>
-                  {totals.answer_cost_micros} / {totals.routing_cost_micros}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </QueryState>
-    </section>
-  )
-}
-
-/** 活动热力图（UTC 天 × 小时）。 */
-function UsageHeatmap({ window }: { window: { from: number; to: number } }) {
-  const heatmapQuery = useHeatmapQuery(window.from, window.to)
-  const data = heatmapQuery.data
-
-  // day → [24] 单元格。
-  const days = new Map<string, number[]>()
-  for (const cell of data?.cells ?? []) {
-    if (!days.has(cell.day)) days.set(cell.day, Array.from({ length: 24 }, () => 0))
-    const row = days.get(cell.day)
-    if (row) row[cell.hour] = cell.requests
-  }
-  const sortedDays = Array.from(days.keys()).sort()
-  const max = Math.max(1, data?.max_requests ?? 1)
-
-  return (
-    <section className="app-card" aria-label="活动热力图">
-      <h2 className="app-card-title">活动热力图（UTC 小时）</h2>
-      <QueryState
-        loading={heatmapQuery.isLoading}
-        error={heatmapQuery.error}
-        empty={sortedDays.length === 0}
-        onRetry={() => void heatmapQuery.refetch()}
-      >
-        <div className="flex flex-col gap-1 overflow-x-auto">
-          {sortedDays.map((day) => (
-            <div key={day} className="flex items-center gap-2">
-              <span className="text-meta text-muted-foreground font-mono w-21 shrink-0">{day}</span>
-              <div className="flex gap-0.5">
-                {(days.get(day) ?? []).map((requests, hour) => {
-                  const intensity = requests === 0 ? 0 : 0.15 + 0.85 * (requests / max)
-                  return (
-                    <div
-                      key={hour}
-                      className="size-2.5 rounded-sm bg-primary"
-                      style={{ opacity: intensity }}
-                      title={`${day} ${String(hour).padStart(2, '0')}:00 · ${requests} 请求`}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </QueryState>
-    </section>
   )
 }

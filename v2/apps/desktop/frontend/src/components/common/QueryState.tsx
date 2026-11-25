@@ -67,12 +67,19 @@ export function QueryState({
   empty,
   children,
   onRetry,
+  emptyTitle,
+  emptyHint,
+  emptyAction,
 }: {
   loading: boolean
   error: unknown
   empty?: boolean
   children: ReactNode
   onRetry?: () => void
+  /** 空态文案与动作（不传保持默认文案）。 */
+  emptyTitle?: string
+  emptyHint?: string
+  emptyAction?: ReactNode
 }) {
   if (loading) return <Loading />
   if (error) {
@@ -86,10 +93,7 @@ export function QueryState({
   }
   if (empty) {
     return (
-      <EmptyState
-        title="暂无数据"
-        hint="v2 从空账本开始；配置候选并发起请求后这里会出现数据。"
-      />
+      <EmptyState title={emptyTitle ?? '暂无数据'} hint={emptyHint} action={emptyAction} />
     )
   }
   return <>{children}</>

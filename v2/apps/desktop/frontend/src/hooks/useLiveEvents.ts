@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri } from '../lib/tauri'
 import { useQueryClient } from '@tanstack/react-query'
+import { usePrefsStore } from '../stores/prefsStore'
 
 export interface AdminEvent {
   id: number
@@ -19,9 +20,11 @@ export interface AdminEvent {
 export function useLiveEvents(): AdminEvent | null {
   const queryClient = useQueryClient()
   const [latest, setLatest] = useState<AdminEvent | null>(null)
+  // 轻量模式：不建 SSE 长连接，页面靠轮询兜底（省电、少一条后台连接）。
+  const liteMode = usePrefsStore((s) => s.liteMode)
 
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || liteMode) return
     let unlisten: UnlistenFn | null = null
     let cancelled = false
 
@@ -42,6 +45,10 @@ export function useLiveEvents(): AdminEvent | null {
           case 'request.completed':
             void queryClient.invalidateQueries({ queryKey: ['admin', 'requests'] })
             void queryClient.invalidateQueries({ queryKey: ['admin', 'stats'] })
+            // 会话汇总与判官审计都随请求增长，活动页「会话」标签靠这两条刷新。
+            void queryClient.invalidateQueries({ queryKey: ['admin', 'sessions'] })
+            void queryClient.invalidateQueries({ queryKey: ['admin', 'session-requests'] })
+            void queryClient.invalidateQueries({ queryKey: ['admin', 'judge-calls'] })
             break
           case 'config.applied':
             void queryClient.invalidateQueries({ queryKey: ['admin', 'config'] })
@@ -65,7 +72,7 @@ export function useLiveEvents(): AdminEvent | null {
         )
       }
     }
-  }, [queryClient])
+  }, [queryClient, liteMode])
 
   return latest
 }

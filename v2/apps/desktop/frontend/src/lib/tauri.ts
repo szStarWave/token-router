@@ -23,6 +23,23 @@ export interface SupervisorStatus {
   state: 'stopped' | 'starting' | 'ready' | 'restarting' | 'failed'
   listen: string | null
   data_dir: string
+  /**
+   * true = 壳连接的是外部服务（不托管该进程）；未知（旧宿主未返回）时为 undefined。
+   * 本地 start/stop/restart 动作只在明确 external === false 时可用
+   * （统一入口：`canManageLocally`）。
+   */
+  external?: boolean
+}
+
+/**
+ * 本地生命周期管理（start/stop/restart）是否可用。
+ *
+ * 只有「壳托管进程」（external === false）才允许；
+ * external === true 是外部服务（动作须隐藏），undefined = 旧宿主未上报，
+ * 一律视为未知 → 不提供本地动作。
+ */
+export function canManageLocally(status: SupervisorStatus | null | undefined): boolean {
+  return isTauri() && status?.external === false
 }
 
 export interface SpawnOutcome {
@@ -58,6 +75,9 @@ export const hostAppInfo = () => tauriInvoke<AppInfo>('host_app_info')
 export const hostOpenPath = (path?: string) =>
   tauriInvoke<void>('host_open_path', { path: path ?? null })
 
+/** 本机可用于局域网访问的 IPv4（不含回环）；探测不到时返回空数组。 */
+export const hostLanAddresses = () => tauriInvoke<string[]>('host_lan_addresses')
+
 export interface HostUiState {
   theme?: string | null
   language?: string | null
@@ -71,6 +91,26 @@ export const hostUiStateSave = (uiState: HostUiState) =>
   tauriInvoke<void>('host_ui_state_save', { uiState })
 
 // ---------------------------------------------------------------------------
+// 退出前询问（设置页）
+// ---------------------------------------------------------------------------
+
+export const appSetExitGuard = (enabled: boolean) =>
+  tauriInvoke<void>('app_set_exit_guard', { enabled })
+
+export const appForceClose = () => tauriInvoke<void>('app_force_close')
+
+export const appCancelExit = () => tauriInvoke<void>('app_cancel_exit')
+
+// ---------------------------------------------------------------------------
+// 托盘（关闭到托盘 / 托盘退出）
+// ---------------------------------------------------------------------------
+
+export const appSetCloseToTray = (enabled: boolean) =>
+  tauriInvoke<void>('app_set_close_to_tray', { enabled })
+
+export const appQuit = () => tauriInvoke<void>('app_quit')
+
+// ---------------------------------------------------------------------------
 // Agent onboarding（§8）：detect → plan → apply → verify
 // ---------------------------------------------------------------------------
 
@@ -80,6 +120,8 @@ export interface DetectReport {
   installed: boolean
   config_files: Array<{ path: string; exists: boolean; readable: boolean }>
   already_configured: boolean
+  /** 现有配置里读回的模型 id；无法解析/未配置为 null。 */
+  configured_model: string | null
 }
 
 export interface PlanEntry {
@@ -121,6 +163,8 @@ export interface OnboardSetupArgs {
   /** 凭据引用：env:NAME / file:path（明文不进 UI）。 */
   credential_ref: string
   model: string
+  /** 显式切换入口：覆盖客户端已有 model；Onboarding 默认 false。 */
+  force_model?: boolean
 }
 
 export const onboardDetect = (args: { agent: string; wsl_distro?: string | null }) =>

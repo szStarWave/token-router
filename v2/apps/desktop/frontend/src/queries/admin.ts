@@ -7,9 +7,9 @@
  * - 轮询：status 10s、stats 15s；页面隐藏由 TanStack Query 自动暂停；
  * - 错误映射 ApiError；组件用 `<QueryState>` 统一加载/空/错。
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueries, useQueryClient } from '@tanstack/react-query'
 import { api, queryKeys } from '../api/client'
-import type { KeyLimits } from '../api/types'
+import type { KeyLimits, RequestSummary } from '../api/types'
 export type { ApiError } from '../api/client'
 // 具体端点类型由 api/client.ts 封装；此处不再重复导入。
 
@@ -129,11 +129,17 @@ function requestsQuery(params: RequestListParams): string {
   return text ? `?${text}` : ''
 }
 
-export function useRequestsQuery(params: RequestListParams, enabled = true) {
+export function useRequestsQuery(
+  params: RequestListParams,
+  enabled = true,
+  refetchInterval: number | false = false,
+) {
   return useQuery({
     queryKey: queryKeys.requests(requestsQuery(params)),
     queryFn: () => api.requests(requestsQuery(params)),
     enabled,
+    // 轻量模式（无 SSE）下由调用方给轮询间隔；其他情况靠事件失效。
+    refetchInterval: enabled ? refetchInterval : false,
     retry: 1,
   })
 }
@@ -143,6 +149,73 @@ export function useRequestDetailQuery(id: string | null, enabled = true) {
     queryKey: ['admin', 'requests', 'detail', id],
     queryFn: () => api.requestDetail(id as string),
     enabled: enabled && id !== null,
+    retry: 1,
+  })
+}
+
+/** 一轮请求的消息与回复（`[recording] transcript` 控制是否记录）。 */
+export function useRequestTranscriptQuery(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['admin', 'requests', 'transcript', id],
+    queryFn: () => api.requestTranscript(id as string),
+    enabled: enabled && id !== null,
+    retry: 1,
+  })
+}
+
+/** 会话级完整汇总（服务端聚合，不受请求列表分页影响）。 */
+export function useSessionsQuery(params: { from: number; to: number; limit?: number }) {
+  const search = new URLSearchParams({
+    from: String(params.from),
+    to: String(params.to),
+    limit: String(params.limit ?? 100),
+  })
+  const query = `?${search.toString()}`
+  return useQuery({
+    queryKey: queryKeys.sessions(query),
+    queryFn: () => api.sessions(query),
+    retry: 1,
+  })
+}
+
+/** 判官（决策模型）调用审计；按会话或按请求过滤。 */
+export function useJudgeCallsQuery(
+  params: { session?: string; requestId?: string; limit?: number },
+  enabled = true,
+) {
+  const search = new URLSearchParams()
+  if (params.session) search.set('session', params.session)
+  if (params.requestId) search.set('request_id', params.requestId)
+  search.set('limit', String(params.limit ?? 200))
+  const query = `?${search.toString()}`
+  return useQuery({
+    queryKey: queryKeys.judgeCalls(query),
+    queryFn: () => api.judgeCalls(query),
+    enabled,
+    retry: 1,
+  })
+}
+
+/** 完整会话调用：把该会话的请求按游标翻到底（上限 10 页 × 200）。 */
+async function fetchAllSessionRequests(sessionKey: string): Promise<RequestSummary[]> {
+  const items: RequestSummary[] = []
+  let cursor: string | null = null
+  for (let page = 0; page < 10; page += 1) {
+    const search = new URLSearchParams({ session: sessionKey, limit: '200' })
+    if (cursor) search.set('cursor', cursor)
+    const result = await api.requests(`?${search.toString()}`)
+    items.push(...result.items)
+    cursor = result.next_cursor
+    if (!cursor) break
+  }
+  return items
+}
+
+export function useSessionRequestsQuery(sessionKey: string | null) {
+  return useQuery({
+    queryKey: ['admin', 'session-requests', sessionKey],
+    queryFn: () => fetchAllSessionRequests(sessionKey as string),
+    enabled: sessionKey !== null,
     retry: 1,
   })
 }
@@ -229,11 +302,37 @@ export function useRevokeTokenMutation() {
   })
 }
 
+/** 重新签发 token 明文：旧明文立即失效，新明文只在响应里出现一次。 */
+export function useRotateTokenMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.rotateToken(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tokens() })
+    },
+  })
+}
+
+/** 硬删除已撤销的 token 记录。 */
+export function usePurgeTokenMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.purgeToken(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tokens() })
+    },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // logs
 // ---------------------------------------------------------------------------
 
-export function useLogsQuery(params: { limit?: number; level?: string; target?: string }, enabled = true) {
+export function useLogsQuery(
+  params: { limit?: number; level?: string; target?: string },
+  enabled = true,
+  refetchInterval: number | false = false,
+) {
   const search = new URLSearchParams()
   if (params.limit !== undefined) search.set('limit', String(params.limit))
   if (params.level) search.set('level', params.level)
@@ -243,6 +342,8 @@ export function useLogsQuery(params: { limit?: number; level?: string; target?: 
     queryKey: queryKeys.logs(query),
     queryFn: () => api.logs(query),
     enabled,
+    // 轻量模式（无 SSE）下由调用方给轮询间隔。
+    refetchInterval: enabled ? refetchInterval : false,
     retry: 1,
   })
 }
@@ -280,6 +381,36 @@ export function useAccountsQuery(providerId: string | null, enabled = true) {
   })
 }
 
+/**
+ * 全部 provider 的账号（聚合）。
+ *
+ * admin 侧只有 `/providers/{id}/accounts`，没有跨 provider 的账号列表；
+ * 这里对已知 provider 并发取回并合并，供「账号与配额」这类跨 provider 视图使用。
+ * provider 列表未知时返回空数组（不报错）。
+ */
+export function useAllAccountsQuery(enabled = true) {
+  const providersQuery = useProvidersQuery(enabled)
+  const providerIds = (providersQuery.data ?? []).map((provider) => provider.id)
+  const results = useQueries({
+    queries: providerIds.map((providerId) => ({
+      queryKey: queryKeys.accounts(providerId),
+      queryFn: () => api.accounts(providerId),
+      enabled,
+      retry: 1,
+    })),
+  })
+  const accounts = results.flatMap((result) => result.data ?? [])
+  // 任一账号查询还在加载都算加载中；错误优先取 provider 列表的，再取第一个账号错误。
+  const accountLoading = results.some((result) => result.isLoading)
+  const accountError = results.find((result) => result.error !== null)?.error ?? null
+  return {
+    providers: providersQuery.data ?? [],
+    accounts,
+    loading: providersQuery.isLoading || accountLoading,
+    error: providersQuery.error ?? accountError,
+  }
+}
+
 export function useCatalogQuery(providerId: string | null, enabled = true) {
   return useQuery({
     queryKey: queryKeys.catalog(providerId ?? ''),
@@ -295,6 +426,10 @@ function useInvalidateProviderData() {
     void queryClient.invalidateQueries({ queryKey: ['admin', 'providers'] })
     void queryClient.invalidateQueries({ queryKey: ['admin', 'accounts'] })
     void queryClient.invalidateQueries({ queryKey: ['admin', 'catalog'] })
+    // 目录/账号/供应商变更后服务端会立即重编译候选并写回 config：
+    // 组页的「添加模型」列表来自编译产物，必须让 config 查询跟上。
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'config'] })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.status() })
   }
 }
 
@@ -366,6 +501,24 @@ export function useSelectCatalogModelMutation() {
   })
 }
 
+export function useDeleteCatalogModelMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: ({ providerId, modelId }: { providerId: string; modelId: string }) =>
+      api.deleteCatalogModel(providerId, modelId),
+    onSuccess: invalidate,
+  })
+}
+
+/** 用 models.dev 补全目录元数据（窗口/输出/价格/推理档位，只填空）。 */
+export function useEnrichCatalogMutation() {
+  const invalidate = useInvalidateProviderData()
+  return useMutation({
+    mutationFn: (providerId: string) => api.enrichCatalog(providerId),
+    onSuccess: invalidate,
+  })
+}
+
 export function useCompileCandidatesMutation() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateProviderData()
@@ -382,8 +535,7 @@ export function useCompileCandidatesMutation() {
 
 
 // ---------------------------------------------------------------------------
-// quotas / key limits（v3 P5-B）
-// ---------------------------------------------------------------------------
+// 配额窗口（路由侧限流观测）
 // ---------------------------------------------------------------------------
 
 export function useQuotasQuery(enabled = true) {
@@ -396,12 +548,27 @@ export function useQuotasQuery(enabled = true) {
   })
 }
 
-export function useResetQuotaMutation() {
+// ---------------------------------------------------------------------------
+// 账户余额 / 订阅（厂商 usage 接口）
+// ---------------------------------------------------------------------------
+
+export function useProviderUsageQuery(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providerUsage(),
+    queryFn: () => api.providerUsage(),
+    enabled,
+    // 厂商接口有速率限制：页面内不轮询，后端 60s 缓存 + 手动刷新。
+    staleTime: 60_000,
+    retry: 1,
+  })
+}
+
+export function useRefreshProviderUsageMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (candidateId: string) => api.quotaReset(candidateId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.quotas() })
+    mutationFn: () => api.providerUsage(true),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.providerUsage(), data)
     },
   })
 }

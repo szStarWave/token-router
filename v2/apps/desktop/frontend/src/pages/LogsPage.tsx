@@ -7,6 +7,7 @@ import { QueryState } from '../components/common/QueryState'
 import { Icon } from '../components/common/Icon'
 import { logLineClass } from '../lib/status'
 import { hostOpenPath, isTauri } from '../lib/tauri'
+import { usePrefsStore } from '../stores/prefsStore'
 
 const LEVELS = ['', 'error', 'warn', 'info', 'debug'] as const
 
@@ -14,12 +15,18 @@ export function LogsPage() {
   const [level, setLevel] = useState<string>('')
   const [target, setTarget] = useState('')
   const [limit, setLimit] = useState(200)
+  const liteMode = usePrefsStore((s) => s.liteMode)
 
-  const logsQuery = useLogsQuery({
-    limit,
-    level: level || undefined,
-    target: target || undefined,
-  })
+  const logsQuery = useLogsQuery(
+    {
+      limit,
+      level: level || undefined,
+      target: target || undefined,
+    },
+    true,
+    // 轻量模式关掉 SSE 后必须靠轮询，否则日志页永远停在打开时的那一屏。
+    liteMode ? 10_000 : false,
+  )
 
   return (
     <div className="app-page">
@@ -75,6 +82,7 @@ export function LogsPage() {
           error={logsQuery.error}
           empty={(logsQuery.data?.items.length ?? 0) === 0}
           onRetry={() => void logsQuery.refetch()}
+          emptyTitle="暂无日志"
         >
           <div className="app-log" role="log" aria-live="polite">
             {logsQuery.data?.items.map((entry) => (
@@ -86,9 +94,6 @@ export function LogsPage() {
               </div>
             ))}
           </div>
-          <p className="app-card-sub">
-            显示最近 {limit} 条（ring buffer 最近 2000 行）；敏感字段已由服务端脱敏。
-          </p>
         </QueryState>
       </section>
     </div>

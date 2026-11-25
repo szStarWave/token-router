@@ -105,6 +105,7 @@ import type {
   CompileResponse,
   ConfigAuditEntry,
   ConfigDocument,
+  ConfigReloadResponse,
   CreatedToken,
   CreateTokenRequest,
   DoctorResponse,
@@ -115,15 +116,19 @@ import type {
   ProviderInfo,
   PlaygroundExecuteRequest,
   PlaygroundExecuteResponse,
+  ProviderUsageResponse,
   QuotaWindowInfo,
   HeatmapResponse,
   ImportScanResponse,
   UsageResponse,
+  JudgeCallSummary,
   ProviderTemplate,
   ProviderUpsertRequest,
   RequestDetail,
   RequestSummary,
+  RequestTranscript,
   SeriesResponse,
+  SessionSummary,
   StatsSummary,
   StatusResponse,
   TokenInfo,
@@ -141,10 +146,23 @@ export const api = {
     admin.post<ApplyResponse>("/v2/admin/config/apply", {
       document_toml: documentToml,
     }, revision),
+  configReload: () => admin.post<ConfigReloadResponse>("/v2/admin/config/reload"),
+  enrichCatalog: (providerId: string) =>
+    admin.post<{
+      provider_id: string;
+      source_provider: string | null;
+      matched: number;
+      filled: number;
+    }>(`/v2/admin/providers/${providerId}/catalog/enrich`),
   configRollback: () => admin.post<ApplyResponse>("/v2/admin/config/rollback"),
   configAudit: () => admin.get<{ items: ConfigAuditEntry[] }>("/v2/admin/config/audit"),
   requests: (query: string) => admin.get<Page<RequestSummary>>(`/v2/admin/requests${query}`),
   requestDetail: (id: string) => admin.get<RequestDetail>(`/v2/admin/requests/${id}`),
+  requestTranscript: (id: string) =>
+    admin.get<RequestTranscript>(`/v2/admin/requests/${id}/transcript`),
+  judgeCalls: (query: string) =>
+    admin.get<Page<JudgeCallSummary>>(`/v2/admin/judge/calls${query}`),
+  sessions: (query: string) => admin.get<Page<SessionSummary>>(`/v2/admin/sessions${query}`),
   statsSummary: (query: string) => admin.get<StatsSummary>(`/v2/admin/stats/summary${query}`),
   statsSeries: (query: string) => admin.get<SeriesResponse>(`/v2/admin/stats/series${query}`),
   statsModels: (query: string) =>
@@ -153,6 +171,11 @@ export const api = {
   createToken: (request: CreateTokenRequest) =>
     admin.post<CreatedToken>("/v2/admin/tokens", request),
   revokeToken: (id: string) => admin.del<{ ok: boolean }>(`/v2/admin/tokens/${id}`),
+  /** 重新签发明文：旧明文立即失效；响应里的明文只出现这一次。 */
+  rotateToken: (id: string) =>
+    admin.post<CreatedToken>(`/v2/admin/tokens/${id}/rotate`),
+  /** 硬删除已撤销的 token 记录：撤销是软删除，这一步才真正移除。 */
+  purgeToken: (id: string) => admin.post<{ ok: boolean }>(`/v2/admin/tokens/${id}/purge`),
   logs: (query: string) => admin.get<{ items: LogEntry[]; next_cursor: number | null }>(`/v2/admin/logs${query}`),
   shutdown: () => admin.post<{ ok: boolean }>("/v2/admin/shutdown"),
   // ── Providers（v3 P5-A）───────────────────────────────────────────────
@@ -183,6 +206,10 @@ export const api = {
     admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/refresh`, request),
   selectCatalogModel: (providerId: string, request: CatalogSelectRequest) =>
     admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/select`, request),
+  deleteCatalogModel: (providerId: string, modelId: string) =>
+    admin.del<CatalogResponse>(
+      `/v2/admin/providers/${providerId}/catalog/${encodeURIComponent(modelId)}`,
+    ),
   compileCandidates: (request: CompileRequest) =>
     admin.post<CompileResponse>("/v2/admin/providers/compile", request),
   providerImport: (home?: string) =>
@@ -191,8 +218,13 @@ export const api = {
     admin.post<CatalogResponse>(`/v2/admin/providers/${providerId}/catalog/auto-include`, {
       pattern,
     }),
-  // ── 配额与 key 限额（v3 P5-B）────────────────────────────────────────
+  // ── 配额窗口（v3 P5-B，路由侧限流观测）────────────────────────────────
   quotaList: () => admin.get<{ items: QuotaWindowInfo[] }>("/v2/admin/quotas"),
+  // ── 账户余额 / 订阅（厂商 usage 接口）────────────────────────────────
+  providerUsage: (refresh = false) =>
+    admin.get<ProviderUsageResponse>(
+      `/v2/admin/provider-usage${refresh ? '?refresh=true' : ''}`,
+    ),
   // ── Playground（v3 P5-D）─────────────────────────────────────────────
   playgroundExecute: (request: PlaygroundExecuteRequest) =>
     admin.post<PlaygroundExecuteResponse>("/v2/admin/playground/execute", request),
@@ -201,8 +233,6 @@ export const api = {
     admin.get<UsageResponse>(`/v2/admin/usage?by=${by}&from=${from}&to=${to}`),
   usageHeatmap: (from: number, to: number) =>
     admin.get<HeatmapResponse>(`/v2/admin/usage/heatmap?from=${from}&to=${to}`),
-  quotaReset: (candidateId: string) =>
-    admin.del<{ ok: boolean }>(`/v2/admin/quotas/${candidateId}`),
   updateTokenLimits: (id: string, limits: KeyLimits | null) =>
     admin.patch<TokenInfo>(`/v2/admin/tokens/${id}`, { limits }),
 };
@@ -215,10 +245,13 @@ export const queryKeys = {
   health: () => ["admin", "health"] as const,
   config: () => ["admin", "config"] as const,
   requests: (params: string) => ["admin", "requests", params] as const,
+  judgeCalls: (params: string) => ["admin", "judge-calls", params] as const,
+  sessions: (params: string) => ["admin", "sessions", params] as const,
   stats: (params: string) => ["admin", "stats", params] as const,
   tokens: () => ["admin", "tokens"] as const,
   logs: (params: string) => ["admin", "logs", params] as const,
   providerTemplates: () => ["admin", "provider-templates"] as const,
+  providerUsage: () => ["admin", "provider-usage"] as const,
   quotas: () => ["admin", "quotas"] as const,
   usage: (by: string, from: number, to: number) => ["admin", "usage", by, from, to] as const,
   heatmap: (from: number, to: number) => ["admin", "heatmap", from, to] as const,

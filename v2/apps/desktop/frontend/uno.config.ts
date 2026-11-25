@@ -99,8 +99,13 @@ export default defineConfig({
       'drag-region h-11 min-h-11 flex items-center gap-3 pl-5 pr-3 border-b border-border',
     ],
     ['app-page-title', 'flex-1 min-w-0 truncate text-section font-semibold tracking-tight'],
-    ['app-page-content', 'flex-1 min-h-0 overflow-y-auto px-6 pt-5 pb-8'],
-    ['app-page', 'flex flex-col gap-4 max-w-[1180px]'],
+    [
+      'app-page-content',
+      'flex-1 min-h-0 overflow-y-auto px-6 pt-5 pb-8',
+    ],
+    ['app-page', 'flex flex-col gap-4 min-w-0 max-w-[1600px] [zoom:var(--tr-text-scale,1)]'],
+    // 主从/分栏页面铺满可用宽度（全屏时不留大片空白）。
+    ['app-page-wide', 'flex flex-col gap-4 min-w-0 [zoom:var(--tr-text-scale,1)]'],
     [
       'app-page-split',
       'grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start gap-4 max-[1080px]:grid-cols-1',
@@ -115,7 +120,7 @@ export default defineConfig({
     ],
 
     // ── 卡片（tile：无边框，靠色阶） ─────────────────────────────
-    ['app-card', 'flex flex-col gap-3 p-4 rounded-lg oc-tile'],
+    ['app-card', 'flex flex-col gap-3 p-4 rounded-lg oc-tile min-w-0'],
     ['app-card-title', 'text-header font-semibold'],
     ['app-card-sub', 'text-meta text-muted-foreground'],
     ['app-card-actions', 'flex items-center gap-2 flex-wrap'],
@@ -178,6 +183,60 @@ export default defineConfig({
     ['app-toast-show', 'opacity-100 translate-y-0'],
     ['app-toast-ok', 'text-status-success'],
     ['app-toast-err', 'text-status-error'],
+
+    // ── 弹窗（遮罩 + 玻璃面板；Esc / 遮罩 / 焦点循环见 Modal.tsx） ──
+    [
+      'app-modal-backdrop',
+      'fixed inset-0 z-50 flex items-center justify-center p-4 bg-[rgba(0,0,0,0.45)]',
+    ],
+    [
+      'app-modal',
+      // 对话框是整块不透明面：浅色用画布白、深色用 elevated（--oc-control-surface），
+      // 不用 oc-glass-popover 的 97% elevated——浅色下它会透成灰面。
+      'w-full max-w-[min(660px,calc(100%-2rem))] max-h-[84vh] flex flex-col overflow-hidden rounded-xl border border-border bg-[var(--oc-control-surface)] shadow-floating text-foreground',
+    ],
+    ['app-modal-wide', 'max-w-[min(840px,calc(100%-2rem))]'],
+    ['app-modal-header', 'flex items-center gap-3 px-4 py-3.5 border-b border-border shrink-0'],
+    ['app-modal-title-block', 'flex min-w-0 flex-1 flex-col gap-0.5'],
+    ['app-modal-title', 'flex items-center gap-2 flex-wrap text-header font-semibold'],
+    [
+      'app-modal-subtitle',
+      'truncate font-mono text-meta text-muted-foreground',
+    ],
+    ['app-modal-body', 'min-h-0 overflow-y-auto p-4'],
+    [
+      'app-modal-footer',
+      'flex items-center gap-2 flex-wrap shrink-0 border-t border-border px-4 py-3',
+    ],
+
+    // ── 供应商列表行 / 模板卡片 ──────────────────────────────────
+    ['app-provider-list', 'flex flex-col gap-2'],
+    [
+      'app-provider-row',
+      'grid w-full grid-cols-[34px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-interactive-hover',
+    ],
+    [
+      'app-provider-icon',
+      'grid size-8 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--surface-foreground)_8%,transparent)] text-ui-label font-semibold text-muted-foreground',
+    ],
+    ['app-provider-main', 'flex min-w-0 flex-col gap-0.5'],
+    ['app-provider-name', 'flex items-center gap-1.5 flex-wrap text-ui-label font-semibold'],
+    ['app-provider-sub', 'truncate text-meta text-muted-foreground'],
+    [
+      'app-provider-side',
+      'flex min-w-0 flex-col items-end gap-1 text-right text-meta text-muted-foreground',
+    ],
+    ['app-provider-meta', 'max-w-[44ch] truncate whitespace-nowrap tabular-nums'],
+    [
+      'app-provider-tile-grid',
+      'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2',
+    ],
+    [
+      'app-provider-tile',
+      'flex flex-col items-start gap-0.5 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-foreground cursor-pointer transition-colors hover:bg-interactive-hover',
+    ],
+    ['app-provider-tile-name', 'text-ui-label font-semibold'],
+    ['app-provider-tile-sub', 'w-full truncate text-micro text-muted-foreground'],
 
     // ── 日志视图 / 代码画布 ─────────────────────────────────────
     [
@@ -256,6 +315,269 @@ export default defineConfig({
     ['app-field-sm', 'oc-field h-7 text-meta app-field-light'],
     ['app-select', 'h-8 px-2.5 rounded-md bg-[var(--oc-control-surface)] text-foreground text-ui-label shadow-button outline-none cursor-pointer hover:bg-interactive-hover data-[theme=vercel-light]:bg-background'],
     ['app-select-sm', 'h-7 px-2.5 rounded-md bg-[var(--oc-control-surface)] text-foreground text-meta shadow-button outline-none cursor-pointer hover:bg-interactive-hover data-[theme=vercel-light]:bg-background'],
+    // 可搜索下拉（模型切换器等）：输入框 + 浮层列表。
+    ['app-combobox', 'relative min-w-0'],
+    ['app-combobox-list', 'absolute left-0 top-full z-30 mt-1 w-full max-h-64 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-floating'],
+    ['app-combobox-option', 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-meta text-foreground cursor-pointer hover:bg-interactive-hover'],
+    ['app-combobox-option-active', 'bg-interactive-hover'],
+
+    // ── 首页结论卡（product-design §6）：数字放大一档，不盲用巨字号 ──
+    ['app-metric-card', 'flex flex-col gap-1.5 p-3.5 rounded-lg oc-tile min-w-0'],
+    ['app-metric-key', 'text-meta text-muted-foreground whitespace-nowrap'],
+    ['app-metric-value', 'text-2xl leading-tight font-semibold tracking-tight text-foreground tabular-nums truncate'],
+    ['app-metric-note', 'text-micro text-muted-foreground leading-snug min-h-3'],
+
+    // ── 首页起步清单（product-design §5 J1）──────────────────────
+    ['app-checklist', 'flex flex-col gap-0'],
+    [
+      'app-checklist-item',
+      'flex items-start gap-3 py-2.5 px-1 rounded-md [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    ['app-checklist-mark', 'mt-0.5 flex-none size-4 grid place-items-center rounded-full'],
+    ['app-checklist-body', 'flex-1 min-w-0 flex flex-col gap-1'],
+    ['app-checklist-title', 'text-ui-label text-foreground leading-snug'],
+    ['app-checklist-hint', 'text-micro text-muted-foreground leading-snug'],
+    ['app-checklist-action', 'flex-none self-center'],
+    ['app-checklist-footer', 'flex items-center gap-2 pt-2.5 px-1 text-meta text-muted-foreground flex-wrap'],
+
+    // ── 首页模块入口摘要行（列表不是 KV 表）───────────────────────
+    [
+      'app-entry-row',
+      'flex items-center gap-2.5 py-2 px-1 rounded-md [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    ['app-entry-main', 'flex-1 min-w-0 flex flex-col gap-0.5'],
+    ['app-entry-title', 'text-ui-label text-foreground leading-snug truncate'],
+    ['app-entry-meta', 'text-micro text-muted-foreground truncate'],
+
+    // ── 二级标签说明行（AppLayout 页头下）────────────────────────
+    ['app-page-desc', 'text-meta text-muted-foreground leading-snug'],
+
+    // ── 活动页（路由视图）────────────────────────────────────────
+    ['app-metric-grid', 'grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3'],
+    [
+      'app-chip',
+      'inline-flex items-center h-6 px-2 rounded-full border border-border bg-background text-meta text-muted-foreground cursor-pointer transition-colors hover:bg-interactive-hover hover:text-foreground',
+    ],
+    [
+      'app-chip-active',
+      'border-[color:var(--primary)] text-foreground bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]',
+    ],
+    [
+      'app-route-graph',
+      'grid grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)_minmax(0,1.35fr)] items-start gap-3 max-[900px]:grid-cols-1',
+    ],
+    ['app-route-col', 'flex flex-col gap-2 min-w-0'],
+    ['app-route-entry-row', 'flex items-stretch gap-2 min-w-0'],
+    [
+      'app-route-entry',
+      'flex flex-1 items-center gap-2 min-w-0 rounded-lg border border-border bg-background px-2.5 py-2',
+    ],
+    ['app-route-link', 'w-4 h-px shrink-0 self-center bg-[var(--interactive-border)]'],
+    [
+      'app-route-node',
+      'flex flex-col gap-1.5 min-w-0 rounded-lg border border-border bg-background p-3',
+    ],
+    ['app-route-dot', 'size-1.5 shrink-0 rounded-full'],
+    [
+      'app-route-card',
+      'flex flex-1 flex-col gap-1 min-w-0 rounded-lg border border-border bg-background p-2.5',
+    ],
+    [
+      'app-route-card-active',
+      'border-[color:var(--primary)] bg-[color-mix(in_srgb,var(--primary)_7%,transparent)]',
+    ],
+    ['app-route-bar', 'h-1 w-full overflow-hidden rounded-full bg-[var(--interactive-border)]'],
+    ['app-route-bar-fill', 'h-1 rounded-full bg-primary'],
+    ['app-context-top', 'grid grid-cols-2 gap-4 max-[640px]:grid-cols-1'],
+    [
+      'app-token-bar',
+      'flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--interactive-border)]',
+    ],
+    ['app-token-seg-input', 'h-full bg-primary'],
+    ['app-token-seg-output', 'h-full bg-primary opacity-70'],
+    ['app-token-seg-cache-read', 'h-full bg-primary opacity-45'],
+    ['app-token-seg-cache-write', 'h-full bg-primary opacity-30'],
+    ['app-token-seg-free', 'h-full bg-[var(--interactive-border)]'],
+    [
+      'app-feed-row',
+      'flex flex-col gap-1 rounded-lg border border-border bg-background px-3 py-2 text-left cursor-pointer transition-colors hover:bg-interactive-hover',
+    ],
+    [
+      'app-feed-row-active',
+      'border-[color:var(--primary)] bg-[color-mix(in_srgb,var(--primary)_6%,transparent)]',
+    ],
+    [
+      'app-account-row',
+      'flex flex-col gap-1 rounded-lg bg-[color-mix(in_srgb,var(--surface-foreground)_3%,transparent)] px-3 py-2',
+    ],
+    ['app-narrative', 'flex flex-col gap-1.5 list-none m-0 p-0'],
+    [
+      'app-detail-panel',
+      'flex flex-col gap-3 rounded-lg bg-[color-mix(in_srgb,var(--surface-foreground)_3%,transparent)] p-3',
+    ],
+    // 左右分栏：左列表独立滚动，右侧详情固定可见（窄窗口退化为纵向堆叠）。
+    [
+      'app-split',
+      'grid gap-3 items-start grid-cols-[minmax(300px,380px)_minmax(0,1fr)] max-[900px]:grid-cols-1',
+    ],
+    [
+      'app-split-scroll',
+      'max-h-[calc(100vh-210px)] overflow-y-auto pr-0.5 max-[900px]:max-h-[55vh]',
+    ],
+    // 详情里的独立区块：边框 + 底色，和相邻区块分清。
+    [
+      'app-detail-section',
+      'flex flex-col gap-2 rounded-lg border border-border bg-background p-3',
+    ],
+    // 消息正文：保留换行、长串换行、限高滚动。
+    [
+      'app-message-text',
+      'whitespace-pre-wrap break-words rounded-md border border-border bg-surface-elevated px-3 py-2 text-ui-label leading-[1.6] max-h-72 overflow-auto',
+    ],
+
+    // ── 用量页（观测看板）────────────────────────────────────────
+    [
+      'app-usage-metrics',
+      'grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-0 overflow-hidden rounded-lg border border-border',
+    ],
+    [
+      'app-usage-metric',
+      'flex flex-col gap-1 px-4 py-3.5 min-w-0 [&:not(:last-child)]:shadow-[inset_-1px_0_0_var(--interactive-border)]',
+    ],
+    ['app-two-col', 'grid grid-cols-2 gap-4 max-[980px]:grid-cols-1'],
+    [
+      'app-rank-row',
+      'grid grid-cols-[minmax(96px,150px)_minmax(0,1fr)_auto_auto] items-center gap-3 py-1',
+    ],
+    [
+      'app-rank-bar',
+      'h-1.5 w-full overflow-hidden rounded-full bg-[var(--interactive-border)]',
+    ],
+    ['app-rank-fill', 'h-1.5 rounded-full bg-primary'],
+    ['app-trend-chart', 'flex items-end gap-1 h-40'],
+    ['app-trend-col', 'flex flex-1 flex-col justify-end min-w-0 h-full'],
+    [
+      'app-trend-col-inner',
+      'flex w-full flex-col overflow-hidden rounded-t-sm bg-[color-mix(in_srgb,var(--primary)_20%,transparent)]',
+    ],
+    ['app-trend-seg', 'w-full bg-primary'],
+    ['app-trend-axis', 'flex justify-between text-micro text-muted-foreground'],
+    ['app-heat-wrap', 'flex gap-2'],
+    ['app-heat-labels', 'flex flex-col gap-0.5 shrink-0'],
+    ['app-heat-label', 'text-micro text-muted-foreground h-3 leading-3'],
+    ['app-heat-grid', 'flex flex-col gap-0.5 min-w-0'],
+    ['app-heat-row', 'flex gap-0.5'],
+    ['app-heat-cell', 'size-3 rounded-sm bg-primary'],
+    [
+      'app-session-row',
+      'flex items-center gap-2.5 px-1 py-1.5 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    [
+      'app-session-badge',
+      'grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--surface-foreground)_8%,transparent)] text-micro font-semibold text-muted-foreground',
+    ],
+    ['app-bucket-chart', 'flex items-end gap-3 h-32'],
+    ['app-bucket-col', 'flex flex-1 flex-col items-center justify-end gap-1 min-w-0 h-full'],
+    ['app-bucket-bar', 'w-full rounded-t-sm bg-primary'],
+
+    // ── 设置页（Magpie 式一行一设置）─────────────────────────
+    [
+      'app-settings-sheet',
+      'flex flex-col min-w-0 overflow-hidden rounded-lg border border-border bg-background',
+    ],
+    ['app-setting-group', 'text-ui-label font-semibold px-4 pt-4 pb-2 text-muted-foreground'],
+    [
+      'app-setting-row',
+      'flex items-center gap-4 px-4 py-3 min-w-0 min-h-13 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    ['app-setting-label', 'flex min-w-0 flex-col gap-0.5'],
+    [
+      'app-setting-control',
+      'ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2',
+    ],
+    ['app-setting-search', 'w-64 h-8 ml-auto'],
+    ['app-setting-input', 'w-64 h-8'],
+    ['app-accent-row', 'flex items-center gap-2 flex-wrap justify-end'],
+    [
+      'app-accent',
+      'inline-flex items-center gap-1.5 h-7 px-2 rounded-full border border-border bg-background text-meta text-muted-foreground cursor-pointer transition-colors hover:bg-interactive-hover hover:text-foreground',
+    ],
+    [
+      'app-accent-active',
+      'border-[color:var(--primary)] text-foreground bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]',
+    ],
+    ['app-accent-dot', 'size-3 rounded-full border border-border shrink-0'],
+    ['app-font-preview', 'text-meta text-muted-foreground whitespace-nowrap'],
+
+    // ── 供应商编辑器 · 模型区（Magpie 式 chips + 内联模型设置）──
+    [
+      'app-model-chip',
+      'inline-flex items-center gap-1 h-6 px-2 rounded-full bg-[color-mix(in_srgb,var(--surface-foreground)_8%,transparent)] text-micro',
+    ],
+    ['app-model-chip-active', 'shadow-[0_0_0_1px_var(--primary)]'],
+    [
+      'app-model-chip-selected',
+      'shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary)_45%,transparent)]',
+    ],
+    ['app-model-settings', 'flex flex-col gap-2'],
+    [
+      'app-model-settings-card',
+      'flex flex-col gap-1 rounded-lg border border-border bg-background p-3',
+    ],
+
+    // ── 供应商行（Magpie 式）──────────────────────────────────
+    [
+      'app-provider-row-magpie',
+      'flex items-center gap-3 py-2.5 px-1 min-w-0 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    [
+      'app-provider-main-btn',
+      'flex flex-1 min-w-0 items-center gap-3 text-left cursor-pointer rounded-md',
+    ],
+    [
+      'app-switch',
+      'relative h-5 w-9 shrink-0 rounded-full bg-[var(--interactive-border)] transition-colors cursor-pointer disabled:opacity-50',
+    ],
+    ['app-switch-on', 'bg-primary'],
+    [
+      'app-switch-knob',
+      'absolute top-0.5 left-0.5 size-4 rounded-full bg-background shadow-raised transition-transform [.app-switch-on_&]:translate-x-4',
+    ],
+
+    // ── 路由组（Magpie 式单列手风琴）──────────────────────────
+    ['app-group-card', 'rounded-xl border border-border bg-background overflow-hidden min-w-0'],
+    ['app-group-head', 'flex items-center gap-3 p-3 min-w-0'],
+    ['app-group-toggle', 'flex flex-1 items-center gap-3 min-w-0 text-left cursor-pointer'],
+    [
+      'app-group-avatar',
+      'grid size-8 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--surface-foreground)_8%,transparent)] text-ui-label font-semibold text-muted-foreground',
+    ],
+    ['app-group-body', 'flex flex-col gap-4 border-t border-border p-4'],
+
+    // ── 智能体（应用）页 ─────────────────────────────────────
+    [
+      'app-agent-row',
+      'flex flex-wrap items-center gap-3 py-3 min-w-0 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    [
+      'app-agent-body',
+      'flex flex-col gap-1 rounded-lg bg-[color-mix(in_srgb,var(--surface-foreground)_3%,transparent)] p-3',
+    ],
+
+    // ── 网关页 ──────────────────────────────────────────────
+    [
+      'app-gateway-row',
+      'flex items-start gap-3 py-1.5 min-w-0 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    ['app-gateway-key', 'w-20 shrink-0 text-ui-label text-muted-foreground pt-0.5'],
+    [
+      'app-model-row',
+      'flex flex-col gap-0.5 py-2 px-1 min-w-0 [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--interactive-border)]',
+    ],
+    [
+      'app-pill-clickable',
+      'cursor-pointer hover:bg-[color-mix(in_srgb,var(--surface-foreground)_14%,transparent)] gap-1',
+    ],
   ],
   preflights: [
     {
@@ -268,13 +590,21 @@ h1,h2,h3{font-weight:600;line-height:1.2}
 a{color:var(--markdown-link);text-decoration:none}
 code{font-family:var(--oc-font-mono);font-size:12px}
 :focus,:focus-visible{outline:none}
+/* 键盘焦点必须可见（product-design §12）：全局清掉了 outline，
+   非输入控件（按钮、链接、表格行、标签页、导航项）用 box-shadow 补一圈
+   焦点环；输入框不在此列——它们聚焦时点亮自己的边（oc-field/app-cell-input）。
+   只作用于 :focus-visible，鼠标点击不出环，不影响既有样式。 */
+:focus-visible{box-shadow:0 0 0 1px var(--surface-background),0 0 0 3px color-mix(in srgb,var(--primary) 55%,transparent)}
+input:focus-visible,select:focus-visible,textarea:focus-visible,[contenteditable]:focus-visible{box-shadow:none}
 ::selection{background:var(--interactive-selection)}
 *::-webkit-scrollbar{width:6px;height:6px}
 *::-webkit-scrollbar-track{background:transparent}
 *::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--surface-foreground) 16%,transparent);border-radius:9999px}
 *::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--surface-foreground) 26%,transparent)}
 @keyframes oc-bars{0%{opacity:.25}50%{opacity:1}100%{opacity:.25}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+/* 设置页「减弱动态效果」：应用级开关（data-motion=reduced）优先于系统偏好。 */
+html[data-motion="reduced"] *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+@media (prefers-reduced-motion:reduce),(prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 `,
     },
   ],

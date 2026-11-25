@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node --import tsx --test src/lib/config-edit.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "gen:uno": "node scripts/gen-uno-themes.mjs",
     "check:uno": "node --import tsx scripts/check-uno-tokens.ts && node scripts/check-class-literals.mjs"
   },

@@ -7,20 +7,20 @@
  * 3. 用户确认 → apply（备份 + 原子写；token 由 host 解析，不进 UI）；
  * 4. verify 读回校验。
  */
-import { useCallback, useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '../api/client'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { Icon } from '../components/common/Icon'
+import { AGENTS, MANUAL_AGENTS } from '../constants/agents'
+import { useGatewayUrl } from '../hooks/useGatewayUrl'
 import { isTauri, invokeErrorMessage as errorMessage } from '../lib/tauri'
 import { planActionPillClass } from '../lib/status'
+import { defaultVirtualModelOf, virtualModelSummaries } from '../lib/config-edit'
 import {
   onboardApply,
   onboardDetect,
   onboardPlan,
   onboardVerify,
   onboardWslDetect,
-  supervisorStatus,
   type DetectReport,
   type PlanEntry,
   type SetupPlan,
@@ -28,33 +28,18 @@ import {
   type WslReport,
 } from '../lib/tauri'
 
-const AGENTS = [
-  { id: 'openclaw', label: 'OpenClaw' },
-  { id: 'hermes', label: 'Hermes' },
-  { id: 'hermes-flash', label: 'Hermes Flash' },
-  { id: 'claude-code', label: 'Claude Code' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'opencode', label: 'OpenCode' },
-  { id: 'codebuddy', label: 'CodeBuddy' },
-  { id: 'workbuddy', label: 'WorkBuddy' },
-] as const
-
 type Step = 'select' | 'plan' | 'applied'
 
 export function OnboardingPage() {
   const showToast = useAppStore((s) => s.showToast)
-  const configQuery = useQuery({
-    queryKey: ['admin', 'config'],
-    queryFn: () => api.config(),
-    retry: 1,
-  })
+  const gateway = useGatewayUrl()
+  const gatewayUrl = gateway.url
 
   const [wsl, setWsl] = useState<WslReport | null>(null)
-  const [supervisorListen, setSupervisorListen] = useState<string | null>(null)
   const [distro, setDistro] = useState<string>('')
   const [agentId, setAgentId] = useState<string>('claude-code')
   const [credentialRef, setCredentialRef] = useState('')
-  const [model, setModel] = useState('auto')
+  const [model, setModel] = useState('')
   const [detect, setDetect] = useState<DetectReport | null>(null)
   const [plan, setPlan] = useState<SetupPlan | null>(null)
   const [verify, setVerify] = useState<VerifyReport | null>(null)
@@ -62,39 +47,24 @@ export function OnboardingPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // 默认模型：status 的 default_virtual_model。
-  const statusQuery = useQuery({
-    queryKey: ['admin', 'status'],
-    queryFn: () => api.status(),
-    retry: 1,
-    refetchInterval: 10_000,
-  })
-  useEffect(() => {
-    if (statusQuery.data?.default_virtual_model) {
-      setModel((current) => (current === 'auto' ? statusQuery.data.default_virtual_model : current))
-    }
-  }, [statusQuery.data?.default_virtual_model])
+  // 入口来自当前配置：默认值优先用 default_virtual_model，否则第一个启用入口。
+  // 不再接受自由文本 "auto"，避免把不存在的模型写进 agent 配置。
+  const models = useMemo(() => virtualModelSummaries(gateway.document), [gateway.document])
+  const configuredDefault = defaultVirtualModelOf(gateway.document)
+  // 用户没选过时取配置默认（其次第一个启用入口）；不让效果回写 state，避免级联渲染。
+  const preferredModel =
+    models.find((option) => option.id === configuredDefault && option.enabled)?.id ??
+    models.find((option) => option.enabled)?.id ??
+    ''
+  // 配置刷新后旧选择可能已不存在：有下拉时回退到默认/第一个启用入口。
+  const modelStillExists = models.length === 0 || models.some((option) => option.id === model)
+  const effectiveModel = model !== '' && modelStillExists ? model : preferredModel
 
   useEffect(() => {
     if (isTauri()) {
       void onboardWslDetect().then(setWsl).catch(() => setWsl(null))
-      // supervisor 端口占用时会从 17621 递增，接入地址必须用实际监听地址。
-      void supervisorStatus()
-        .then((status) => setSupervisorListen(status.listen))
-        .catch(() => setSupervisorListen(null))
     }
   }, [])
-
-  // 优先级：supervisor 实际监听 > 配置里的 listen > 桌面端默认端口。
-  const gatewayUrl = (() => {
-    const document = configQuery.data?.document as
-      | Record<string, Record<string, unknown>>
-      | undefined
-    const configured = document?.server?.listen
-    const listen =
-      supervisorListen ?? (typeof configured === 'string' ? configured : '127.0.0.1:17621')
-    return `http://${listen}`
-  })()
 
   const runDetect = useCallback(async () => {
     if (!isTauri()) return
@@ -124,7 +94,7 @@ export function OnboardingPage() {
         wsl_distro: distro || null,
         gateway_url: gatewayUrl,
         credential_ref: credentialRef,
-        model,
+        model: effectiveModel,
       })
       setPlan(setupPlan)
       setStep('plan')
@@ -144,7 +114,7 @@ export function OnboardingPage() {
         wsl_distro: distro || null,
         gateway_url: gatewayUrl,
         credential_ref: credentialRef,
-        model,
+        model: effectiveModel,
       })
       const report = await onboardVerify({ agent: agentId, wsl_distro: distro || null })
       setVerify(report)
@@ -170,10 +140,7 @@ export function OnboardingPage() {
       <div className="app-page">
         <section className="app-card">
           <h2 className="app-card-title">Agent 接入</h2>
-          <p className="app-card-sub">
-            一键接入（detect → plan → apply → verify）需要桌面壳的 host 能力；
-            浏览器模式请用 <code className="app-inline-code">tr-cli admin</code> 手动配置。
-          </p>
+          <code className="app-inline-code">tr-cli admin</code>
         </section>
       </div>
     )
@@ -266,24 +233,38 @@ export function OnboardingPage() {
               />
             </label>
             <label className="app-field">
-              模型
-              <input
-                type="text"
-                className="oc-field app-field-light font-mono"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              />
+              模型入口
+              {models.length > 0 ? (
+                <select
+                  className="app-select"
+                  value={effectiveModel}
+                  aria-label="模型入口"
+                  onChange={(e) => setModel(e.target.value)}
+                >
+                  <option value="">选择入口…</option>
+                  {models.map((option) => (
+                    <option key={option.id} value={option.id} disabled={!option.enabled}>
+                      {option.id}
+                      {option.name ? `（${option.name}）` : ''}
+                      {option.enabled ? '' : '（已停用）'}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  className="oc-field app-field-light font-mono"
+                  value={effectiveModel}
+                  placeholder="配置里还没有入口，请先去路由组创建"
+                  onChange={(e) => setModel(e.target.value)}
+                />
+              )}
             </label>
           </div>
-          <p className="app-card-sub">
-            网关：<code className="app-inline-code">{gatewayUrl}</code>（来自当前配置）。
-            明文 token 不经过 UI：host 在 apply 时从 <code className="app-inline-code">env:</code>/
-            <code className="app-inline-code">file:</code> 解析。
-          </p>
           <button
             type="button"
             className="oc-btn-primary self-start"
-            disabled={!credentialRef.trim() || busy}
+            disabled={!credentialRef.trim() || effectiveModel.trim() === '' || busy}
             onClick={() => void runPlan()}
           >
             <Icon name="apply" />
@@ -349,53 +330,13 @@ export function OnboardingPage() {
  * 更多 agent（手动接入）：精确合并器覆盖 8 个；其余 agent 用统一环境变量接入。
  * base URL 从当前配置的 server.listen 推导，避免写死端口。
  */
-const MANUAL_AGENTS = [
-  { id: 'cursor', label: 'Cursor（CLI / IDE）', env: 'OPENAI_BASE_URL' },
-  { id: 'cline', label: 'Cline / Roo Code', env: 'OPENAI_BASE_URL' },
-  { id: 'continue', label: 'Continue', env: 'OPENAI_BASE_URL' },
-  { id: 'zed', label: 'Zed', env: 'OPENAI_BASE_URL' },
-  { id: 'goose', label: 'Goose', env: 'OPENAI_BASE_URL' },
-  { id: 'crush', label: 'Crush', env: 'OPENAI_BASE_URL' },
-  { id: 'aider', label: 'Aider', env: 'OPENAI_API_BASE' },
-  { id: 'gemini-cli', label: 'Gemini CLI', env: 'GOOGLE_GEMINI_BASE_URL' },
-  { id: 'qwen-code', label: 'Qwen Code', env: 'OPENAI_BASE_URL' },
-  { id: 'kimi-code', label: 'Kimi Code', env: 'OPENAI_BASE_URL' },
-  { id: 'copilot-cli', label: 'Copilot CLI', env: 'OPENAI_BASE_URL' },
-  { id: 'cherry-studio', label: 'Cherry Studio', env: 'OPENAI_BASE_URL' },
-  { id: 'chatbox', label: 'Chatbox', env: 'OPENAI_BASE_URL' },
-  { id: 'droid', label: 'Droid', env: 'OPENAI_BASE_URL' },
-] as const
-
 function ManualAgents() {
-  const configQuery = useQuery({
-    queryKey: ['admin', 'config'],
-    queryFn: () => api.config(),
-    retry: 1,
-  })
-  const [supervisorListen, setSupervisorListen] = useState<string | null>(null)
-  useEffect(() => {
-    if (!isTauri()) return
-    void supervisorStatus()
-      .then((status) => setSupervisorListen(status.listen))
-      .catch(() => setSupervisorListen(null))
-  }, [])
-  const listen = (() => {
-    if (supervisorListen) return supervisorListen
-    const document = configQuery.data?.document as
-      | { server?: { listen?: string } }
-      | undefined
-    return document?.server?.listen ?? '127.0.0.1:17621'
-  })()
-  const baseUrl = `http://${listen}/v1`
+  const gateway = useGatewayUrl()
+  const baseUrl = `${gateway.url}/v1`
 
   return (
     <section className="app-card" aria-label="更多 agent（手动接入）">
       <h2 className="app-card-title">更多 agent（手动接入）</h2>
-      <p className="app-card-sub">
-        下面这些 agent 没有精确合并器：把 base URL 指向上面的网关地址，key 用 Token
-        页创建的 inference key（或配置里的入站 key）。连同上方 8 个精确合并的 agent，
-        共 {8 + MANUAL_AGENTS.length} 个 agent 的接入路径。
-      </p>
       <table className="app-table">
         <thead>
           <tr>

@@ -8,13 +8,21 @@
 import {
   Activity,
   AlertCircle,
+  AppWindow,
+  ArrowRight,
+  Bot,
   Boxes,
   ChartColumn,
   Check,
   ChevronDown,
   ChevronRight,
+  Circle,
   CircleCheck,
+  CircleSlash,
   CircleX,
+  Clock,
+  Code,
+  Coins,
   Copy,
   ExternalLink,
   FolderOpen,
@@ -26,6 +34,7 @@ import {
   Minus,
   Monitor,
   Moon,
+  Network,
   Play,
   Plug,
   Plus,
@@ -34,9 +43,11 @@ import {
   ScrollText,
   Search,
   Settings,
+  Sparkles,
   Square,
   Stethoscope,
   Sun,
+  Terminal,
   Trash2,
   Upload,
   X,
@@ -49,6 +60,8 @@ import {
 const ICONS = {
   // 导航
   'nav-overview': LayoutDashboard,
+  'nav-gateway': Network,
+  'nav-apps': AppWindow,
   'nav-providers': Server,
   'nav-quotas': Gauge,
   'nav-playground': FlaskConical,
@@ -84,6 +97,7 @@ const ICONS = {
   stop: Square,
   external: ExternalLink,
   search: Search,
+  next: ArrowRight,
 
   // 状态
   success: CircleCheck,
@@ -91,6 +105,19 @@ const ICONS = {
   warning: AlertCircle,
   info: Info,
   empty: Inbox,
+  'state-pending': Circle,
+  'state-skipped': CircleSlash,
+  'state-in-progress': Clock,
+
+  // 首页指标
+  cost: Coins,
+
+  // 智能体（应用）行图标
+  'agent-bot': Bot,
+  'agent-code': Code,
+  'agent-terminal': Terminal,
+  'agent-sparkle': Sparkles,
+  'agent-plug': Plug,
 
   // 主题
   'theme-light': Sun,

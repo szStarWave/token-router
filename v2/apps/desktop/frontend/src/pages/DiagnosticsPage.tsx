@@ -159,11 +159,6 @@ export function DiagnosticsPage() {
 
       <section className="app-card" aria-label="配置回滚">
         <h2 className="app-card-title">回滚配置</h2>
-        <p className="app-card-sub">
-          把最近一份 <code className="app-inline-code">config.toml.bak-&lt;ts&gt;</code> 还原为当前配置；
-          回滚后需要重启服务生效。当前 token 需要{' '}
-          <code className="app-inline-code">admin:write</code> 作用域。
-        </p>
         {confirming ? (
           <div className="app-confirm">
             确认回滚到最近一份备份？

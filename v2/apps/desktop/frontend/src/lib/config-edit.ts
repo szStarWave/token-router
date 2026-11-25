@@ -52,21 +52,84 @@ export interface CandidateDraft {
   extra_headers: HeaderDraft[]
   input: string[]
   thinking_levels: string[]
+  /** 候选级关闭思考：该模型请求一律不发推理参数。 */
+  disable_thinking: boolean
+  /** 候选级输出上限：请求 max_tokens 取 min(客户端值, 上限)，未给时填上限。 */
+  max_tokens: number | null
+  /** 能力标签（编译进候选 capability tags，供组判断能力模式参考）。 */
+  caps: string[]
   price: PriceDraft | null
   enabled: boolean
 }
+
+export type GroupJudgeMode = 'off' | 'active'
+
+/** 组级判断服务：覆盖 agent config `JudgeServiceFile` 全部字段，避免 round-trip 丢配置。 */
+export interface JudgeServiceDraft {
+  /** 本批前端只暴露 `llm`；旧配置的其他值原样保留，active 时由校验要求改为 llm。 */
+  kind: string
+  endpoint: string
+  model: string
+  service_id: string
+  revision: number
+  credential: string
+  timeout_ms: number
+  structured_output: string
+  temperature: number
+  max_output_tokens: number
+  /** 判官关闭思考（默认 true；只对 `kind = "llm"` 有意义）。 */
+  disable_thinking: boolean
+  currency: string
+  input_micros_per_mtok: number
+  output_micros_per_mtok: number
+  request_micros: number
+}
+
+/** `[virtual_models.judge]`：路由组自己的判断模型与预算。 */
+export interface GroupJudgeDraft {
+  mode: GroupJudgeMode
+  max_calls_per_turn: number
+  max_calls_per_minute: number
+  max_calls_per_session: number
+  deadline_ms: number
+  service: JudgeServiceDraft
+}
+
+/** `[[virtual_models.rules]]`：判断模型读取规则与用户消息后选中的规则。 */
+export interface GroupRuleDraft {
+  id: string
+  intent: string
+  /** 命中规则后在组候选池中优先的候选 id。 */
+  prefer: string
+}
+
+export type WindowMode = 'min' | 'max' | 'custom'
 
 export interface VirtualModelDraft {
   id: string
   provider: string
   name: string
   profile: string
+  /** 客户端可见/可路由；默认 true。 */
+  enabled: boolean
   candidate_pool: string[]
   strategies: string[]
   thinking_levels: string[]
+  /** 组级关闭思考：请求一律按 off 处理（剥离推理参数 + 已知厂商关闭开关）。 */
+  disableThinking: boolean
+  /** 窗口提示来源：最小/最大成员窗口，或显式值。 */
+  contextWindowMode: WindowMode
   context_window: number | null
   max_tokens: number | null
+  /** `/v1/models` 是否同时列出池内成员（`组/模型`）。 */
+  listMembers: boolean
   input: string[]
+  judge: GroupJudgeDraft
+  rules: GroupRuleDraft[]
+  /** 文档是否显式包含 `[virtual_models.judge]`（off 也是显式配置，保存时保留）。 */
+  judgeConfigured: boolean
+  /** 文档是否显式包含 rules 数组（显式空数组也保留）。 */
+  rulesConfigured: boolean
 }
 
 export interface ProfileDraft {
@@ -126,6 +189,12 @@ function strArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
 }
 
+function windowModeFrom(raw: Record<string, unknown>): WindowMode {
+  const mode = str(raw.context_window_mode, '')
+  if (mode === 'min' || mode === 'max' || mode === 'custom') return mode
+  return optNum(raw.context_window) !== null ? 'custom' : 'min'
+}
+
 function headersFrom(value: unknown): HeaderDraft[] {
   if (!isRecord(value)) return []
   return Object.entries(value).map(([name, header]) => ({
@@ -161,8 +230,53 @@ function candidateFrom(value: unknown): CandidateDraft {
     extra_headers: headersFrom(raw.extra_headers),
     input: strArray(raw.input),
     thinking_levels: strArray(raw.thinking_levels),
+    disable_thinking: bool(raw.disable_thinking, false),
+    max_tokens: optNum(raw.max_tokens),
+    caps: strArray(raw.caps),
     price: priceFrom(raw.price),
     enabled: bool(raw.enabled, true),
+  }
+}
+
+function judgeServiceFrom(value: unknown): JudgeServiceDraft {
+  const raw = isRecord(value) ? value : {}
+  return {
+    kind: str(raw.kind, 'llm'),
+    endpoint: str(raw.endpoint, ''),
+    model: str(raw.model, ''),
+    service_id: str(raw.service_id, 'group-judge'),
+    revision: num(raw.revision, 1),
+    credential: str(raw.credential, ''),
+    timeout_ms: num(raw.timeout_ms, 300),
+    structured_output: str(raw.structured_output, 'json_mode'),
+    temperature: num(raw.temperature, 0),
+    max_output_tokens: num(raw.max_output_tokens, 256),
+    disable_thinking: typeof raw.disable_thinking === 'boolean' ? raw.disable_thinking : true,
+    currency: str(raw.currency, 'USD'),
+    input_micros_per_mtok: num(raw.input_micros_per_mtok, 0),
+    output_micros_per_mtok: num(raw.output_micros_per_mtok, 0),
+    request_micros: num(raw.request_micros, 0),
+  }
+}
+
+function groupJudgeFrom(value: unknown): GroupJudgeDraft {
+  const raw = isRecord(value) ? value : {}
+  return {
+    mode: str(raw.mode, 'off') === 'active' ? 'active' : 'off',
+    max_calls_per_turn: num(raw.max_calls_per_turn, 1),
+    max_calls_per_minute: num(raw.max_calls_per_minute, 30),
+    max_calls_per_session: num(raw.max_calls_per_session, 200),
+    deadline_ms: num(raw.deadline_ms, 300),
+    service: judgeServiceFrom(raw.service),
+  }
+}
+
+function groupRuleFrom(value: unknown): GroupRuleDraft {
+  const raw = isRecord(value) ? value : {}
+  return {
+    id: str(raw.id, ''),
+    intent: str(raw.intent, ''),
+    prefer: str(raw.prefer, ''),
   }
 }
 
@@ -173,12 +287,20 @@ function virtualModelFrom(value: unknown): VirtualModelDraft {
     provider: str(raw.provider, 'token-router'),
     name: str(raw.name, ''),
     profile: str(raw.profile, 'default'),
+    enabled: bool(raw.enabled, true),
     candidate_pool: strArray(raw.candidate_pool),
     strategies: strArray(raw.strategies),
     thinking_levels: strArray(raw.thinking_levels),
+    disableThinking: bool(raw.disable_thinking, false),
+    contextWindowMode: windowModeFrom(raw),
     context_window: optNum(raw.context_window),
     max_tokens: optNum(raw.max_tokens),
+    listMembers: bool(raw.list_members, false),
     input: strArray(raw.input),
+    judge: groupJudgeFrom(raw.judge),
+    rules: Array.isArray(raw.rules) ? raw.rules.map(groupRuleFrom) : [],
+    judgeConfigured: isRecord(raw.judge),
+    rulesConfigured: Array.isArray(raw.rules),
   }
 }
 
@@ -214,7 +336,9 @@ export function draftFromDocument(document: ConfigDocument): ConfigDraft {
 
   return {
     schemaVersion: num(doc.schema_version, document.schema_version),
-    defaultVirtualModel: str(doc.default_virtual_model, 'auto'),
+    // 缺失 ≠ "auto"：后端在缺省时会自动挑第一个启用组（config.rs），
+    // 前端造一个 "auto" 会凭空产生 missing_virtual_model 校验错误。
+    defaultVirtualModel: str(doc.default_virtual_model, ''),
     server: {
       listen: str(serverRaw.listen, '127.0.0.1:17621'),
       auth_enabled: bool(serverRaw.auth_enabled, false),
@@ -274,9 +398,53 @@ function candidateTo(candidate: CandidateDraft): Record<string, unknown> {
   out.window = candidate.window
   if (candidate.input.length > 0) out.input = candidate.input
   if (candidate.thinking_levels.length > 0) out.thinking_levels = candidate.thinking_levels
+  if (candidate.disable_thinking) out.disable_thinking = true
+  if (candidate.max_tokens !== null) out.max_tokens = candidate.max_tokens
+  if (candidate.caps.length > 0) out.caps = candidate.caps
   if (candidate.price) out.price = priceTo(candidate.price)
   out.enabled = candidate.enabled
   return out
+}
+
+function judgeServiceTo(service: JudgeServiceDraft): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    kind: service.kind,
+    endpoint: service.endpoint,
+    model: service.model,
+    service_id: service.service_id,
+    revision: service.revision,
+    timeout_ms: service.timeout_ms,
+    structured_output: service.structured_output,
+    temperature: service.temperature,
+    max_output_tokens: service.max_output_tokens,
+    disable_thinking: service.disable_thinking,
+    currency: service.currency,
+    input_micros_per_mtok: service.input_micros_per_mtok,
+    output_micros_per_mtok: service.output_micros_per_mtok,
+    request_micros: service.request_micros,
+  }
+  // Option<String>：空引用与缺省等价，不输出空串。
+  if (service.credential) out.credential = service.credential
+  return out
+}
+
+function groupJudgeTo(judge: GroupJudgeDraft): Record<string, unknown> {
+  return {
+    mode: judge.mode,
+    max_calls_per_turn: judge.max_calls_per_turn,
+    max_calls_per_minute: judge.max_calls_per_minute,
+    max_calls_per_session: judge.max_calls_per_session,
+    deadline_ms: judge.deadline_ms,
+    service: judgeServiceTo(judge.service),
+  }
+}
+
+function groupRuleTo(rule: GroupRuleDraft): Record<string, unknown> {
+  return {
+    id: rule.id,
+    intent: rule.intent,
+    prefer: rule.prefer,
+  }
 }
 
 function virtualModelTo(model: VirtualModelDraft): Record<string, unknown> {
@@ -286,12 +454,26 @@ function virtualModelTo(model: VirtualModelDraft): Record<string, unknown> {
   }
   if (model.name) out.name = model.name
   if (model.thinking_levels.length > 0) out.thinking_levels = model.thinking_levels
-  if (model.context_window !== null) out.context_window = model.context_window
+  if (model.disableThinking) out.disable_thinking = true
+  if (model.contextWindowMode === 'max') {
+    out.context_window_mode = 'max'
+  } else if (model.contextWindowMode === 'custom' && model.context_window !== null) {
+    out.context_window_mode = 'custom'
+    out.context_window = model.context_window
+  } else if (model.context_window !== null) {
+    // 旧语义：显式值即自定义（不写 mode，保持旧配置写法）。
+    out.context_window = model.context_window
+  }
+  if (model.listMembers) out.list_members = true
   if (model.max_tokens !== null) out.max_tokens = model.max_tokens
   if (model.input.length > 0) out.input = model.input
   out.profile = model.profile
+  if (!model.enabled) out.enabled = false
   out.strategies = model.strategies
   out.candidate_pool = model.candidate_pool
+  // off + 无规则的新草稿不写空表；显式存在的 judge/rules 原样保留。
+  if (model.judgeConfigured || model.judge.mode === 'active') out.judge = groupJudgeTo(model.judge)
+  if (model.rulesConfigured || model.rules.length > 0) out.rules = model.rules.map(groupRuleTo)
   return out
 }
 
@@ -314,7 +496,11 @@ export function draftToToml(draft: ConfigDraft): string {
   }
   const document: Record<string, unknown> = {
     schema_version: draft.schemaVersion,
-    default_virtual_model: draft.defaultVirtualModel,
+    // 空串 = 未设置：必须省略而不是写 `default_virtual_model = ""`
+    //（后端会把它当作 Some("") 并报“不存在”）。
+    ...(draft.defaultVirtualModel.trim() !== ''
+      ? { default_virtual_model: draft.defaultVirtualModel }
+      : {}),
     server: {
       listen: draft.server.listen,
       auth_enabled: draft.server.auth_enabled,
@@ -355,7 +541,44 @@ function redactedSecretPaths(draft: ConfigDraft): string[] {
   if (isRecord(judge) && isRecord(judge.service) && judge.service.credential === REDACTED_SECRET) {
     paths.push('judge.service.credential')
   }
+  for (const [index, model] of draft.virtualModels.entries()) {
+    if (model.judge.service.credential === REDACTED_SECRET) {
+      paths.push(`virtual_models.${index}.judge.service.credential`)
+    }
+  }
   return paths
+}
+
+function isCredentialRef(value: string): boolean {
+  return value.startsWith('env:') || value.startsWith('file:') || value.startsWith('keyring:')
+}
+
+/** JEV 的 SystemOne endpoint 必须是完整路径（允许 query/fragment）。 */
+export function isSystemOneEndpoint(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed === '') return false
+  try {
+    const path = new URL(trimmed).pathname.replace(/\/+$/, '')
+    return path.endsWith('/v1/systemone')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 目录模型的 `base_url` → SystemOne 决策模型 endpoint。
+ *
+ * 供应商 base 一般指到 `/v1`，JEV 判官要求完整 `/v1/systemone`；
+ * 选中决策模型时用这里归一化，避免把 `/v1` 写进 `judge.service.endpoint`
+ * 后被后端当成配置错误。
+ */
+export function systemOneEndpoint(baseUrl: string): string {
+  const base = baseUrl.trim().replace(/\/+$/, '')
+  if (base === '') return base
+  const [path, suffix] = base.split(/(?=[?#])/, 2)
+  if (isSystemOneEndpoint(path)) return base
+  const normalized = path.endsWith('/v1') ? `${path}/systemone` : `${path}/v1/systemone`
+  return `${normalized}${suffix ?? ''}`
 }
 
 /** 本地预检（服务端 validate 之前的第一道）。 */
@@ -425,7 +648,7 @@ export function localIssues(draft: ConfigDraft): ConfigIssue[] {
 
   const profileIds = new Set(Object.keys(draft.profiles))
   const virtualModelIds = new Set<string>()
-  for (const model of draft.virtualModels) {
+  for (const [index, model] of draft.virtualModels.entries()) {
     if (!model.id.trim()) {
       issues.push({ path: 'virtual_models[].id', code: 'empty', message: '虚拟模型 id 不能为空' })
     }
@@ -444,6 +667,16 @@ export function localIssues(draft: ConfigDraft): ConfigIssue[] {
         message: `profile "${model.profile}" 不存在`,
       })
     }
+    if (
+      model.contextWindowMode === 'custom' &&
+      (model.context_window === null || model.context_window <= 0)
+    ) {
+      issues.push({
+        path: `virtual_models[${model.id}].context_window`,
+        code: 'out_of_range',
+        message: '自定义上下文窗口必须大于 0',
+      })
+    }
     if (model.candidate_pool.length === 0) {
       issues.push({
         path: `virtual_models[${model.id}].candidate_pool`,
@@ -460,6 +693,69 @@ export function localIssues(draft: ConfigDraft): ConfigIssue[] {
         })
       }
     }
+
+    // 组级判断：有规则必须 active；active 时判断服务必须可用。
+    if (model.rules.length > 0 && model.judge.mode !== 'active') {
+      issues.push({
+        path: `virtual_models.${index}.judge.mode`,
+        code: 'rules_require_judge',
+        message: '有路由规则时必须启用判断模型（active）',
+      })
+    }
+    if (model.judge.mode === 'active') {
+      const service = model.judge.service
+      const kind = service.kind.trim().toLowerCase()
+      if (kind !== 'llm' && kind !== 'jev') {
+        issues.push({
+          path: `virtual_models.${index}.judge.service.kind`,
+          code: 'invalid_judge_kind',
+          message: '判断服务类型只支持 llm / jev',
+        })
+      }
+      if (!service.endpoint.trim() || !service.model.trim()) {
+        issues.push({
+          path: `virtual_models.${index}.judge.service.model`,
+          code: 'missing_judge_model',
+          message: '请选择判断模型（在供应商页配置用途后编译）',
+        })
+      } else if (kind === 'jev' && !isSystemOneEndpoint(service.endpoint)) {
+        issues.push({
+          path: `virtual_models.${index}.judge.service.endpoint`,
+          code: 'invalid_systemone_endpoint',
+          message: 'JEV 的 endpoint 必须是完整的 SystemOne 路径（以 /v1/systemone 结尾）',
+        })
+      }
+      const credential = service.credential.trim()
+      if (credential && credential !== REDACTED_SECRET && !isCredentialRef(credential)) {
+        issues.push({
+          path: `virtual_models.${index}.judge.service.credential`,
+          code: 'literal_secret',
+          message: '判断服务凭据只能填引用：env:NAME / file:path / keyring:NAME',
+        })
+      }
+    }
+
+    const ruleIds = new Set<string>()
+    model.rules.forEach((rule, ruleIndex) => {
+      const rulePath = `virtual_models.${index}.rules.${ruleIndex}`
+      if (!rule.id.trim()) {
+        issues.push({ path: `${rulePath}.id`, code: 'empty', message: '规则 id 不能为空' })
+      } else if (ruleIds.has(rule.id)) {
+        issues.push({ path: `${rulePath}.id`, code: 'duplicate', message: '规则 id 在组内重复' })
+      }
+      ruleIds.add(rule.id)
+      if (!rule.intent.trim()) {
+        issues.push({ path: `${rulePath}.intent`, code: 'empty', message: '规则 intent 不能为空' })
+      }
+      if (!model.candidate_pool.includes(rule.prefer)) {
+        issues.push({
+          path: `${rulePath}.prefer`,
+          code: 'prefer_not_in_pool',
+          message: 'prefer 必须是本组候选池中的候选',
+        })
+      }
+    })
+
     // 内核要求 strength_order 覆盖池内候选实际用到的 tier，否则排序静默落空。
     const profile = draft.profiles[model.profile]
     if (profile && profile.strength_order.length > 0) {
@@ -488,6 +784,24 @@ export function localIssues(draft: ConfigDraft): ConfigIssue[] {
     })
   }
 
+  const defaultModel = draft.virtualModels.find(
+    (model) => model.id === draft.defaultVirtualModel,
+  )
+  if (defaultModel && !defaultModel.enabled) {
+    issues.push({
+      path: 'default_virtual_model',
+      code: 'default_virtual_model_disabled',
+      message: `默认虚拟模型 "${draft.defaultVirtualModel}" 已停用`,
+    })
+  }
+  if (draft.virtualModels.length > 0 && !draft.virtualModels.some((model) => model.enabled)) {
+    issues.push({
+      path: 'virtual_models',
+      code: 'no_enabled_virtual_model',
+      message: '至少需要一个启用的虚拟模型作为默认入口',
+    })
+  }
+
   return issues
 }
 
@@ -506,6 +820,9 @@ export function emptyCandidate(): CandidateDraft {
     extra_headers: [],
     input: [],
     thinking_levels: [],
+    disable_thinking: false,
+    max_tokens: null,
+    caps: [],
     price: null,
     enabled: true,
   }
@@ -517,13 +834,82 @@ export function emptyVirtualModel(): VirtualModelDraft {
     provider: 'token-router',
     name: '',
     profile: 'default',
+    enabled: true,
     candidate_pool: [],
     strategies: ['baseline'],
     thinking_levels: [],
+    disableThinking: false,
+    contextWindowMode: 'min',
     context_window: null,
     max_tokens: null,
+    listMembers: false,
     input: [],
+    judge: {
+      mode: 'off',
+      max_calls_per_turn: 1,
+      max_calls_per_minute: 30,
+      max_calls_per_session: 200,
+      deadline_ms: 300,
+      service: {
+        kind: 'llm',
+        endpoint: '',
+        model: '',
+        service_id: 'group-judge',
+        revision: 1,
+        credential: '',
+        timeout_ms: 300,
+        structured_output: 'json_mode',
+        temperature: 0,
+        max_output_tokens: 256,
+        disable_thinking: true,
+        currency: 'USD',
+        input_micros_per_mtok: 0,
+        output_micros_per_mtok: 0,
+        request_micros: 0,
+      },
+    },
+    rules: [],
+    judgeConfigured: false,
+    rulesConfigured: false,
   }
+}
+
+// ---------------------------------------------------------------------------
+// 只读配置摘要（Apps / Onboarding / Playground 共用，避免各自解析）
+// ---------------------------------------------------------------------------
+
+export interface VirtualModelSummary {
+  id: string
+  name: string
+  /** 候选数；配置里没有 candidate_pool 时为 null（不猜）。 */
+  candidateCount: number | null
+  /** 显式 false 才是停用（配置默认 true 且 true 时不序列化）。 */
+  enabled: boolean
+}
+
+/** 从 config 文档（`ConfigDocument.document`）读出虚拟模型摘要。 */
+export function virtualModelSummaries(document: unknown): VirtualModelSummary[] {
+  if (!isRecord(document) || !Array.isArray(document.virtual_models)) return []
+  const out: VirtualModelSummary[] = []
+  for (const item of document.virtual_models) {
+    if (!isRecord(item)) continue
+    const id = typeof item.id === 'string' ? item.id.trim() : ''
+    if (id === '') continue
+    out.push({
+      id,
+      name: typeof item.name === 'string' ? item.name : '',
+      candidateCount: Array.isArray(item.candidate_pool) ? item.candidate_pool.length : null,
+      enabled: item.enabled !== false,
+    })
+  }
+  return out
+}
+
+/** 配置声明的默认虚拟模型；缺失/空串返回 null（后端会自行挑第一个启用组）。 */
+export function defaultVirtualModelOf(document: unknown): string | null {
+  if (!isRecord(document)) return null
+  const value = document.default_virtual_model
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
 }
 
 /** 把 issues 按字段路径分组（表单标红用）。 */
